@@ -1,0 +1,39 @@
+version: "3"
+
+services:
+  app:
+    build: .
+    command: bash -c "tail -f /dev/null"
+    depends_on:
+      - db
+      - seqrepo
+    env_file:
+      - settings/.env.dev
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+    ports:
+      - "8002:8000"
+    volumes:
+      - .:/usr/src/app
+      - vrs-mapping-seqrepo-dev:/usr/local/share/seqrepo
+
+  db:
+    image: postgres:14
+    env_file:
+      - settings/.env.dev
+    ports:
+      - "5434:5432"
+    expose:
+      - 5432
+    volumes:
+      - vrs-mapping-data-dev:/var/lib/postgresql/data
+
+  seqrepo:
+    image: biocommons/seqrepo:2021-01-29
+    volumes:
+      - vrs-mapping-seqrepo-dev:/usr/local/share/seqrepo
+
+volumes:
+  vrs-mapping-data-dev:
+  vrs-mapping-seqrepo-dev:
