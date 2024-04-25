@@ -60,7 +60,6 @@ Homepage = "https://www.varianteffect.org/"
 Documentation = "https://github.com/ave-dcd/dcd_mapping/README.md"
 Source = "https://github.com/ave-dcd/dcd_mapping"
 
-
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
@@ -69,7 +68,6 @@ build-backend = "setuptools.build_meta"
 addopts = "--cov=src --cov-report term-missing"
 testpaths = ["tests"]
 asyncio_mode = "auto"
-
 
 [tool.coverage.run]
 branch = true

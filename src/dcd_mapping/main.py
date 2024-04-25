@@ -7,7 +7,7 @@ from typing import List
 import click
 
 from dcd_mapping.align import AlignmentError, align
-from dcd_mapping.resources import (
+from dcd_mapping.mavedb_data import (
     LOCAL_STORE_PATH,
     ResourceAcquisitionError,
     get_scoreset_metadata,

@@ -20,14 +20,14 @@ _logger = logging.getLogger(__name__)
     help="Enable debug logging",
 )
 @click.option(
-    "--cache_align",
+    "--cache_alignment",
     "-c",
     is_flag=True,
     show_default=True,
     default=False,
     help="Enable caching for alignment results. Mostly useful for development/debugging.",
 )
-def cli(urn: str, debug: bool, cache_align: bool) -> None:
+def cli(urn: str, debug: bool, cache_alignment: bool) -> None:
     """Get VRS mapping on preferred transcript for URN.
 
     For example:
@@ -47,7 +47,7 @@ def cli(urn: str, debug: bool, cache_align: bool) -> None:
         force=True,
     )
     _logger.debug("debug logging enabled")
-    asyncio.run(map_scoreset_urn(urn, silent=False, cache_align=cache_align))
+    asyncio.run(map_scoreset_urn(urn, silent=False, cache_align=cache_alignment))
 
 
 if __name__ == "__main__":

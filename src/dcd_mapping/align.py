@@ -6,7 +6,9 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Generator, List, Optional
+from urllib.parse import urlparse
 
+import requests
 from Bio.SearchIO import HSP
 from Bio.SearchIO import read as read_blat
 from Bio.SearchIO._model import Hit, QueryResult
@@ -14,10 +16,11 @@ from cool_seq_tool.schemas import Strand
 from gene.database.database import click
 
 from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
-from dcd_mapping.resources import (
+from dcd_mapping.resource_utils import (
     LOCAL_STORE_PATH,
+    ResourceAcquisitionError,
     get_mapping_tmp_dir,
-    get_ref_genome_file,
+    http_download,
 )
 from dcd_mapping.schemas import (
     AlignmentResult,
@@ -27,7 +30,7 @@ from dcd_mapping.schemas import (
     TargetSequenceType,
 )
 
-__all__ = ["align"]
+__all__ = ["align", "AlignmentError"]
 
 _logger = logging.getLogger(__name__)
 
@@ -64,6 +67,33 @@ def _build_query_file(scoreset_metadata: ScoresetMetadata) -> Generator[Path, An
     query_file.unlink()
 
 
+def _get_ref_genome_file(
+    silent: bool = True, dcd_mapping_dir: Optional[Path] = None
+) -> Path:
+    """Acquire reference genome file in 2bit format from UCSC.
+
+    :param build: genome build to acquire
+    :param silent: if True, suppress console output
+    :param dcd_mapping_dir: optionally declare genome file storage location
+    :return: path to acquired file
+    :raise ResourceAcquisitionError: if unable to acquire file.
+    """
+    url = "https://hgdownload.cse.ucsc.edu/goldenpath/hg38/bigZips/hg38.2bit"
+    parsed_url = urlparse(url)
+    if not dcd_mapping_dir:
+        dcd_mapping_dir = LOCAL_STORE_PATH
+    genome_file = dcd_mapping_dir / Path(parsed_url.path).name
+    # this file shouldn't change, so no need to think about more advanced caching
+    if not genome_file.exists():
+        try:
+            http_download(url, genome_file, silent)
+        except requests.HTTPError as e:
+            msg = f"HTTPError when fetching reference genome file from {url}"
+            _logger.error(msg)
+            raise ResourceAcquisitionError(msg) from e
+    return genome_file
+
+
 def _run_blat(
     target_args: str, query_file: Path, out_file: str, silent: bool
 ) -> subprocess.CompletedProcess:
@@ -82,7 +112,7 @@ def _run_blat(
     :param silent: if True, suppress all console output
     :return: process result
     """
-    reference_genome_file = get_ref_genome_file(silent=silent)
+    reference_genome_file = _get_ref_genome_file(silent=silent)
     bin_name = os.environ["BLAT_BIN_PATH"] if "BLAT_BIN_PATH" in os.environ else "blat"  # noqa: SIM401
     command = f"{bin_name} {reference_genome_file} {target_args} -minScore=20 {query_file} {out_file}"
     _logger.debug("Running BLAT command: %s", command)
@@ -93,6 +123,12 @@ def _run_blat(
         stderr=subprocess.PIPE,
     )
     _logger.debug("BLAT command finished with result %s", result.returncode)
+    if result.returncode == 127:
+        if bin_name == "blat":
+            msg = "Expected to find blat binary in current working directory. Either add an executable blat binary there or provide an alternate binary location with env var BLAT_BIN_PATH."
+        else:
+            msg = f"Expected to find blat binary at file location {bin_name}, but failed to do so. Try checking that this path is correct."
+        raise AlignmentError(msg)
     if result.returncode != 0:
         msg = f"BLAT process returned error code {result.returncode}: {target_args} {query_file} {out_file}"
         raise AlignmentError(msg)

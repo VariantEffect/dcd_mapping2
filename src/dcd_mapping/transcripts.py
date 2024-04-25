@@ -1,11 +1,4 @@
-"""Select best reference sequence.
-
-Outstanding questions/confusion
--------------------------------
-* ``urn:mavedb:00000097-n-1``: unable to find any matching transcripts
-* Lots of scoresets (esp. 2023-) giving index errors in offset calculation
-* Remove MANE sorting once upstream sorting is confirmed
-"""
+"""Select best transcript match for target sequence."""
 import logging
 import re
 from typing import List, Optional
@@ -37,7 +30,7 @@ from dcd_mapping.schemas import (
     TxSelectResult,
 )
 
-__all__ = ["select_transcript"]
+__all__ = ["select_transcript", "TxSelectError"]
 
 _logger = logging.getLogger(__name__)
 
