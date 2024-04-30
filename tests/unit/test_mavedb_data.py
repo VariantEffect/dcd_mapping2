@@ -7,7 +7,11 @@ from typing import Dict
 import pytest
 import requests_mock
 
-from dcd_mapping.resources import get_scoreset_metadata, get_scoreset_records
+from dcd_mapping.mavedb_data import (
+    get_raw_scoreset_metadata,
+    get_scoreset_metadata,
+    get_scoreset_records,
+)
 
 
 @pytest.fixture()
@@ -27,6 +31,25 @@ def scoreset_metadata_response(fixture_data_dir: Path):
     """Provide response that client receives from MaveDB API"""
     with (fixture_data_dir / "scoreset_metadata_response.json").open() as f:
         return json.load(f)
+
+
+def test_get_raw_scoreset_metadata(
+    resources_data_dir: Path, scoreset_metadata_response: Dict
+):
+    urn = "urn:mavedb:00000093-a-1"
+    with requests_mock.Mocker() as m:
+        m.get(
+            f"https://api.mavedb.org/api/v1/score-sets/{urn}",
+            json=scoreset_metadata_response[urn],
+        )
+        raw_metadata = get_raw_scoreset_metadata(
+            urn, dcd_mapping_dir=resources_data_dir
+        )
+        assert (
+            raw_metadata.get("title")
+            == "BASE_ACMG quantities derived from the RING domain M2H functional assay"
+        )
+        assert raw_metadata.get("private") is False
 
 
 def test_get_scoreset_metadata(
