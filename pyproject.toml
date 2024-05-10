@@ -24,6 +24,13 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 requires-python = ">=3.11"
+
+# Requirement for gene_normalizer==0.3.0-dev2 is to address
+# an issue with connecting to postgres: see
+# https://github.com/cancervariants/gene-normalization/releases
+# https://github.com/cancervariants/gene-normalization/pull/333
+# and clean up deps once a new release is made.
+
 dependencies = [
     "requests",
     "biopython",
@@ -31,7 +38,7 @@ dependencies = [
     "click",
     "cool-seq-tool>=0.4.0.dev1",
     "ga4gh.vrs~=2.0.0-a6",
-    "gene_normalizer[etl,pg] @ git+https://github.com/nickzoic/gene-normalization/@psql-error-messages",
+    "gene_normalizer[etl,pg]==0.3.0-dev2",
     "pydantic>=2",
     "python-dotenv",
     "setuptools>=68.0",  # tmp -- ensure 3.12 compatibility
