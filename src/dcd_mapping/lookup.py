@@ -392,8 +392,9 @@ def check_seqrepo() -> None:
     sr = get_seqrepo()
     if not sr.sr["NC_000001.11"][780000:780020]:
         raise DataLookupError
+    conn = sr.sr.aliases._db
     try:
-        conn = sr.sr.aliases._db
+        #conn = sr.sr.aliases._db
         cursor = conn.cursor()
         cursor.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY)")
         cursor.execute("INSERT INTO test_table (id) VALUES (1)")
@@ -401,8 +402,9 @@ def check_seqrepo() -> None:
         cursor.execute("DELETE FROM test_table WHERE id = 1")
         cursor.execute("DROP TABLE test_table")
         conn.commit()
-        conn.close()
+        #conn.close()
     except sqlite3.Error as e:
+        conn.close()
         _logger.error("SeqRepo sequences DB isn't writeable.")
         raise DataLookupError from e
 
