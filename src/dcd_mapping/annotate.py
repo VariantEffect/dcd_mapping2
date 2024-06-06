@@ -504,7 +504,7 @@ def save_mapped_output_json(
             m.post_mapped_2_0 = None
 
     if not output_path:
-        now = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
         output_path = LOCAL_STORE_PATH / f"{urn}_mapping_{now}.json"
 
     _logger.info("Saving mapping output to %s", output_path)
