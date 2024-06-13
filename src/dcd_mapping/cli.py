@@ -1,4 +1,5 @@
 """Provide command-line interface for accessing mapping functions."""
+
 import asyncio
 import logging
 from pathlib import Path
@@ -38,11 +39,18 @@ _logger = logging.getLogger(__name__)
     default=False,
     help="Include VRS 2.0 mappings",
 )
+@click.option(
+    "--prefer_genomic",
+    is_flag=True,
+    default=False,
+    help="If mapped variants are available relative to a genomic sequence, only output the genomic mappings",
+)
 def cli(
     urn: str,
     debug: bool,
     output: Path | None,
     include_vrs_2: bool,
+    prefer_genomic: bool,
 ) -> None:
     """Get VRS mapping on preferred transcript for URN.
 
@@ -63,7 +71,9 @@ def cli(
     )
     _logger.debug("debug logging enabled")
     try:
-        asyncio.run(map_scoreset_urn(urn, output, include_vrs_2, silent=False))
+        asyncio.run(
+            map_scoreset_urn(urn, output, include_vrs_2, prefer_genomic, silent=False)
+        )
     except (
         LookupError,
         AlignmentError,

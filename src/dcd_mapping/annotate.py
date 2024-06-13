@@ -1,4 +1,5 @@
 """Annotate MaveDB score set metadata with mapped scores."""
+
 import datetime
 import json
 import logging
@@ -464,6 +465,7 @@ def save_mapped_output_json(
     align_result: AlignmentResult,
     tx_output: TxSelectResult | None,
     include_vrs_2: bool = False,
+    preferred_layer_only: bool = False,
     output_path: Path | None = None,
 ) -> Path:
     """Save mapping output for a score set in a JSON file
@@ -477,24 +479,47 @@ def save_mapped_output_json(
         <dcd_mapping_data_dir>/urn:mavedb:00000XXX-X-X_mapping_<ISO8601 datetime>.json
     :return: output location
     """
-    preferred_layer = _set_scoreset_layer(urn, mappings)
     metadata = get_raw_scoreset_metadata(urn)
-    computed_reference_sequence = _get_computed_reference_sequence(
-        urn, preferred_layer, tx_output
-    )
-    mapped_reference_sequence = _get_mapped_reference_sequence(
-        preferred_layer, tx_output, align_result
-    )
+    if preferred_layer_only:
+        preferred_layers = {
+            _set_scoreset_layer(urn, mappings),
+        }
+    else:
+        preferred_layers = {mapping.annotation_layer for mapping in mappings}
+
+    reference_sequences = {
+        layer: {"computed_reference_sequence": None, "mapped_reference_sequence": None}
+        for layer in AnnotationLayer
+    }
+
+    for layer in preferred_layers:
+        reference_sequences[layer][
+            "computed_reference_sequence"
+        ] = _get_computed_reference_sequence(urn, layer, tx_output)
+        reference_sequences[layer][
+            "mapped_reference_sequence"
+        ] = _get_mapped_reference_sequence(layer, tx_output, align_result)
+
     mapped_scores: list[ScoreAnnotation] = []
     for m in mappings:
-        if m.annotation_layer == preferred_layer:
+        if m.annotation_layer in preferred_layers:
             # drop annotation layer from mapping object
             mapped_scores.append(ScoreAnnotation(**m.model_dump()))
 
     output = ScoresetMapping(
         metadata=metadata,
-        computed_reference_sequence=computed_reference_sequence,
-        mapped_reference_sequence=mapped_reference_sequence,
+        computed_protein_reference_sequence=reference_sequences[
+            AnnotationLayer.PROTEIN
+        ]["computed_reference_sequence"],
+        mapped_protein_reference_sequence=reference_sequences[AnnotationLayer.PROTEIN][
+            "mapped_reference_sequence"
+        ],
+        computed_genomic_reference_sequence=reference_sequences[
+            AnnotationLayer.GENOMIC
+        ]["computed_reference_sequence"],
+        mapped_genomic_reference_sequence=reference_sequences[AnnotationLayer.GENOMIC][
+            "mapped_reference_sequence"
+        ],
         mapped_scores=mapped_scores,
     )
 

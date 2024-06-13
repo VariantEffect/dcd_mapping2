@@ -180,6 +180,8 @@ class ScoresetMapping(BaseModel):
     """Provide all mapped scores for a scoreset."""
 
     metadata: Any  # TODO get exact MaveDB metadata structure?
-    computed_reference_sequence: ComputedReferenceSequence
-    mapped_reference_sequence: MappedReferenceSequence
+    computed_protein_reference_sequence: ComputedReferenceSequence | None
+    mapped_protein_reference_sequence: MappedReferenceSequence | None
+    computed_genomic_reference_sequence: ComputedReferenceSequence | None
+    mapped_genomic_reference_sequence: MappedReferenceSequence | None
     mapped_scores: list[ScoreAnnotation]

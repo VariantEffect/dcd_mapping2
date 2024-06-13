@@ -1,7 +1,6 @@
 """Map transcripts to VRS objects."""
 
 import logging
-import re
 from collections.abc import Iterable
 from itertools import cycle
 
@@ -18,7 +17,6 @@ from ga4gh.vrs._internal.models import (
     SequenceString,
 )
 from ga4gh.vrs.normalize import normalize
-from mavehgvs import patterns
 from mavehgvs.util import parse_variant_strings
 from mavehgvs.variant import Variant
 
@@ -105,11 +103,6 @@ def _create_pre_mapped_hgvs_strings(
             msg = f"Variant could not be parsed by mavehgvs: {error}"
             raise ValueError(msg)
 
-        # TODO protein fs hgvs strings are not supported because they can't be handled by vrs allele translator
-        if re.search(patterns.protein.pro_fs, str(variant)):
-            msg = f"Pre-map VRS translation not supported for fs variants denoted with protein hgvs strings. Offending variant was: {variant}"
-            raise NotImplementedError(msg)
-
         # Ideally we would create an HGVS string namespaced to GA4GH. The line below
         # creates such a string, but it is not able to be parsed by the GA4GH VRS translator.
         # hgvs_strings.append('ga4gh:' + sequence_id + ':' + str(variant))
@@ -163,11 +156,6 @@ def _create_post_mapped_hgvs_strings(
         if error is not None:
             msg = f"Variant could not be parsed by mavehgvs: {error}"
             raise ValueError(msg)
-
-        # TODO protein fs hgvs strings are not supported because they can't be handled by vrs allele translator
-        if re.search(patterns.protein.pro_fs, str(variant)):
-            msg = f"Post-map VRS translation not supported for fs variants denoted with protein hgvs strings. Offending variant was: {variant}"
-            raise NotImplementedError(msg)
 
         if layer is AnnotationLayer.PROTEIN:
             assert tx  # noqa: S101. mypy help
@@ -586,12 +574,7 @@ def _construct_vrs_allele(
 ) -> Allele | Haplotype:
     alleles: list[Allele] = []
     for hgvs_string in hgvs_strings:
-        # Generate VRS Allele structure. Set VA digests and SL digests to None
         allele = translate_hgvs_to_vrs(hgvs_string)
-        # allele.id = None
-        # allele.digest = None
-        # allele.location.id = None
-        # allele.location.digest = None
 
         if pre_map:
             if sequence_id is None:
