@@ -271,7 +271,7 @@ def _adjust_genomic_variant_to_ref(
         # variant._sequences can be a string or an iterable
         if isinstance(variant._sequences, str):
             variant._sequences = str(Seq(variant._sequences).reverse_complement())
-        else:
+        elif variant._sequences is not None:
             revcomp_sequences_list = []
             for sequence in variant._sequences:
                 revcomp_sequences_list.append(str(Seq(sequence).reverse_complement()))
