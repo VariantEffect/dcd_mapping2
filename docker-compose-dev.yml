@@ -34,6 +34,21 @@ services:
     volumes:
       - vrs-mapping-seqrepo-dev:/usr/local/share/seqrepo
 
+  api:
+    build:
+      context: .
+    command: bash -c "uvicorn api.server_main:app --host 0.0.0.0 --port 8000 --reload"
+    depends_on:
+      - db
+      - seqrepo
+    env_file:
+      - settings/.env.dev
+    ports:
+      - "8004:8000"
+    volumes:
+      - .:/usr/src/app
+      - vrs-mapping-seqrepo-dev:/usr/local/share/seqrepo
+
 volumes:
   vrs-mapping-data-dev:
   vrs-mapping-seqrepo-dev:

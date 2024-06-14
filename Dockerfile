@@ -46,6 +46,17 @@ RUN pip install -e '.[dev,tests]'
 RUN pip install -U polars-lts-cpu
 # install gene normalizer with pg dependencies. TODO: can the pg dependencies be specified in pyproject.toml?
 #RUN pip install 'gene-normalizer[pg]'
+
+# not working, needs to happen after db volume is mounted
+# ENV GENE_NORM_DB_URL=postgres://postgres:postgres@db:5432/gene_normalizer
+# RUN echo "y" | gene_norm_update_remote
+
 ENV PYTHONUNBUFFERED 1
 
 ENV PYTHONPATH "${PYTHONPATH}:/usr/src/app/src"
+
+# Tell Docker that we will listen on port 8000.
+EXPOSE 8000
+
+# At container startup, run the application using uvicorn.
+CMD ["uvicorn", "api.server_main:app", "--host", "0.0.0.0", "--port", "8000"]
