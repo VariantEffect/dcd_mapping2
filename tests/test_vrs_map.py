@@ -100,37 +100,11 @@ def test_2_a_2(
                 "ga4gh:VA.aF9h1d9DvWWGlkhRAbdz1Ni9DQUOXIhL",
             ],
         },
-        ("urn:mavedb:00000002-a-2#2679", AnnotationLayer.PROTEIN): {
-            "pre_mapped": "ga4gh:VA.5Jf_a17Q6ySEpDvHr1FR1kmE6L1RWpGK",
-            "post_mapped": "ga4gh:VA.PWfyP7Ktd3L2IT564-h9FVyqv9NvnnEJ",
-        },
-        ("urn:mavedb:00000002-a-2#3096", AnnotationLayer.PROTEIN): {
-            "pre_mapped": [
-                "ga4gh:VA.A4nh1CUx6gUy0pCePT9RxZQDrY9BzEoa",
-                "ga4gh:VA.H6BdObvEycBGJPqnASVYOPwf9bHboT6w",
-            ],
-            "post_mapped": [
-                "ga4gh:VA.PLOa58Eo06IGBGQbrsOPBpXcuw4mDAFH",
-                "ga4gh:VA.xi7XqR9LSoq0n8B3W2ufPEg12MqEZ3jD",
-            ],
-        },
-        ("urn:mavedb:00000002-a-2#26248", AnnotationLayer.PROTEIN): {
-            "pre_mapped": [
-                "ga4gh:VA.M_mxkauLTyizIeufKNmOk9vplL9N8Svn",
-                "ga4gh:VA.krtCaV7JjlvM4esBW0XzUnnsQgixnmyV",
-                "ga4gh:VA.H6BdObvEycBGJPqnASVYOPwf9bHboT6w",
-            ],
-            "post_mapped": [
-                "ga4gh:VA.Z1CFy03R9dyAEfWj_G4dsyRHkj7dbJto",
-                "ga4gh:VA.sr_W-vpBZbM1ItYhaqFw3m_O08EEqtqg",
-                "ga4gh:VA.xi7XqR9LSoq0n8B3W2ufPEg12MqEZ3jD",
-            ],
-        },
     }
 
     mappings = vrs_map(metadata, align_result, records, transcript=tx_result)
     assert mappings is not None
-    assert len(mappings) == 4
+    assert len(mappings) == 1
 
     for m in mappings:
         _assert_correct_vrs_map(m, expected_mappings_data)

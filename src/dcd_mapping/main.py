@@ -1,4 +1,5 @@
 """Provide core MaveDB mapping methods."""
+
 import logging
 import os
 import subprocess
@@ -123,6 +124,7 @@ async def map_scoreset(
     records: list[ScoreRow],
     output_path: Path | None = None,
     include_vrs_2: bool = False,
+    prefer_genomic: bool = False,
     silent: bool = True,
 ) -> None:
     """Given information about a MAVE experiment, map to VRS and save output as JSON.
@@ -182,6 +184,7 @@ async def map_scoreset(
         alignment_result,
         transcript,
         include_vrs_2,
+        prefer_genomic,
         output_path,
     )
     _emit_info(f"Annotated scores saved to: {final_output}.", silent)
@@ -191,6 +194,7 @@ async def map_scoreset_urn(
     urn: str,
     output_path: Path | None = None,
     include_vrs_2: bool = False,
+    prefer_genomic: bool = False,
     silent: bool = True,
 ) -> None:
     """Perform end-to-end mapping for a scoreset.
@@ -208,4 +212,6 @@ async def map_scoreset_urn(
         _logger.critical(msg)
         click.echo(f"Error: {msg}")
         raise e
-    await map_scoreset(metadata, records, output_path, include_vrs_2, silent)
+    await map_scoreset(
+        metadata, records, output_path, include_vrs_2, prefer_genomic, silent
+    )

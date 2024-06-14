@@ -161,6 +161,7 @@ cython_debug/
 .idea/
 
 *.pickle
+.vscode
 
 # mapping data/output
 notebooks/analysis/analysis_files

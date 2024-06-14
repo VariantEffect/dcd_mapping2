@@ -154,8 +154,8 @@ def _get_blat_output(metadata: ScoresetMetadata, silent: bool) -> QueryResult:
     :return: BLAT query result
     :raise AlignmentError: if BLAT subprocess returns error code
     """
-    with tempfile.NamedTemporaryFile() as query_file:
-        query_file = _build_query_file(metadata, Path(query_file.name))
+    with tempfile.NamedTemporaryFile() as tmp_file:
+        query_file = _build_query_file(metadata, Path(tmp_file.name))
         if metadata.target_sequence_type == TargetSequenceType.PROTEIN:
             target_args = "-q=prot -t=dnax"
         else:

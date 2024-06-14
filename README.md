@@ -44,6 +44,14 @@ Use `dcd-map --help` to see other available options.
 
 Notebooks for manuscript data analysis and figure generation are provided within `notebooks/analysis`. See [`notebooks/analysis/README.md`](notebooks/analysis/README.md) for more information.
 
+Following installation instructions for [CoolSeqTool](https://coolseqtool.readthedocs.io/latest/install.html) and [Gene Normalizer](https://gene-normalizer.readthedocs.io/latest/install.html) should take care of the external data dependencies.
+
+Note that Gene Normalizer's `pg` dependency group must be installed to make use of the PostgreSQL-based backend:
+
+```shell
+python3 -m pip install 'gene-normalizer[pg]'
+```
+
 ## Development
 
 Clone the repo

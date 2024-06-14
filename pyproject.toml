@@ -23,7 +23,14 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
+
+# Requirement for gene_normalizer==0.3.0-dev2 is to address
+# an issue with connecting to postgres: see
+# https://github.com/cancervariants/gene-normalization/releases
+# https://github.com/cancervariants/gene-normalization/pull/333
+# and clean up deps once a new release is made.
+
 dependencies = [
     "requests",
     "biopython",
@@ -31,11 +38,11 @@ dependencies = [
     "click",
     "cool-seq-tool>=0.4.0.dev1",
     "ga4gh.vrs~=2.0.0-a6",
-    # probably easiest to just include pg dependency group even if it's not always necessary
-    "gene-normalizer[pg]>=0.3.0-dev1",
+    "gene_normalizer[etl,pg]==0.3.0-dev2",
     "pydantic>=2",
     "python-dotenv",
     "setuptools>=68.0",  # tmp -- ensure 3.12 compatibility
+    "mavehgvs==0.6.1"
 ]
 dynamic = ["version"]
 

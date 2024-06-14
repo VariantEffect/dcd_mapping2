@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from cool_seq_tool.schemas import AnnotationLayer, Strand, TranscriptPriority
 from ga4gh.vrs._internal.models import Allele, Haplotype
-from pydantic import BaseModel, StrictBool, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 
 from dcd_mapping import vrs_v1_schemas
 
@@ -142,6 +142,8 @@ class MappedScore(BaseModel):
     This model defines the output of the VRS mapping phase of the pipeline.
     """
 
+    model_config = ConfigDict(use_enum_values=True)
+
     accession_id: StrictStr
     annotation_layer: AnnotationLayer
     score: str | None
@@ -178,6 +180,8 @@ class ScoresetMapping(BaseModel):
     """Provide all mapped scores for a scoreset."""
 
     metadata: Any  # TODO get exact MaveDB metadata structure?
-    computed_reference_sequence: ComputedReferenceSequence
-    mapped_reference_sequence: MappedReferenceSequence
+    computed_protein_reference_sequence: ComputedReferenceSequence | None
+    mapped_protein_reference_sequence: MappedReferenceSequence | None
+    computed_genomic_reference_sequence: ComputedReferenceSequence | None
+    mapped_genomic_reference_sequence: MappedReferenceSequence | None
     mapped_scores: list[ScoreAnnotation]
