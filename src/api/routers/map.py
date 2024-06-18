@@ -5,6 +5,7 @@ from dcd_mapping.align import align
 from dcd_mapping.annotate import (
     _get_computed_reference_sequence,
     _get_mapped_reference_sequence,
+    _set_scoreset_layer,
     annotate,
 )
 from dcd_mapping.mavedb_data import (
@@ -36,7 +37,11 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
     vrs_results = annotate(vrs_results, transcript, metadata)
 
     raw_metadata = get_raw_scoreset_metadata(urn)
-    preferred_layers = {mapping.annotation_layer for mapping in vrs_results}
+    # TODO change vrs map back to always use only the preferred layer
+    #preferred_layers = {mapping.annotation_layer for mapping in vrs_results}
+    preferred_layers = {
+        _set_scoreset_layer(urn, vrs_results),
+    }
 
     reference_sequences = {
         layer: {"computed_reference_sequence": None, "mapped_reference_sequence": None}
