@@ -17,7 +17,10 @@ from dcd_mapping.schemas import ScoreAnnotation, ScoresetMapping
 from dcd_mapping.transcripts import select_transcript
 from dcd_mapping.vrs_map import vrs_map
 
-router = APIRouter(prefix="/api/v1", tags=["mappings"], responses={404: {"description": "Not found"}})
+router = APIRouter(
+    prefix="/api/v1", tags=["mappings"], responses={404: {"description": "Not found"}}
+)
+
 
 @router.post(path="/map/{urn}", status_code=200, response_model=ScoresetMapping)
 async def map_scoreset(urn: str) -> ScoresetMapping:
@@ -38,7 +41,7 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
 
     raw_metadata = get_raw_scoreset_metadata(urn)
     # TODO change vrs map back to always use only the preferred layer
-    #preferred_layers = {mapping.annotation_layer for mapping in vrs_results}
+    # preferred_layers = {mapping.annotation_layer for mapping in vrs_results}
     preferred_layers = {
         _set_scoreset_layer(urn, vrs_results),
     }
