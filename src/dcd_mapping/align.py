@@ -12,6 +12,7 @@ from Bio.SearchIO import read as read_blat
 from Bio.SearchIO._model import Hit, QueryResult
 from cool_seq_tool.schemas import Strand
 
+from dcd_mapping.log_utilities import _emit_info
 from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
 from dcd_mapping.mavedb_data import (
     LOCAL_STORE_PATH,
@@ -303,3 +304,95 @@ def align(scoreset_metadata: ScoresetMetadata, silent: bool = True) -> Alignment
     """
     blat_output = _get_blat_output(scoreset_metadata, silent)
     return _get_best_match(blat_output, scoreset_metadata)
+
+
+def fetch_alignment(metadata: ScoresetMetadata, silent: bool) -> AlignmentResult:
+    url = f"https://cdot.cc/transcript/{metadata.target_accession}"
+    r = requests.get(url, timeout=30)
+
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        msg = f"Received HTTPError from {url} for scoreset {metadata.urn}"
+        _logger.error(msg)
+        raise ResourceAcquisitionError(msg) from e
+
+    cdot_mapping = r.json()
+    return parse_cdot_mapping(cdot_mapping, silent)
+
+
+def parse_cdot_mapping(cdot_mapping: dict, silent: bool) -> AlignmentResult:
+    # blat psl & AlignmentResult: 0-based, start inclusive, stop exclusive
+    # cdot: 1-based, start inclusive, stop inclusive
+    # so, to "translate" cdot ranges to AlignmentResult-style ranges:
+    # subtract 1 from start and end to go from 1-based to 0-based coord,
+    # and then add 1 to the stop to go from inclusive to exclusive
+    # so just subtract 1 from start and do nothing to end
+
+    grch38 = cdot_mapping.get("genome_builds", {}).get("GRCh38")
+    grch37 = cdot_mapping.get("genome_builds", {}).get("GRCh37")
+    mapping = grch38 if grch38 else grch37
+    if mapping is None:
+        msg = f"Cdot transcript results for transcript {cdot_mapping.get('id')} do not include GRCh37 or GRCh38 mapping"
+        _emit_info(msg, silent, logging.ERROR)
+        raise ValueError
+
+    chrom = mapping["contig"]
+    strand = Strand.POSITIVE if mapping["strand"] == "+" else Strand.NEGATIVE
+    query_subranges = []
+    hit_subranges = []
+    for exon in mapping["exons"]:
+        query_subranges.append(SequenceRange(start=exon[3] - 1, end=exon[4]))
+        hit_subranges.append(SequenceRange(start=exon[0] - 1, end=exon[1]))
+
+    if strand == Strand.POSITIVE:
+        query_range = SequenceRange(
+            start=query_subranges[0].start, end=query_subranges[-1].end
+        )
+        hit_range = SequenceRange(
+            start=hit_subranges[0].start, end=hit_subranges[-1].end
+        )
+    else:
+        query_range = SequenceRange(
+            start=query_subranges[-1].start, end=query_subranges[0].end
+        )
+        hit_range = SequenceRange(
+            start=hit_subranges[-1].start, end=hit_subranges[0].end
+        )
+
+    return AlignmentResult(
+        chrom=chrom,
+        strand=strand,
+        coverage=-1,  # required AlignmentResult field, but not relevant for accession mapping
+        ident_pct=-1,  # required AlignmentResult field, but not relevant for accession mapping
+        query_range=query_range,
+        query_subranges=query_subranges,
+        hit_range=hit_range,
+        hit_subranges=hit_subranges,
+    )
+
+
+def build_alignment_result(metadata: ScoresetMetadata, silent: bool) -> AlignmentResult:
+    if metadata.target_sequence:
+        _emit_info(f"Performing alignment for {metadata.urn}...", silent)
+        try:
+            alignment_result = align(metadata, silent)
+        except BlatNotFoundError as e:
+            msg = "BLAT command appears missing. Ensure it is available on the $PATH or use the environment variable BLAT_BIN_PATH to point to it. See instructions in the README prerequisites section for more."
+            _emit_info(msg, silent, logging.ERROR)
+            raise e
+        except AlignmentError as e:
+            _emit_info(
+                f"Alignment failed for scoreset  {metadata.urn} {e}",
+                silent,
+                logging.ERROR,
+            )
+            raise e
+        _emit_info("Alignment complete.", silent)
+    else:
+        # TODO for now not handling chromosome accessions separately
+        _emit_info(f"Fetching alignment information for {metadata.urn}...", silent)
+        alignment_result = fetch_alignment(metadata, silent)
+        _emit_info("Completed fetching alignment.", silent)
+
+    return alignment_result

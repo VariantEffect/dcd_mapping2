@@ -6,6 +6,7 @@ from itertools import cycle
 
 import click
 from Bio.Seq import Seq
+from bioutils.accessions import infer_namespace
 from cool_seq_tool.schemas import AnnotationLayer, Strand
 from ga4gh.core import ga4gh_identify, sha512t24u
 from ga4gh.vrs._internal.models import (
@@ -21,6 +22,7 @@ from mavehgvs.util import parse_variant_strings
 from mavehgvs.variant import Variant
 
 from dcd_mapping.lookup import (
+    cdot_rest,
     get_chromosome_identifier,
     get_seqrepo,
     translate_hgvs_to_vrs,
@@ -73,6 +75,7 @@ def _create_pre_mapped_hgvs_strings(
     layer: AnnotationLayer,
     tx: TxSelectResult | None = None,
     alignment: AlignmentResult | None = None,
+    accession_id: str | None = None,
 ) -> list[str]:
     """Generate a list of (pre-mapped) HGVS strings from one long string containing many valid HGVS substrings
 
@@ -88,10 +91,10 @@ def _create_pre_mapped_hgvs_strings(
     :return: A list of HGVS strings prior to being mapped to the `tx` or `alignment`
     """
     if layer is AnnotationLayer.PROTEIN and tx is None:
-        msg = f"Transcript result must be provided for {layer} annotations (Transcript was `{tx}`)."
+        msg = f"Transcript result must be provided for {layer} annotations."
         raise ValueError(msg)
-    if layer is AnnotationLayer.GENOMIC and alignment is None:
-        msg = f"Alignment result must be provided for {layer} annotations (Alignment was `{alignment}`)."
+    if layer is AnnotationLayer.GENOMIC and alignment is None and accession_id is None:
+        msg = f"Alignment result or accession id must be provided for {layer} annotations."
         raise ValueError(msg)
 
     raw_variant_strings = _parse_raw_variant_str(raw_description)
@@ -103,10 +106,12 @@ def _create_pre_mapped_hgvs_strings(
             msg = f"Variant could not be parsed by mavehgvs: {error}"
             raise ValueError(msg)
 
+        if accession_id:
+            hgvs_strings.append(accession_id + ":" + str(variant))
         # Ideally we would create an HGVS string namespaced to GA4GH. The line below
         # creates such a string, but it is not able to be parsed by the GA4GH VRS translator.
         # hgvs_strings.append('ga4gh:' + sequence_id + ':' + str(variant))
-        if layer is AnnotationLayer.PROTEIN:
+        elif layer is AnnotationLayer.PROTEIN:
             assert tx  # noqa: S101. mypy help
             hgvs_strings.append(tx.np + ":" + str(variant))
         elif layer is AnnotationLayer.GENOMIC:
@@ -363,27 +368,56 @@ def _map_protein_coding_pro(
 def _map_genomic(
     row: ScoreRow,
     sequence_id: str,
-    align_result: AlignmentResult,
+    align_result: AlignmentResult | None,
 ) -> MappedScore | None:
     """Construct VRS object mapping for ``hgvs_nt`` variant column entry
 
     These arguments are a little lazy and could be pruned down later
 
     :param row: A row of output from a MaveDB score set
-    :param sequence_id: The GA4GH accession for the provided sequence
+    :param sequence_id: The GA4GH accession (if target-based score set), or RefSeq/Ensembl accession associated with score set
     :param align_result: The transcript selection information for a score set
     :return: VRS mapping object if mapping succeeds
     """
-    pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
-        row.hgvs_nt,
-        AnnotationLayer.GENOMIC,
-        alignment=align_result,
-    )
-    post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
-        row.hgvs_nt,
-        AnnotationLayer.GENOMIC,
-        alignment=align_result,
-    )
+    namespace = infer_namespace(sequence_id).lower()
+    if align_result is None:
+        # for contig accession based score sets, no mapping is performed,
+        # so pre- and post-mapped alleles are the same
+        pre_mapped_hgvs_strings = (
+            post_mapped_hgvs_strings
+        ) = _create_pre_mapped_hgvs_strings(
+            row.hgvs_nt,
+            AnnotationLayer.GENOMIC,
+            accession_id=sequence_id,
+        )
+
+    elif namespace in ("refseq", "ncbi", "ensembl"):
+        # nm/enst way
+        pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
+            row.hgvs_nt,
+            AnnotationLayer.GENOMIC,
+            accession_id=sequence_id,
+        )
+        post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
+            row.hgvs_nt,
+            AnnotationLayer.GENOMIC,
+            alignment=align_result,
+        )
+    elif namespace == "ga4gh":
+        # target seq way
+        pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
+            row.hgvs_nt,
+            AnnotationLayer.GENOMIC,
+            alignment=align_result,
+        )
+        post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
+            row.hgvs_nt,
+            AnnotationLayer.GENOMIC,
+            alignment=align_result,
+        )
+    else:
+        msg = f"Namespace not supported: {namespace}"
+        raise ValueError(msg)
 
     pre_mapped_genomic = _construct_vrs_allele(
         pre_mapped_hgvs_strings,
@@ -519,6 +553,53 @@ def _map_regulatory_noncoding(
     """
     variations: list[MappedScore] = []
     sequence_id = store_sequence(metadata.target_sequence)
+
+    for row in records:
+        if (
+            row.hgvs_nt in {"_wt", "_sy", "="}
+            or "fs" in row.hgvs_nt
+            or len(row.hgvs_nt) == 3
+        ):
+            _logger.warning(
+                "Can't process variant syntax %s for %s", row.hgvs_nt, metadata.urn
+            )
+            continue
+
+        hgvs_nt_mappings = _map_genomic(row, sequence_id, align_result)
+
+        if hgvs_nt_mappings:
+            variations.append(hgvs_nt_mappings)
+        else:
+            _logger.warning(
+                "Encountered apparently invalid genomic variants in %s: %s",
+                row.accession,
+                row.hgvs_nt,
+            )
+
+    return variations
+
+
+def store_accession(
+    accession_id: str,
+) -> None:
+    namespace = infer_namespace(accession_id)
+    alias_dict_list = [{"namespace": namespace, "alias": accession_id}]
+    cd = cdot_rest()
+    sequence = cd.get_seq(accession_id)
+    sr = get_seqrepo()
+    sr.sr.store(sequence, alias_dict_list)
+
+
+def _map_accession(
+    metadata: ScoresetMetadata,
+    records: list[ScoreRow],
+    align_result: AlignmentResult,
+) -> list[MappedScore]:
+    variations: list[MappedScore] = []
+    # see if accession is in seqrepo
+    # if not, get seq from cdot and add to seqrepo
+    sequence_id = metadata.target_accession
+    store_accession(sequence_id)
 
     for row in records:
         if (

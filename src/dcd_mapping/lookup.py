@@ -16,6 +16,7 @@ import polars as pl
 import requests
 from biocommons.seqrepo import SeqRepo
 from biocommons.seqrepo.seqaliasdb.seqaliasdb import sqlite3
+from cdot.hgvs.dataproviders import ChainedSeqFetcher, FastaSeqFetcher, RESTDataProvider
 from cool_seq_tool.app import (
     LRG_REFSEQGENE_PATH,
     MANE_SUMMARY_PATH,
@@ -584,6 +585,23 @@ def get_mane_transcripts(transcripts: list[str]) -> list[ManeDescription]:
         )
     mane_data.sort(key=_sort_mane_result)
     return mane_data
+
+
+# ---------------------------------- Cdot ---------------------------------- #
+
+
+GENOMIC_FASTA_FILES = [
+    "/home/.local/share/dcd_mapping/GCF_000001405.39_GRCh38.p13_genomic.fna.gz",
+    "/home/.local/share/dcd_mapping/GCF_000001405.25_GRCh37.p13_genomic.fna.gz",
+]
+
+
+def seqfetcher() -> ChainedSeqFetcher:
+    return ChainedSeqFetcher(*[FastaSeqFetcher(file) for file in GENOMIC_FASTA_FILES])
+
+
+def cdot_rest() -> RESTDataProvider:
+    return RESTDataProvider(seqfetcher=seqfetcher())
 
 
 # ---------------------------------- Misc. ---------------------------------- #

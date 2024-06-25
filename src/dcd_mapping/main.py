@@ -7,8 +7,9 @@ from pathlib import Path
 
 import click
 
-from dcd_mapping.align import AlignmentError, BlatNotFoundError, align
+from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import annotate, save_mapped_output_json
+from dcd_mapping.log_utilities import _emit_info
 from dcd_mapping.lookup import check_gene_normalizer, check_seqrepo, check_uta
 from dcd_mapping.mavedb_data import get_scoreset_metadata, get_scoreset_records
 from dcd_mapping.resource_utils import ResourceAcquisitionError
@@ -20,18 +21,6 @@ from dcd_mapping.transcripts import TxSelectError, select_transcript
 from dcd_mapping.vrs_map import VrsMapError, vrs_map
 
 _logger = logging.getLogger(__name__)
-
-
-def _emit_info(msg: str, silent: bool, log_level: int = logging.INFO) -> None:
-    if not silent:
-        click.echo(msg)
-    if log_level == logging.INFO:
-        _logger.info(msg)
-    elif log_level == logging.ERROR:
-        _logger.error(msg)
-    else:
-        msg = f"Unexpected log level requested: {log_level}"
-        raise ValueError(msg)
 
 
 async def _check_data_prereqs(silent: bool) -> None:
@@ -137,19 +126,36 @@ async def map_scoreset(
     """
     await _check_data_prereqs(silent)
 
-    _emit_info(f"Performing alignment for {metadata.urn}...", silent)
-    try:
-        alignment_result = align(metadata, silent)
-    except BlatNotFoundError as e:
-        msg = "BLAT command appears missing. Ensure it is available on the $PATH or use the environment variable BLAT_BIN_PATH to point to it. See instructions in the README prerequisites section for more."
-        _emit_info(msg, silent, logging.ERROR)
-        raise e
-    except AlignmentError as e:
-        _emit_info(
-            f"Alignment failed for scoreset  {metadata.urn} {e}", silent, logging.ERROR
-        )
-        raise e
-    _emit_info("Alignment complete.", silent)
+    alignment_result = build_alignment_result(metadata, silent)
+
+    # transcript =
+
+    # accession based
+    # pre mapped - take hgvs string literally from hgvs_pro and hgvs_nt columns
+    # protein accession (NP, ENSP):
+    # if they gave us np or ensp, they at least have the hgvs_pro filled out
+    # create p. hgvs string (this is just what they gave us) and vrs object
+    # need to pass the np accession id (which is actually in the metadata)
+    # if hgvs_nt column is available, then we can also create genomic object
+    # TODO do noncoding accessions that are not contigs exist? NR
+    # transcript accession (NM, ENST):
+    # assume they  have the ngvs_nt filled out?
+    # no need to create p. hgvs string or p. vrs object
+    # post mapped: NC (from alignment output) + adjusted variant coordinates (from hgvs_nt column)
+
+    # if accession is NP - basically do nothing unless they filled out the hgvs_nt column
+    # but if they give us an NP and then fill out the hgvs_nt column, we would need to find the mapping
+    # to an hg38 contig, but cdot api doesn't seem to support np/ensp accessions, only transcripts
+    # but will we ever get an np accession?
+
+    # np - skip for now
+    # nm - map (already done)
+    # assuming that if nm/enst provided, hgvs_nt column is filled out
+    # pre map - hgvs string is exactly what was provided by user (NM_xxx.c.xxx)
+    # post map - same flow as for target sequence. NC_xxx.g.<adjusted_variant>
+    # nc
+    # pre map and post map are both exactly the hgvs string provided by user
+    # always make sure
 
     _emit_info("Selecting reference sequence...", silent)
     try:

@@ -55,6 +55,12 @@ def _metadata_response_is_human(json_response: dict) -> bool:
     :return: True if contains a target tagged as ``"Homo sapiens"``
     """
     for target_gene in json_response.get("targetGenes", []):
+        # for now, assume that genomic coordinate-based score sets are always human,
+        # since users are not allowed to upload non-human coordinate-based score sets
+        # TODO is this an ok assumption moving forward
+        if target_gene.get("targetAccession"):
+            return True
+
         organism = (
             target_gene.get("targetSequence", {})
             .get("taxonomy", {})
@@ -164,13 +170,29 @@ def get_scoreset_metadata(
         raise ResourceAcquisitionError(msg)
     gene = metadata["targetGenes"][0]
     try:
+        target_sequence_gene = gene.get("targetSequence")
+        target_accession_gene = gene.get("targetAccession")
+
+        target_sequence = (
+            target_sequence_gene["sequence"] if target_sequence_gene else None
+        )
+        target_sequence_type = (
+            target_sequence_gene["sequenceType"] if target_sequence_gene else None
+        )
+        target_accession = (
+            target_accession_gene["accession"] if target_accession_gene else None
+        )
+        assembly = target_accession_gene["assembly"] if target_accession_gene else None
+
         structured_data = ScoresetMetadata(
             urn=metadata["urn"],
             target_gene_name=gene["name"],
             target_gene_category=gene["category"],
-            target_sequence=gene["targetSequence"]["sequence"],
-            target_sequence_type=gene["targetSequence"]["sequenceType"],
+            target_sequence=target_sequence,
+            target_sequence_type=target_sequence_type,
             target_uniprot_ref=_get_uniprot_ref(metadata),
+            target_accession=target_accession,
+            assembly=assembly,
         )
     except (KeyError, ValidationError) as e:
         msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"

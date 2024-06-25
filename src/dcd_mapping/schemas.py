@@ -37,9 +37,11 @@ class ScoresetMetadata(BaseModel):
     urn: str
     target_gene_name: str
     target_gene_category: TargetType
-    target_sequence: str
-    target_sequence_type: TargetSequenceType
+    target_sequence: str | None
+    target_sequence_type: TargetSequenceType | None
     target_uniprot_ref: UniProtRef | None = None
+    target_accession: str | None
+    assembly: str | None
 
 
 class ScoreRow(BaseModel):
