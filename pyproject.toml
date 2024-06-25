@@ -42,7 +42,8 @@ dependencies = [
     "pydantic>=2",
     "python-dotenv",
     "setuptools>=68.0",  # tmp -- ensure 3.12 compatibility
-    "mavehgvs==0.6.1"
+    "mavehgvs==0.6.1",
+    "cdot",
 ]
 dynamic = ["version"]
 
