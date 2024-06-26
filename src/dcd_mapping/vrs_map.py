@@ -599,6 +599,9 @@ def _map_accession(
     # see if accession is in seqrepo
     # if not, get seq from cdot and add to seqrepo
     sequence_id = metadata.target_accession
+    if sequence_id is None:
+        raise ValueError
+
     store_accession(sequence_id)
 
     for row in records:
@@ -720,6 +723,9 @@ def vrs_map(
             click.echo(msg)
         _logger.warning(msg)
         return None
+
+    if metadata.target_accession:
+        return _map_accession(metadata, records, align_result)
 
     if metadata.target_gene_category == TargetType.PROTEIN_CODING and transcript:
         return _map_protein_coding(
