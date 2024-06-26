@@ -311,7 +311,7 @@ async def select_transcript(
     metadata: ScoresetMetadata,
     records: list[ScoreRow],
     align_result: AlignmentResult,
-) -> TxSelectResult | None:
+) -> TxSelectResult | str | None:
     """Select appropriate human reference sequence for scoreset.
 
     * Unnecessary for regulatory/other noncoding scoresets which report genomic
@@ -336,10 +336,14 @@ async def select_transcript(
             sequence=_get_protein_sequence(metadata.target_sequence),
         )
 
+    if metadata.target_accession:
+        return metadata.target_accession
+
     if metadata.target_gene_category != TargetType.PROTEIN_CODING:
         _logger.debug("%s is regulatory/noncoding -- skipping transcript selection")
         return None
     transcript_reference = await _select_protein_reference(metadata, align_result)
+
     if transcript_reference and metadata.target_sequence_type == TargetSequenceType.DNA:
         offset = _offset_target_sequence(metadata, records)
         if offset:

@@ -159,7 +159,10 @@ async def map_scoreset(
 
     _emit_info("Selecting reference sequence...", silent)
     try:
-        transcript = await select_transcript(metadata, records, alignment_result)
+        if metadata.target_accession is None:
+            transcript = await select_transcript(metadata, records, alignment_result)
+        else:
+            transcript = None
     except TxSelectError as e:
         _emit_info(
             f"Transcript selection failed for scoreset {metadata.urn}",
