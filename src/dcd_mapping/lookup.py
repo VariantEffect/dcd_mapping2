@@ -418,6 +418,11 @@ def get_chromosome_identifier(chromosome: str) -> str:
     :return: latest ID if available
     :raise KeyError: if unable to retrieve identifier
     """
+    # target sequence alignment references are chromosome names like ``"8"``, ``"X"``
+    # but accession alignment information from cdot has reference accessions, beginning with "NC_"
+    # for "NC_" identifiers, just return the identifier
+    if chromosome.startswith("NC_"):
+        return chromosome
     if not chromosome.startswith("chr"):
         chromosome = f"chr{chromosome}"
     sr = get_seqrepo()
