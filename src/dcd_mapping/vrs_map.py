@@ -70,6 +70,20 @@ def _process_any_aa_code(hgvs_pro_string: str) -> str:
     return hgvs_pro_string
 
 
+def is_intronic_variant(variant: Variant) -> bool:
+    """Return True if given Variant is intronic, otherwise return False.
+    Supports single or multi-position variants.
+    """
+    if isinstance(variant.positions, Iterable):
+        if any(position.is_intronic() for position in variant.positions):
+            return True
+    else:
+        if variant.positions.is_intronic():
+            return True
+
+    return False
+
+
 def _create_pre_mapped_hgvs_strings(
     raw_description: str,
     layer: AnnotationLayer,
@@ -105,6 +119,12 @@ def _create_pre_mapped_hgvs_strings(
         if error is not None:
             msg = f"Variant could not be parsed by mavehgvs: {error}"
             raise ValueError(msg)
+
+        # ga4gh hgvs_tools does not support intronic variants, so they will err out when vrs allele translator is called
+        # therefore skip them there
+        if is_intronic_variant(variant):
+            # TODO log warning that this variant is skipped
+            continue
 
         if accession_id:
             hgvs_strings.append(accession_id + ":" + str(variant))
@@ -161,6 +181,12 @@ def _create_post_mapped_hgvs_strings(
         if error is not None:
             msg = f"Variant could not be parsed by mavehgvs: {error}"
             raise ValueError(msg)
+
+        # ga4gh hgvs_tools does not support intronic variants, so they will err out when vrs allele translator is called
+        # therefore skip them there
+        if is_intronic_variant(variant):
+            # TODO log warning that this variant is skipped
+            continue
 
         if layer is AnnotationLayer.PROTEIN:
             assert tx  # noqa: S101. mypy help
@@ -655,7 +681,7 @@ def _construct_vrs_allele(
     layer: AnnotationLayer,
     sequence_id: str | None,
     pre_map: bool,
-) -> Allele | Haplotype:
+) -> Allele | Haplotype | None:
     alleles: list[Allele] = []
     for hgvs_string in hgvs_strings:
         allele = translate_hgvs_to_vrs(hgvs_string)
@@ -691,8 +717,9 @@ def _construct_vrs_allele(
         alleles.append(allele)
 
     if not alleles:
-        msg = f"Input variant hgvs_string(s) could not be translated to an allele: {hgvs_strings}."
-        raise ValueError(msg)
+        # msg = f"Input variant hgvs_string(s) could not be translated to an allele: {hgvs_strings}."
+        # raise ValueError(msg)
+        return None
 
     if len(alleles) > 1:
         return Haplotype(members=alleles)
