@@ -405,7 +405,15 @@ def _map_genomic(
     :param align_result: The transcript selection information for a score set
     :return: VRS mapping object if mapping succeeds
     """
-    namespace = infer_namespace(sequence_id).lower()
+    namespace = infer_namespace(sequence_id)
+    if namespace is None:
+        if sequence_id.startswith("SQ."):
+            # TODO is this assumption ok?
+            namespace = "ga4gh"
+        else:
+            msg = f"Namespace could not be inferred from sequence: {sequence_id}"
+            raise ValueError(msg)
+
     if align_result is None:
         # for contig accession based score sets, no mapping is performed,
         # so pre- and post-mapped alleles are the same
@@ -417,7 +425,7 @@ def _map_genomic(
             accession_id=sequence_id,
         )
 
-    elif namespace in ("refseq", "ncbi", "ensembl"):
+    elif namespace.lower() in ("refseq", "ncbi", "ensembl"):
         # nm/enst way
         pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
             row.hgvs_nt,
@@ -429,7 +437,7 @@ def _map_genomic(
             AnnotationLayer.GENOMIC,
             alignment=align_result,
         )
-    elif namespace == "ga4gh":
+    elif namespace.lower() == "ga4gh":
         # target seq way
         pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
             row.hgvs_nt,
