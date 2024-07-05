@@ -226,7 +226,7 @@ def _adjust_genomic_variant_to_ref(
             break
 
     if query_subrange_containing_hit is None or target_subrange_containing_hit is None:
-        msg = "Hit was not contained, or multi-position hit was not fully contained, within the query and/or target subranges."
+        msg = "Variant was not contained, or multi-position variant was not fully contained, within the aligned portion of the query sequence."
         raise ValueError(msg)
 
     for idx, start in enumerate(starts):
