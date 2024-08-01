@@ -37,7 +37,7 @@ dependencies = [
     "tqdm",
     "click",
     "cool-seq-tool==0.4.0.dev3",
-    "ga4gh.vrs~=2.0.0-a6",
+    "ga4gh.vrs==2.0.0-a6",
     "gene_normalizer[etl,pg]==0.3.0-dev2",
     "pydantic>=2",
     "python-dotenv",
