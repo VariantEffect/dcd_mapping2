@@ -15,6 +15,7 @@ from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import (
     ScoreRow,
     ScoresetMetadata,
+    VrsVersion,
 )
 from dcd_mapping.transcripts import TxSelectError, select_transcript
 from dcd_mapping.vrs_map import VrsMapError, vrs_map
@@ -123,7 +124,7 @@ async def map_scoreset(
     metadata: ScoresetMetadata,
     records: list[ScoreRow],
     output_path: Path | None = None,
-    include_vrs_2: bool = False,
+    vrs_version: VrsVersion = VrsVersion.V_2,
     prefer_genomic: bool = False,
     silent: bool = True,
 ) -> None:
@@ -177,13 +178,12 @@ async def map_scoreset(
     _emit_info("VRS mapping complete.", silent)
 
     _emit_info("Annotating metadata and saving to file...", silent)
-    vrs_results = annotate(vrs_results, transcript, metadata)
+    vrs_results = annotate(vrs_results, transcript, metadata, vrs_version)
     final_output = save_mapped_output_json(
         metadata.urn,
         vrs_results,
         alignment_result,
         transcript,
-        include_vrs_2,
         prefer_genomic,
         output_path,
     )
@@ -193,7 +193,7 @@ async def map_scoreset(
 async def map_scoreset_urn(
     urn: str,
     output_path: Path | None = None,
-    include_vrs_2: bool = False,
+    vrs_version: VrsVersion = VrsVersion.V_2,
     prefer_genomic: bool = False,
     silent: bool = True,
 ) -> None:
@@ -201,7 +201,7 @@ async def map_scoreset_urn(
 
     :param urn: identifier for a scoreset.
     :param output_path: optional path to save output at
-    :param include_vrs_2: if true, include VRS 2.0 mappings in output JSON
+    :param vrs_version: version of VRS objects to output (1.3 or 2)
     :param silent: if True, suppress console information output
     """
     try:
@@ -213,5 +213,5 @@ async def map_scoreset_urn(
         click.echo(f"Error: {msg}")
         raise e
     await map_scoreset(
-        metadata, records, output_path, include_vrs_2, prefer_genomic, silent
+        metadata, records, output_path, vrs_version, prefer_genomic, silent
     )

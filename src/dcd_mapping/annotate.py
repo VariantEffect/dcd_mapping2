@@ -42,6 +42,7 @@ from dcd_mapping.schemas import (
     ScoresetMetadata,
     TargetSequenceType,
     TxSelectResult,
+    VrsVersion,
 )
 
 _logger = logging.getLogger(__name__)
@@ -243,8 +244,9 @@ def _annotate_allele_mapping(
     mapped_score: MappedScore,
     tx_results: TxSelectResult | None,
     metadata: ScoresetMetadata,
+    vrs_version: VrsVersion = VrsVersion.V_2,
 ) -> ScoreAnnotationWithLayer:
-    """Perform annotations and create VRS 1.3 equivalents for allele mappings."""
+    """Perform annotations and, if necessary, create VRS 1.3 equivalents for allele mappings."""
     pre_mapped: Allele = mapped_score.pre_mapped
     post_mapped: Allele = mapped_score.post_mapped
 
@@ -274,14 +276,14 @@ def _annotate_allele_mapping(
     hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
     post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
 
-    pre_mapped_vod = _allele_to_vod(pre_mapped)
-    post_mapped_vod = _allele_to_vod(post_mapped)
+    if vrs_version == VrsVersion.V_1_3:
+        pre_mapped = _allele_to_vod(pre_mapped)
+        post_mapped = _allele_to_vod(post_mapped)
 
     return ScoreAnnotationWithLayer(
-        pre_mapped=pre_mapped_vod,
-        post_mapped=post_mapped_vod,
-        pre_mapped_2_0=pre_mapped,
-        post_mapped_2_0=post_mapped,
+        pre_mapped=pre_mapped,
+        post_mapped=post_mapped,
+        vrs_version=vrs_version,
         mavedb_id=mapped_score.accession_id,
         score=float(mapped_score.score) if mapped_score.score else None,
         annotation_layer=mapped_score.annotation_layer,
@@ -289,9 +291,12 @@ def _annotate_allele_mapping(
 
 
 def _annotate_haplotype_mapping(
-    mapping: MappedScore, tx_results: TxSelectResult | None, metadata: ScoresetMetadata
+    mapping: MappedScore,
+    tx_results: TxSelectResult | None,
+    metadata: ScoresetMetadata,
+    vrs_version: VrsVersion = VrsVersion.V_2,
 ) -> ScoreAnnotationWithLayer:
-    """Perform annotations and create VRS 1.3 equivalents for haplotype mappings."""
+    """Perform annotations and, if necessary, create VRS 1.3 equivalents for haplotype mappings."""
     pre_mapped: Haplotype = mapping.pre_mapped  # type: ignore
     post_mapped: Haplotype = mapping.post_mapped  # type: ignore
     # get vrs_ref_allele_seq for pre-mapped variants
@@ -324,14 +329,14 @@ def _annotate_haplotype_mapping(
         hgvs, syntax = _get_hgvs_string(allele, accession)
         allele.expressions = [Expression(syntax=syntax, value=hgvs)]
 
-    pre_mapped_converted = _haplotype_to_haplotype_1_3(pre_mapped)
-    post_mapped_converted = _haplotype_to_haplotype_1_3(post_mapped)
+    if vrs_version == VrsVersion.V_1_3:
+        pre_mapped = _haplotype_to_haplotype_1_3(pre_mapped)
+        post_mapped = _haplotype_to_haplotype_1_3(post_mapped)
 
     return ScoreAnnotationWithLayer(
-        pre_mapped=pre_mapped_converted,
-        post_mapped=post_mapped_converted,
-        pre_mapped_2_0=pre_mapped,
-        post_mapped_2_0=post_mapped,
+        pre_mapped=pre_mapped,
+        post_mapped=post_mapped,
+        vrs_version=vrs_version,
         mavedb_id=mapping.accession_id,
         score=float(mapping.score) if mapping.score is not None else None,
         annotation_layer=mapping.annotation_layer,
@@ -342,6 +347,7 @@ def annotate(
     mapped_scores: list[MappedScore],
     tx_results: TxSelectResult | None,
     metadata: ScoresetMetadata,
+    vrs_version: VrsVersion = VrsVersion.V_2,
 ) -> list[ScoreAnnotationWithLayer]:
     """Given a list of mappings, add additional contextual data:
 
@@ -365,13 +371,17 @@ def annotate(
             mapped_score.post_mapped, Haplotype
         ):
             score_annotations.append(
-                _annotate_haplotype_mapping(mapped_score, tx_results, metadata)
+                _annotate_haplotype_mapping(
+                    mapped_score, tx_results, metadata, vrs_version
+                )
             )
         elif isinstance(mapped_score.pre_mapped, Allele) and isinstance(
             mapped_score.post_mapped, Allele
         ):
             score_annotations.append(
-                _annotate_allele_mapping(mapped_score, tx_results, metadata)
+                _annotate_allele_mapping(
+                    mapped_score, tx_results, metadata, vrs_version
+                )
             )
         else:
             ValueError("inconsistent variant structure")
@@ -464,7 +474,6 @@ def save_mapped_output_json(
     mappings: list[ScoreAnnotationWithLayer],
     align_result: AlignmentResult,
     tx_output: TxSelectResult | None,
-    include_vrs_2: bool = False,
     preferred_layer_only: bool = False,
     output_path: Path | None = None,
 ) -> Path:
@@ -474,7 +483,6 @@ def save_mapped_output_json(
     :param mave_vrs_mappings: A dictionary of VrsObject1_x objects
     :param align_result: Alignment information for a score set
     :param tx_output: Transcript output for a score set
-    :param include_vrs_2: if true, also include VRS 2.0 mappings
     :param output_path: specific location to save output to. Default to
         <dcd_mapping_data_dir>/urn:mavedb:00000XXX-X-X_mapping_<ISO8601 datetime>.json
     :return: output location
@@ -522,11 +530,6 @@ def save_mapped_output_json(
         ],
         mapped_scores=mapped_scores,
     )
-
-    if not include_vrs_2:
-        for m in output.mapped_scores:
-            m.pre_mapped_2_0 = None
-            m.post_mapped_2_0 = None
 
     if not output_path:
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()
