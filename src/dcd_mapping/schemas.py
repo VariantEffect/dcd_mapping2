@@ -24,6 +24,13 @@ class TargetType(str, Enum):
     OTHER_NC = "Other noncoding"
 
 
+class VrsVersion(str, Enum):
+    """Define VRS versions"""
+
+    V_1_3 = "1.3"
+    V_2 = "2"
+
+
 class UniProtRef(BaseModel):
     """Store metadata associated with MaveDB UniProt reference"""
 
@@ -157,10 +164,9 @@ class ScoreAnnotation(BaseModel):
     This model defines what an individual mapping instance looks like in the final JSON.
     """
 
-    pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype
-    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype
-    pre_mapped_2_0: Allele | Haplotype | None = None
-    post_mapped_2_0: Allele | Haplotype | None = None
+    pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype
+    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype
+    vrs_version: VrsVersion
     mavedb_id: StrictStr
     relation: Literal["SO:is_homologous_to"] = "SO:is_homologous_to"
     score: float | None
