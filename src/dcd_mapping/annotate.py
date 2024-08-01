@@ -535,7 +535,7 @@ def save_mapped_output_json(
     _logger.info("Saving mapping output to %s", output_path)
     with output_path.open("w") as file:
         json.dump(
-            json.loads(output.model_dump_json(exclude_unset=True, exclude_none=True)),
+            output.model_dump(exclude_unset=True, exclude_none=True),
             file,
             indent=4,
         )
