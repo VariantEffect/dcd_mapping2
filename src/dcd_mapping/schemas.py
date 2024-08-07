@@ -155,7 +155,7 @@ class MappedScore(BaseModel):
     annotation_layer: AnnotationLayer
     score: str | None
     pre_mapped: Allele | Haplotype
-    post_mapped: Allele | Haplotype
+    post_mapped: Allele | Haplotype | None
 
 
 class ScoreAnnotation(BaseModel):
@@ -165,7 +165,7 @@ class ScoreAnnotation(BaseModel):
     """
 
     pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype
-    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype
+    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None
     vrs_version: VrsVersion
     mavedb_id: StrictStr
     relation: Literal["SO:is_homologous_to"] = "SO:is_homologous_to"

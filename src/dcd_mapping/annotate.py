@@ -251,34 +251,35 @@ def _annotate_allele_mapping(
     post_mapped: Allele = mapped_score.post_mapped
 
     # get vrs_ref_allele_seq for pre-mapped variants
-    pre_mapped.extensions = [_get_vrs_ref_allele_seq(post_mapped, metadata, tx_results)]
+    pre_mapped.extensions = [_get_vrs_ref_allele_seq(pre_mapped, metadata, tx_results)]
 
-    # Determine reference sequence
-    if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
-        sequence_id = f"ga4gh:{mapped_score.post_mapped.location.sequenceReference.refgetAccession}"
-        accession = get_chromosome_identifier_from_vrs_id(sequence_id)
-        if accession is None:
-            raise ValueError
-        if accession.startswith("refseq:"):
-            accession = accession[7:]
-    else:
-        if tx_results is None:
-            raise ValueError  # impossible by definition
-        accession = tx_results.np
+    if post_mapped:
+        # Determine reference sequence
+        if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
+            sequence_id = f"ga4gh:{mapped_score.post_mapped.location.sequenceReference.refgetAccession}"
+            accession = get_chromosome_identifier_from_vrs_id(sequence_id)
+            if accession is None:
+                raise ValueError
+            if accession.startswith("refseq:"):
+                accession = accession[7:]
+        else:
+            if tx_results is None:
+                raise ValueError  # impossible by definition
+            accession = tx_results.np
 
-    sr = get_seqrepo()
-    loc = mapped_score.post_mapped.location
-    sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
-    ref = sr.get_sequence(sequence_id, loc.start, loc.end)
-    post_mapped.extensions = [
-        Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
-    ]
-    hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
-    post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
+        sr = get_seqrepo()
+        loc = mapped_score.post_mapped.location
+        sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
+        ref = sr.get_sequence(sequence_id, loc.start, loc.end)
+        post_mapped.extensions = [
+            Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
+        ]
+        hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
+        post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
 
     if vrs_version == VrsVersion.V_1_3:
         pre_mapped = _allele_to_vod(pre_mapped)
-        post_mapped = _allele_to_vod(post_mapped)
+        post_mapped = _allele_to_vod(post_mapped) if post_mapped else None
 
     return ScoreAnnotationWithLayer(
         pre_mapped=pre_mapped,
@@ -318,20 +319,21 @@ def _annotate_haplotype_mapping(
             raise ValueError  # impossible by definition
         accession = tx_results.np
 
-    sr = get_seqrepo()
-    for allele in post_mapped.members:
-        loc = allele.location
-        sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
-        ref = sr.get_sequence(sequence_id, loc.start, loc.end)  # TODO type issues??
-        allele.extensions = [
-            Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
-        ]
-        hgvs, syntax = _get_hgvs_string(allele, accession)
-        allele.expressions = [Expression(syntax=syntax, value=hgvs)]
+    if post_mapped:
+        sr = get_seqrepo()
+        for allele in post_mapped.members:
+            loc = allele.location
+            sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
+            ref = sr.get_sequence(sequence_id, loc.start, loc.end)  # TODO type issues??
+            allele.extensions = [
+                Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
+            ]
+            hgvs, syntax = _get_hgvs_string(allele, accession)
+            allele.expressions = [Expression(syntax=syntax, value=hgvs)]
 
     if vrs_version == VrsVersion.V_1_3:
         pre_mapped = _haplotype_to_haplotype_1_3(pre_mapped)
-        post_mapped = _haplotype_to_haplotype_1_3(post_mapped)
+        post_mapped = _haplotype_to_haplotype_1_3(post_mapped) if post_mapped else None
 
     return ScoreAnnotationWithLayer(
         pre_mapped=pre_mapped,
@@ -367,16 +369,18 @@ def annotate(
     """
     score_annotations = []
     for mapped_score in mapped_scores:
-        if isinstance(mapped_score.pre_mapped, Haplotype) and isinstance(
-            mapped_score.post_mapped, Haplotype
+        if isinstance(mapped_score.pre_mapped, Haplotype) and (
+            isinstance(mapped_score.post_mapped, Haplotype)
+            or mapped_score.post_mapped is None
         ):
             score_annotations.append(
                 _annotate_haplotype_mapping(
                     mapped_score, tx_results, metadata, vrs_version
                 )
             )
-        elif isinstance(mapped_score.pre_mapped, Allele) and isinstance(
-            mapped_score.post_mapped, Allele
+        elif isinstance(mapped_score.pre_mapped, Allele) and (
+            isinstance(mapped_score.post_mapped, Allele)
+            or mapped_score.post_mapped is None
         ):
             score_annotations.append(
                 _annotate_allele_mapping(

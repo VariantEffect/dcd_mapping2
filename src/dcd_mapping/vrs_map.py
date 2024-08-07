@@ -166,9 +166,16 @@ def _create_post_mapped_hgvs_strings(
             assert alignment  # noqa: S101. mypy help
 
             variant = _adjust_genomic_variant_to_ref(variant, alignment)
-            hgvs_strings.append(
-                get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
-            )
+            if variant:
+                hgvs_strings.append(
+                    get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
+                )
+            else:
+                _logger.warning(
+                    "Cannot process variant %s because it is not fully contained within the aligned portion of the query sequence.",
+                    variant,
+                )
+                return []
         else:
             msg = (
                 f"Could not generate HGVS strings for invalid AnnotationLayer: {layer}"
@@ -194,7 +201,7 @@ def _adjust_protein_variant_to_ref(
 def _adjust_genomic_variant_to_ref(
     variant: Variant,
     alignment: AlignmentResult,
-) -> Variant:
+) -> Variant | None:
     """Adjust a variant relative to a provided alignment.
 
     :param variant: A variant object relative to a scoreset's target sequence
@@ -226,8 +233,7 @@ def _adjust_genomic_variant_to_ref(
             break
 
     if query_subrange_containing_hit is None or target_subrange_containing_hit is None:
-        msg = "Variant was not contained, or multi-position variant was not fully contained, within the aligned portion of the query sequence."
-        raise ValueError(msg)
+        return None
 
     for idx, start in enumerate(starts):
         if alignment.strand is Strand.POSITIVE:
@@ -348,7 +354,7 @@ def _map_protein_coding_pro(
         False,
     )
 
-    if pre_mapped_protein and post_mapped_protein:
+    if pre_mapped_protein:
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
@@ -391,14 +397,21 @@ def _map_genomic(
         sequence_id,
         True,
     )
-    post_mapped_genomic = _construct_vrs_allele(
-        post_mapped_hgvs_strings,
-        AnnotationLayer.GENOMIC,
-        None,
-        False,
-    )
 
-    if pre_mapped_genomic and post_mapped_genomic:
+    # genomic post-mapped variants are skipped if they don't fall within aligned region of target sequence
+    # so we can have a pre-mapped genomic variant without a post-mapped genomic variant
+    if post_mapped_hgvs_strings:
+        post_mapped_genomic = _construct_vrs_allele(
+            post_mapped_hgvs_strings,
+            AnnotationLayer.GENOMIC,
+            None,
+            False,
+        )
+    else:
+        # TODO add error to MappedScore
+        post_mapped_genomic = None
+
+    if pre_mapped_genomic:
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
