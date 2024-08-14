@@ -9,6 +9,7 @@ import click
 from dcd_mapping.align import AlignmentError
 from dcd_mapping.main import map_scoreset_urn
 from dcd_mapping.resource_utils import ResourceAcquisitionError
+from dcd_mapping.schemas import VrsVersion
 from dcd_mapping.transcripts import TxSelectError
 from dcd_mapping.vrs_map import VrsMapError
 
@@ -33,11 +34,12 @@ _logger = logging.getLogger(__name__)
     help="Desired location at which output file should be saved",
 )
 @click.option(
-    "--include_vrs_2",
+    "--vrs_version",
     "-v",
-    is_flag=True,
-    default=False,
-    help="Include VRS 2.0 mappings",
+    type=click.Choice(["1.3", "2"]),
+    default="2",
+    show_default=True,
+    help="Version to use for output VRS objects",
 )
 @click.option(
     "--prefer_genomic",
@@ -49,7 +51,7 @@ def cli(
     urn: str,
     debug: bool,
     output: Path | None,
-    include_vrs_2: bool,
+    vrs_version: VrsVersion,
     prefer_genomic: bool,
 ) -> None:
     """Get VRS mapping on preferred transcript for URN.
@@ -72,7 +74,7 @@ def cli(
     _logger.debug("debug logging enabled")
     try:
         asyncio.run(
-            map_scoreset_urn(urn, output, include_vrs_2, prefer_genomic, silent=False)
+            map_scoreset_urn(urn, output, vrs_version, prefer_genomic, silent=False)
         )
     except (
         LookupError,
