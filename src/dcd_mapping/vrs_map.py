@@ -166,16 +166,9 @@ def _create_post_mapped_hgvs_strings(
             assert alignment  # noqa: S101. mypy help
 
             variant = _adjust_genomic_variant_to_ref(variant, alignment)
-            if variant:
-                hgvs_strings.append(
-                    get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
-                )
-            else:
-                _logger.warning(
-                    "Cannot process variant %s because it is not fully contained within the aligned portion of the query sequence.",
-                    variant,
-                )
-                return []
+            hgvs_strings.append(
+                get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
+            )
         else:
             msg = (
                 f"Could not generate HGVS strings for invalid AnnotationLayer: {layer}"
@@ -201,7 +194,7 @@ def _adjust_protein_variant_to_ref(
 def _adjust_genomic_variant_to_ref(
     variant: Variant,
     alignment: AlignmentResult,
-) -> Variant | None:
+) -> Variant:
     """Adjust a variant relative to a provided alignment.
 
     :param variant: A variant object relative to a scoreset's target sequence
@@ -233,7 +226,11 @@ def _adjust_genomic_variant_to_ref(
             break
 
     if query_subrange_containing_hit is None or target_subrange_containing_hit is None:
-        return None
+        msg = (
+            f"Cannot process variant {variant} because it is not fully contained \
+                within the aligned portion of the query sequence",
+        )
+        raise ValueError(msg)
 
     for idx, start in enumerate(starts):
         if alignment.strand is Strand.POSITIVE:
@@ -298,7 +295,7 @@ def _map_protein_coding_pro(
     row: ScoreRow,
     sequence_id: str,
     transcript: TxSelectResult,
-) -> MappedScore | None:
+) -> MappedScore:
     """Construct VRS object mapping for ``hgvs_pro`` variant column entry
 
     These arguments are a little lazy and could be pruned down later
@@ -308,15 +305,27 @@ def _map_protein_coding_pro(
     :param transcript: The transcript selection information for a score set
     :return: VRS mapping object if mapping succeeds
     """
-    if (
-        row.hgvs_pro in {"_wt", "_sy", "NA"}
-        or "fs" in row.hgvs_pro
-        or len(row.hgvs_pro) == 3
-    ):
+    if row.hgvs_pro in {"_wt", "_sy", "NA"} or len(row.hgvs_pro) == 3:
         _logger.warning(
             "Can't process variant syntax %s for %s", row.hgvs_pro, row.accession
         )
-        return None
+        return MappedScore(
+            accession_id=row.accession,
+            score=row.score,
+            error_message="Can't process variant syntax",
+        )
+
+    if "fs" in row.hgvs_pro:
+        _logger.warning(
+            "Can't process variant syntax %s for %s because protein frameshift variants are not supported",
+            row.hgvs_pro,
+            row.accession,
+        )
+        return MappedScore(
+            accession_id=row.accession,
+            score=row.score,
+            error_message="Protein frameshift variants are not supported",
+        )
 
     # TODO: Handle edge cases without hardcoding URNs.
     # Special case for experiment set urn:mavedb:0000097
@@ -330,47 +339,68 @@ def _map_protein_coding_pro(
             post_mapped=vrs_variation,
         )
 
-    pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
-        row.hgvs_pro,
-        AnnotationLayer.PROTEIN,
-        tx=transcript,
-    )
-    post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
-        row.hgvs_pro,
-        AnnotationLayer.PROTEIN,
-        tx=transcript,
-    )
+    try:
+        pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
+            row.hgvs_pro,
+            AnnotationLayer.PROTEIN,
+            tx=transcript,
+        )
+        pre_mapped_protein = _construct_vrs_allele(
+            pre_mapped_hgvs_strings,
+            AnnotationLayer.PROTEIN,
+            sequence_id,
+            True,
+        )
+    except Exception as e:
+        _logger.warning(
+            "An error occurred while generating pre-mapped protein variant for %s, accession %s: %s",
+            row.hgvs_pro,
+            row.accession,
+            e,
+        )
+        return MappedScore(accession_id=row.accession, score=row.score, error_message=e)
 
-    pre_mapped_protein = _construct_vrs_allele(
-        pre_mapped_hgvs_strings,
-        AnnotationLayer.PROTEIN,
-        sequence_id,
-        True,
-    )
-    post_mapped_protein = _construct_vrs_allele(
-        post_mapped_hgvs_strings,
-        AnnotationLayer.PROTEIN,
-        None,
-        False,
-    )
-
-    if pre_mapped_protein:
+    try:
+        post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
+            row.hgvs_pro,
+            AnnotationLayer.PROTEIN,
+            tx=transcript,
+        )
+        post_mapped_protein = _construct_vrs_allele(
+            post_mapped_hgvs_strings,
+            AnnotationLayer.PROTEIN,
+            None,
+            False,
+        )
+    except Exception as e:
+        _logger.warning(
+            "An error occurred while generating post-mapped protein variant for %s, accession %s: %s",
+            row.hgvs_pro,
+            row.accession,
+            e,
+        )
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
             annotation_layer=AnnotationLayer.PROTEIN,
             pre_mapped=pre_mapped_protein,
-            post_mapped=post_mapped_protein,
+            error_message=e,
         )
 
-    return None
+    return MappedScore(
+        accession_id=row.accession,
+        score=row.score,
+        annotation_layer=AnnotationLayer.PROTEIN,
+        pre_mapped=pre_mapped_protein,
+        post_mapped=post_mapped_protein,
+    )
 
 
 def _map_genomic(
     row: ScoreRow,
     sequence_id: str,
     align_result: AlignmentResult,
-) -> MappedScore | None:
+) -> MappedScore:
     """Construct VRS object mapping for ``hgvs_nt`` variant column entry
 
     These arguments are a little lazy and could be pruned down later
@@ -380,47 +410,76 @@ def _map_genomic(
     :param align_result: The transcript selection information for a score set
     :return: VRS mapping object if mapping succeeds
     """
-    pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
-        row.hgvs_nt,
-        AnnotationLayer.GENOMIC,
-        alignment=align_result,
-    )
-    post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
-        row.hgvs_nt,
-        AnnotationLayer.GENOMIC,
-        alignment=align_result,
-    )
+    if (
+        row.hgvs_nt in {"_wt", "_sy", "="}
+        or "fs"
+        in row.hgvs_nt  # TODO I think this line can be taken out, I don't think fs nomenclature can be used for nt anyway
+        or len(row.hgvs_nt) == 3
+    ):
+        _logger.warning(
+            "Can't process variant syntax %s for %s", row.hgvs_nt, row.accession
+        )
+        return MappedScore(
+            accession_id=row.accession,
+            score=row.score,
+            error_message="Can't process variant syntax",
+        )
 
-    pre_mapped_genomic = _construct_vrs_allele(
-        pre_mapped_hgvs_strings,
-        AnnotationLayer.GENOMIC,
-        sequence_id,
-        True,
-    )
+    try:
+        pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
+            row.hgvs_nt,
+            AnnotationLayer.GENOMIC,
+            alignment=align_result,
+        )
+        pre_mapped_genomic = _construct_vrs_allele(
+            pre_mapped_hgvs_strings,
+            AnnotationLayer.GENOMIC,
+            sequence_id,
+            True,
+        )
+    except Exception as e:
+        _logger.warning(
+            "An error occurred while generating pre-mapped genomic variant for %s, accession %s: %s",
+            row.hgvs_nt,
+            row.accession,
+            e,
+        )
+        return MappedScore(accession_id=row.accession, score=row.score, error_message=e)
 
-    # genomic post-mapped variants are skipped if they don't fall within aligned region of target sequence
-    # so we can have a pre-mapped genomic variant without a post-mapped genomic variant
-    if post_mapped_hgvs_strings:
+    try:
+        post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
+            row.hgvs_nt,
+            AnnotationLayer.GENOMIC,
+            alignment=align_result,
+        )
         post_mapped_genomic = _construct_vrs_allele(
             post_mapped_hgvs_strings,
             AnnotationLayer.GENOMIC,
             None,
             False,
         )
-    else:
-        # TODO add error to MappedScore
-        post_mapped_genomic = None
-
-    if pre_mapped_genomic:
+    except Exception as e:
+        _logger.warning(
+            "An error occurred while generating post-mapped genomic variant for %s, accession %s: %s",
+            row.hgvs_nt,
+            row.accession,
+            e,
+        )
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
             annotation_layer=AnnotationLayer.GENOMIC,
             pre_mapped=pre_mapped_genomic,
-            post_mapped=post_mapped_genomic,
+            error_message=e,
         )
 
-    return None
+    return MappedScore(
+        accession_id=row.accession,
+        score=row.score,
+        annotation_layer=AnnotationLayer.GENOMIC,
+        pre_mapped=pre_mapped_genomic,
+        post_mapped=post_mapped_genomic,
+    )
 
 
 def _get_allele_sequence(allele: Allele) -> str:
@@ -496,24 +555,12 @@ def _map_protein_coding(
         hgvs_pro_mappings = _map_protein_coding_pro(row, psequence_id, transcript)
         if hgvs_pro_mappings:
             variations.append(hgvs_pro_mappings)
-        else:
-            _logger.warning(
-                "Encountered apparently invalid protein variants in %s: %s",
-                row.accession,
-                row.hgvs_pro,
-            )
 
         if _hgvs_nt_is_valid(row.hgvs_nt):
             hgvs_nt_mappings = _map_genomic(row, gsequence_id, align_result)
 
             if hgvs_nt_mappings:
                 variations.append(hgvs_nt_mappings)
-            else:
-                _logger.warning(
-                    "Encountered apparently invalid genomic variants in %s: %s",
-                    row.accession,
-                    row.hgvs_nt,
-                )
 
     return variations
 
@@ -534,26 +581,8 @@ def _map_regulatory_noncoding(
     sequence_id = store_sequence(metadata.target_sequence)
 
     for row in records:
-        if (
-            row.hgvs_nt in {"_wt", "_sy", "="}
-            or "fs" in row.hgvs_nt
-            or len(row.hgvs_nt) == 3
-        ):
-            _logger.warning(
-                "Can't process variant syntax %s for %s", row.hgvs_nt, metadata.urn
-            )
-            continue
-
         hgvs_nt_mappings = _map_genomic(row, sequence_id, align_result)
-
-        if hgvs_nt_mappings:
-            variations.append(hgvs_nt_mappings)
-        else:
-            _logger.warning(
-                "Encountered apparently invalid genomic variants in %s: %s",
-                row.accession,
-                row.hgvs_nt,
-            )
+        variations.append(hgvs_nt_mappings)
 
     return variations
 
@@ -646,6 +675,7 @@ def vrs_map(
     :param silent: If true, suppress console output
     :return: A list of mapping results
     """
+    # TODO address this hardcoding, and if we keep it, this should be a score set mapping error message
     if metadata.urn == "urn:mavedb:00000072-a-1":
         msg = f"No RefSeq accession is available for {metadata.urn}."
         if not silent:

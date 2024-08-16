@@ -152,10 +152,11 @@ class MappedScore(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
     accession_id: StrictStr
-    annotation_layer: AnnotationLayer
     score: str | None
-    pre_mapped: Allele | Haplotype
-    post_mapped: Allele | Haplotype | None
+    annotation_layer: AnnotationLayer | None = None
+    pre_mapped: Allele | Haplotype | None = None
+    post_mapped: Allele | Haplotype | None = None
+    error_message: str | None = None
 
 
 class ScoreAnnotation(BaseModel):
@@ -164,12 +165,15 @@ class ScoreAnnotation(BaseModel):
     This model defines what an individual mapping instance looks like in the final JSON.
     """
 
-    pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype
-    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None
-    vrs_version: VrsVersion
     mavedb_id: StrictStr
-    relation: Literal["SO:is_homologous_to"] = "SO:is_homologous_to"
-    score: float | None
+    relation: Literal[
+        "SO:is_homologous_to"
+    ] = "SO:is_homologous_to"  # TODO this should probably be None if pre_mapped is false?
+    pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None = None
+    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None = None
+    vrs_version: VrsVersion | None = None
+    score: float | None = None
+    error_message: str | None = None
 
 
 class ScoreAnnotationWithLayer(ScoreAnnotation):
@@ -179,7 +183,7 @@ class ScoreAnnotationWithLayer(ScoreAnnotation):
     Used for filtering individual annotations just before saving the final JSON product.
     """
 
-    annotation_layer: AnnotationLayer
+    annotation_layer: AnnotationLayer | None = None
 
 
 class ScoresetMapping(BaseModel):

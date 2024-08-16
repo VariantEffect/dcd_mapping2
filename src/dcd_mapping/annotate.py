@@ -288,24 +288,27 @@ def _annotate_allele_mapping(
         mavedb_id=mapped_score.accession_id,
         score=float(mapped_score.score) if mapped_score.score else None,
         annotation_layer=mapped_score.annotation_layer,
+        error_message=mapped_score.error_message
+        if mapped_score.error_message
+        else None,  # TODO might not need if statement here
     )
 
 
 def _annotate_haplotype_mapping(
-    mapping: MappedScore,
+    mapped_score: MappedScore,
     tx_results: TxSelectResult | None,
     metadata: ScoresetMetadata,
     vrs_version: VrsVersion = VrsVersion.V_2,
 ) -> ScoreAnnotationWithLayer:
     """Perform annotations and, if necessary, create VRS 1.3 equivalents for haplotype mappings."""
-    pre_mapped: Haplotype = mapping.pre_mapped  # type: ignore
-    post_mapped: Haplotype = mapping.post_mapped  # type: ignore
+    pre_mapped: Haplotype = mapped_score.pre_mapped  # type: ignore
+    post_mapped: Haplotype = mapped_score.post_mapped  # type: ignore
     # get vrs_ref_allele_seq for pre-mapped variants
     for allele in pre_mapped.members:
         allele.extensions = [_get_vrs_ref_allele_seq(allele, metadata, tx_results)]
 
     # Determine reference sequence
-    if mapping.annotation_layer == AnnotationLayer.GENOMIC:
+    if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
         sequence_id = (
             f"ga4gh:{post_mapped.members[0].location.sequenceReference.refgetAccession}"
         )
@@ -339,9 +342,12 @@ def _annotate_haplotype_mapping(
         pre_mapped=pre_mapped,
         post_mapped=post_mapped,
         vrs_version=vrs_version,
-        mavedb_id=mapping.accession_id,
-        score=float(mapping.score) if mapping.score is not None else None,
-        annotation_layer=mapping.annotation_layer,
+        mavedb_id=mapped_score.accession_id,
+        score=float(mapped_score.score) if mapped_score.score is not None else None,
+        annotation_layer=mapped_score.annotation_layer,
+        error_message=mapped_score.error_message
+        if mapped_score.error_message
+        else None,  # TODO might not need if statement here
     )
 
 
@@ -369,7 +375,15 @@ def annotate(
     """
     score_annotations = []
     for mapped_score in mapped_scores:
-        if isinstance(mapped_score.pre_mapped, Haplotype) and (
+        if mapped_score.pre_mapped is None:
+            score_annotations.append(
+                ScoreAnnotationWithLayer(
+                    mavedb_id=mapped_score.accession_id,
+                    score=float(mapped_score.score) if mapped_score.score else None,
+                    error_message=mapped_score.error_message,
+                )
+            )
+        elif isinstance(mapped_score.pre_mapped, Haplotype) and (
             isinstance(mapped_score.post_mapped, Haplotype)
             or mapped_score.post_mapped is None
         ):
@@ -388,6 +402,7 @@ def annotate(
                 )
             )
         else:
+            # TODO how to combine this error message with other potential error messages?
             ValueError("inconsistent variant structure")
 
     return score_annotations
@@ -514,7 +529,9 @@ def save_mapped_output_json(
 
     mapped_scores: list[ScoreAnnotation] = []
     for m in mappings:
-        if m.annotation_layer in preferred_layers:
+        if m.pre_mapped is None:
+            mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+        elif m.annotation_layer in preferred_layers:
             # drop annotation layer from mapping object
             mapped_scores.append(ScoreAnnotation(**m.model_dump()))
 
