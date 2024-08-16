@@ -227,8 +227,8 @@ def _adjust_genomic_variant_to_ref(
 
     if query_subrange_containing_hit is None or target_subrange_containing_hit is None:
         msg = (
-            f"Cannot process variant {variant} because it is not fully contained \
-                within the aligned portion of the query sequence",
+            f"Cannot process variant {variant} because it is not fully contained "
+            + "within the aligned portion of the query sequence"
         )
         raise ValueError(msg)
 
@@ -312,7 +312,7 @@ def _map_protein_coding_pro(
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
-            error_message="Can't process variant syntax",
+            error_message=f"Can't process variant syntax {row.hgvs_pro}",
         )
 
     if "fs" in row.hgvs_pro:
@@ -356,9 +356,11 @@ def _map_protein_coding_pro(
             "An error occurred while generating pre-mapped protein variant for %s, accession %s: %s",
             row.hgvs_pro,
             row.accession,
-            e,
+            str(e),
         )
-        return MappedScore(accession_id=row.accession, score=row.score, error_message=e)
+        return MappedScore(
+            accession_id=row.accession, score=row.score, error_message=str(e)
+        )
 
     try:
         post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
@@ -377,14 +379,14 @@ def _map_protein_coding_pro(
             "An error occurred while generating post-mapped protein variant for %s, accession %s: %s",
             row.hgvs_pro,
             row.accession,
-            e,
+            str(e),
         )
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
             annotation_layer=AnnotationLayer.PROTEIN,
             pre_mapped=pre_mapped_protein,
-            error_message=e,
+            error_message=str(e),
         )
 
     return MappedScore(
@@ -422,7 +424,7 @@ def _map_genomic(
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
-            error_message="Can't process variant syntax",
+            error_message=f"Can't process variant syntax {row.hgvs_nt}",
         )
 
     try:
@@ -442,9 +444,11 @@ def _map_genomic(
             "An error occurred while generating pre-mapped genomic variant for %s, accession %s: %s",
             row.hgvs_nt,
             row.accession,
-            e,
+            str(e),
         )
-        return MappedScore(accession_id=row.accession, score=row.score, error_message=e)
+        return MappedScore(
+            accession_id=row.accession, score=row.score, error_message=str(e)
+        )
 
     try:
         post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
@@ -463,14 +467,14 @@ def _map_genomic(
             "An error occurred while generating post-mapped genomic variant for %s, accession %s: %s",
             row.hgvs_nt,
             row.accession,
-            e,
+            str(e),
         )
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
             annotation_layer=AnnotationLayer.GENOMIC,
             pre_mapped=pre_mapped_genomic,
-            error_message=e,
+            error_message=str(e),
         )
 
     return MappedScore(
