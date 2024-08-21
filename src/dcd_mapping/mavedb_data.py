@@ -156,13 +156,17 @@ def get_scoreset_metadata(
     """
     metadata = get_raw_scoreset_metadata(scoreset_urn, dcd_mapping_dir)
 
+    if len(metadata["targetGenes"]) > 1:
+        msg = f"Multiple target genes for {scoreset_urn}. Multi-target score sets are not currently supported."
+        raise ResourceAcquisitionError(msg)
+    gene = metadata["targetGenes"][0]
+    target_sequence_gene = gene.get("targetSequence")
+    if target_sequence_gene is None:
+        msg = f"No target sequence available for {scoreset_urn}. Accession-based score sets are not currently supported."
+        raise ResourceAcquisitionError(msg)
     if not _metadata_response_is_human(metadata):
         msg = f"Experiment for {scoreset_urn} contains no human targets"
         raise ResourceAcquisitionError(msg)
-    if len(metadata["targetGenes"]) > 1:
-        msg = f"Multiple target genes for {scoreset_urn} -- look into this."
-        raise ResourceAcquisitionError(msg)
-    gene = metadata["targetGenes"][0]
     try:
         structured_data = ScoresetMetadata(
             urn=metadata["urn"],

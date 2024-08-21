@@ -451,6 +451,9 @@ def _get_mapped_reference_sequence(
     :return A MappedReferenceSequence object
     """
     if layer == AnnotationLayer.PROTEIN and tx_output is not None:
+        if tx_output.np is None:
+            msg = "No NP accession associated with reference transcript"
+            raise ValueError(msg)
         vrs_id = get_vrs_id_from_identifier(tx_output.np)
         if vrs_id is None:
             raise ValueError
@@ -486,6 +489,28 @@ def _set_scoreset_layer(
         if mapping.annotation_layer == AnnotationLayer.GENOMIC:
             return AnnotationLayer.GENOMIC
     return AnnotationLayer.PROTEIN
+
+
+def write_scoreset_mapping_to_json(
+    urn: str,
+    scoreset_mapping: ScoresetMapping,
+    output_path: Path | None = None,
+) -> Path:
+    """Write the given ScoresetMapping as a JSON at the specified
+    or default ouput path.
+    """
+    if not output_path:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        output_path = LOCAL_STORE_PATH / f"{urn}_mapping_{now}.json"
+
+    _logger.info("Saving mapping output to %s", output_path)
+    with output_path.open("w") as file:
+        json.dump(
+            scoreset_mapping.model_dump(exclude_unset=True, exclude_none=True),
+            file,
+            indent=4,
+        )
+    return output_path
 
 
 def save_mapped_output_json(
@@ -526,6 +551,16 @@ def save_mapped_output_json(
         reference_sequences[layer][
             "mapped_reference_sequence"
         ] = _get_mapped_reference_sequence(layer, tx_output, align_result)
+    # except Exception as e:
+    #     _logger.warning(
+    #         str(e)
+    #     )
+    #     output = ScoresetMapping(
+    #         metadata=metadata,
+    #         error_message = str(e).strip("'")
+    #     )
+
+    #     return write_scoreset_mapping_to_json
 
     mapped_scores: list[ScoreAnnotation] = []
     for m in mappings:
@@ -552,15 +587,4 @@ def save_mapped_output_json(
         mapped_scores=mapped_scores,
     )
 
-    if not output_path:
-        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
-        output_path = LOCAL_STORE_PATH / f"{urn}_mapping_{now}.json"
-
-    _logger.info("Saving mapping output to %s", output_path)
-    with output_path.open("w") as file:
-        json.dump(
-            output.model_dump(exclude_unset=True, exclude_none=True),
-            file,
-            indent=4,
-        )
-    return output_path
+    return write_scoreset_mapping_to_json(urn, output, output_path)

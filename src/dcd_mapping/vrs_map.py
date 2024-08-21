@@ -4,7 +4,6 @@ import logging
 from collections.abc import Iterable
 from itertools import cycle
 
-import click
 from Bio.Seq import Seq
 from cool_seq_tool.schemas import AnnotationLayer, Strand
 from ga4gh.core import ga4gh_identify, sha512t24u
@@ -226,10 +225,7 @@ def _adjust_genomic_variant_to_ref(
             break
 
     if query_subrange_containing_hit is None or target_subrange_containing_hit is None:
-        msg = (
-            f"Cannot process variant {variant} because it is not fully contained "
-            + "within the aligned portion of the query sequence"
-        )
+        msg = f"Cannot process variant {variant} because it is not fully contained within the aligned portion of the query sequence"
         raise ValueError(msg)
 
     for idx, start in enumerate(starts):
@@ -386,7 +382,7 @@ def _map_protein_coding_pro(
             score=row.score,
             annotation_layer=AnnotationLayer.PROTEIN,
             pre_mapped=pre_mapped_protein,
-            error_message=str(e),
+            error_message=str(e).strip("'"),
         )
 
     return MappedScore(
@@ -680,12 +676,12 @@ def vrs_map(
     :return: A list of mapping results
     """
     # TODO address this hardcoding, and if we keep it, this should be a score set mapping error message
-    if metadata.urn == "urn:mavedb:00000072-a-1":
-        msg = f"No RefSeq accession is available for {metadata.urn}."
-        if not silent:
-            click.echo(msg)
-        _logger.warning(msg)
-        return None
+    # if metadata.urn == "urn:mavedb:00000072-a-1":
+    #     msg = f"No RefSeq accession is available for {metadata.urn}."
+    #     if not silent:
+    #         click.echo(msg)
+    #     _logger.warning(msg)
+    #     return None
 
     if metadata.target_gene_category == TargetType.PROTEIN_CODING and transcript:
         return _map_protein_coding(
