@@ -181,6 +181,7 @@ async def map_scoreset(
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
         # raise e TODO do we still want to raise an error in this case, after writing the file?
         return
+    # TODO handle UTA errors separately, don't write scoresetmapping to file
     _emit_info("Reference selection complete.", silent)
 
     _emit_info("Mapping to VRS...", silent)

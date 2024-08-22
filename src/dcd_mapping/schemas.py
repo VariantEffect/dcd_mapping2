@@ -1,4 +1,5 @@
 """Provide class definitions for commonly-used information objects."""
+import datetime
 from enum import Enum
 from typing import Any, Literal
 
@@ -7,6 +8,7 @@ from ga4gh.vrs._internal.models import Allele, Haplotype
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
 
 from dcd_mapping import vrs_v1_schemas
+from dcd_mapping.version import dcd_mapping_version
 
 
 class TargetSequenceType(str, Enum):
@@ -189,7 +191,9 @@ class ScoreAnnotationWithLayer(ScoreAnnotation):
 class ScoresetMapping(BaseModel):
     """Provide all mapped scores for a scoreset."""
 
-    metadata: Any  # TODO get exact MaveDB metadata structure? | None
+    metadata: Any  # TODO get exact MaveDB metadata structure?
+    dcd_mapping_version: str = dcd_mapping_version
+    mapped_date_utc: str = datetime.datetime.now(tz=datetime.UTC).isoformat()
     computed_protein_reference_sequence: ComputedReferenceSequence | None = None
     mapped_protein_reference_sequence: MappedReferenceSequence | None = None
     computed_genomic_reference_sequence: ComputedReferenceSequence | None = None

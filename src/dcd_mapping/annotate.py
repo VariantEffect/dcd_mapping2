@@ -506,7 +506,7 @@ def write_scoreset_mapping_to_json(
     _logger.info("Saving mapping output to %s", output_path)
     with output_path.open("w") as file:
         json.dump(
-            scoreset_mapping.model_dump(exclude_unset=True, exclude_none=True),
+            scoreset_mapping.model_dump(exclude_unset=False, exclude_none=True),
             file,
             indent=4,
         )
