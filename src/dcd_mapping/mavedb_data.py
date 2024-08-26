@@ -32,6 +32,10 @@ __all__ = [
 _logger = logging.getLogger(__name__)
 
 
+class ScoresetNotSupportedError(Exception):
+    """Raise when a score set cannot be mapped because it has characteristics that are not currently supported."""
+
+
 def get_scoreset_urns() -> set[str]:
     """Fetch all scoreset URNs. Since species is annotated at the scoreset target level,
     we can't yet filter on anything like `homo sapien` -- meaning this is fairly slow.
@@ -158,15 +162,15 @@ def get_scoreset_metadata(
 
     if len(metadata["targetGenes"]) > 1:
         msg = f"Multiple target genes for {scoreset_urn}. Multi-target score sets are not currently supported."
-        raise ResourceAcquisitionError(msg)
+        raise ScoresetNotSupportedError(msg)
     gene = metadata["targetGenes"][0]
     target_sequence_gene = gene.get("targetSequence")
     if target_sequence_gene is None:
         msg = f"No target sequence available for {scoreset_urn}. Accession-based score sets are not currently supported."
-        raise ResourceAcquisitionError(msg)
+        raise ScoresetNotSupportedError(msg)
     if not _metadata_response_is_human(metadata):
         msg = f"Experiment for {scoreset_urn} contains no human targets"
-        raise ResourceAcquisitionError(msg)
+        raise ScoresetNotSupportedError(msg)
     try:
         structured_data = ScoresetMetadata(
             urn=metadata["urn"],
@@ -179,7 +183,7 @@ def get_scoreset_metadata(
     except (KeyError, ValidationError) as e:
         msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
         _logger.error(msg)
-        raise ResourceAcquisitionError(msg) from e
+        raise ScoresetNotSupportedError(msg) from e
 
     return structured_data
 

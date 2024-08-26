@@ -212,12 +212,15 @@ async def get_protein_accession(transcript: str) -> str | None:
     :param transcript: transcript accession, e.g. ``"NM_002529.3"``
     :return: protein accession if successful
     """
-    uta = CoolSeqToolBuilder().uta_db
-    query = f"""
-    SELECT pro_ac FROM {uta.schema}.associated_accessions
-    WHERE tx_ac = '{transcript}'
-    """  # noqa: S608
-    result = await uta.execute_query(query)
+    try:
+        uta = CoolSeqToolBuilder().uta_db
+        query = f"""
+        SELECT pro_ac FROM {uta.schema}.associated_accessions
+        WHERE tx_ac = '{transcript}'
+        """  # noqa: S608
+        result = await uta.execute_query(query)
+    except Exception as e:
+        raise DataLookupError from e
     if result:
         return result[0]["pro_ac"]
     return None
@@ -239,16 +242,19 @@ async def get_transcripts(
     :param end: ending position
     :return: candidate transcript accessions
     """
-    uta = CoolSeqToolBuilder().uta_db
-    query = f"""
-    SELECT tx_ac
-    FROM {uta.schema}.tx_exon_aln_v
-    WHERE hgnc = '{gene_symbol}'
-      AND ({start} BETWEEN alt_start_i AND alt_end_i OR {end} BETWEEN alt_start_i AND alt_end_i)
-      AND alt_ac = '{chromosome_ac}'
-      AND tx_ac NOT LIKE 'NR_%';
-    """  # noqa: S608
-    result = await uta.execute_query(query)
+    try:
+        uta = CoolSeqToolBuilder().uta_db
+        query = f"""
+        SELECT tx_ac
+        FROM {uta.schema}.tx_exon_aln_v
+        WHERE hgnc = '{gene_symbol}'
+        AND ({start} BETWEEN alt_start_i AND alt_end_i OR {end} BETWEEN alt_start_i AND alt_end_i)
+        AND alt_ac = '{chromosome_ac}'
+        AND tx_ac NOT LIKE 'NR_%';
+        """  # noqa: S608
+        result = await uta.execute_query(query)
+    except Exception as e:
+        raise DataLookupError from e
     return [row["tx_ac"] for row in result]
 
 

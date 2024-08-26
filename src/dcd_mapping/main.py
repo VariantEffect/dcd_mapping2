@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import click
+from requests import HTTPError
 
 from dcd_mapping.align import AlignmentError, BlatNotFoundError, align
 from dcd_mapping.annotate import (
@@ -13,8 +14,17 @@ from dcd_mapping.annotate import (
     save_mapped_output_json,
     write_scoreset_mapping_to_json,
 )
-from dcd_mapping.lookup import check_gene_normalizer, check_seqrepo, check_uta
-from dcd_mapping.mavedb_data import get_scoreset_metadata, get_scoreset_records
+from dcd_mapping.lookup import (
+    DataLookupError,
+    check_gene_normalizer,
+    check_seqrepo,
+    check_uta,
+)
+from dcd_mapping.mavedb_data import (
+    ScoresetNotSupportedError,
+    get_scoreset_metadata,
+    get_scoreset_records,
+)
 from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import (
     ScoreRow,
@@ -150,6 +160,9 @@ async def map_scoreset(
         msg = "BLAT command appears missing. Ensure it is available on the $PATH or use the environment variable BLAT_BIN_PATH to point to it. See instructions in the README prerequisites section for more."
         _emit_info(msg, silent, logging.ERROR)
         raise e
+    except ResourceAcquisitionError as e:
+        _emit_info(f"BLAT resource could not be acquired: {e}", silent, logging.ERROR)
+        raise e
     except AlignmentError as e:
         _emit_info(
             f"Alignment failed for scoreset  {metadata.urn} {e}", silent, logging.ERROR
@@ -160,14 +173,13 @@ async def map_scoreset(
             output_path,
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        # raise e TODO do we still want to raise an error in this case, after writing the file?
         return
     _emit_info("Alignment complete.", silent)
 
     _emit_info("Selecting reference sequence...", silent)
     try:
         transcript = await select_transcript(metadata, records, alignment_result)
-    except TxSelectError as e:
+    except (TxSelectError, KeyError, ValueError) as e:
         _emit_info(
             f"Transcript selection failed for scoreset {metadata.urn}",
             silent,
@@ -179,9 +191,21 @@ async def map_scoreset(
             output_path,
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        # raise e TODO do we still want to raise an error in this case, after writing the file?
         return
-    # TODO handle UTA errors separately, don't write scoresetmapping to file
+    except HTTPError as e:
+        _emit_info(
+            f"HTTP error occurred during transcript selection: {e}",
+            silent,
+            logging.ERROR,
+        )
+        raise e
+    except DataLookupError as e:
+        _emit_info(
+            f"Data lookup error occurred during transcript selection: {e}",
+            silent,
+            logging.ERROR,
+        )
+        raise e
     _emit_info("Reference selection complete.", silent)
 
     _emit_info("Mapping to VRS...", silent)
@@ -197,10 +221,9 @@ async def map_scoreset(
             output_path,
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        # raise e TODO do we still want to raise an error in this case, after writing the file?
         return
     if vrs_results is None:
-        _emit_info(f"No mapping available for {metadata.urn}", silent)
+        _emit_info(f"No mapping available for {metadata.urn}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
             ScoresetMapping(
@@ -210,7 +233,6 @@ async def map_scoreset(
             output_path,
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        # raise e TODO do we still want to raise an error in this case, after writing the file?
         return
     _emit_info("VRS mapping complete.", silent)
 
@@ -227,10 +249,9 @@ async def map_scoreset(
             output_path,
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        # raise e TODO do we still want to raise an error in this case, after writing the file?
         return
     if vrs_results is None:
-        _emit_info(f"No annotation available for {metadata.urn}", silent)
+        _emit_info(f"No annotation available for {metadata.urn}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
             ScoresetMapping(
@@ -240,7 +261,6 @@ async def map_scoreset(
             output_path,
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        # raise e TODO do we still want to raise an error in this case, after writing the file?
         return
     try:
         final_output = save_mapped_output_json(
@@ -255,6 +275,7 @@ async def map_scoreset(
         _emit_info(
             f"Error in creating or saving final score set mapping for {metadata.urn} {e}",
             silent,
+            logging.ERROR,
         )
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
@@ -262,7 +283,6 @@ async def map_scoreset(
             output_path,
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        # raise e TODO do we still want to raise an error in this case, after writing the file?
         return
     _emit_info(f"Annotated scores saved to: {final_output}.", silent)
 
@@ -284,18 +304,23 @@ async def map_scoreset_urn(
     try:
         metadata = get_scoreset_metadata(urn)
         records = get_scoreset_records(urn, silent)
+    except ScoresetNotSupportedError as e:
+        _emit_info(f"Score set not supported: {e}", silent, logging.ERROR)
+        final_output = write_scoreset_mapping_to_json(
+            urn,
+            ScoresetMapping(
+                metadata=None,
+                error_message=str(e).strip("'"),
+            ),
+            output_path,
+        )
+        _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
+        return
     except ResourceAcquisitionError as e:
         msg = f"Unable to acquire resource from MaveDB: {e}"
         _logger.critical(msg)
         click.echo(f"Error: {msg}")
-        final_output = write_scoreset_mapping_to_json(
-            urn,
-            ScoresetMapping(metadata=None, error_message=str(e).strip("'")),
-            output_path,
-        )
-        _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        # raise e TODO do we still want to raise an error in this case, after writing the file?
-        return
+        raise e
     await map_scoreset(
         metadata, records, output_path, vrs_version, prefer_genomic, silent
     )
