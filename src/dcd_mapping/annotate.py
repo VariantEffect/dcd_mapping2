@@ -456,7 +456,8 @@ def _get_mapped_reference_sequence(
             raise ValueError(msg)
         vrs_id = get_vrs_id_from_identifier(tx_output.np)
         if vrs_id is None:
-            raise ValueError
+            msg = "ID could not be acquired from Seqrepo for transcript identifier"
+            raise ValueError(msg)
         return MappedReferenceSequence(
             sequence_type=TargetSequenceType.PROTEIN,
             sequence_id=vrs_id,
@@ -465,7 +466,8 @@ def _get_mapped_reference_sequence(
     seq_id = get_chromosome_identifier(align_result.chrom)
     vrs_id = get_vrs_id_from_identifier(seq_id)
     if vrs_id is None:
-        raise ValueError
+        msg = "ID could not be acquired from Seqrepo for chromosome identifier"
+        raise ValueError(msg)
     return MappedReferenceSequence(
         sequence_type=TargetSequenceType.DNA,
         sequence_id=vrs_id,
