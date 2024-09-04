@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from cool_seq_tool.schemas import AnnotationLayer, Strand, TranscriptPriority
 from ga4gh.vrs._internal.models import Allele, Haplotype
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from dcd_mapping import vrs_v1_schemas
 from dcd_mapping.version import dcd_mapping_version
@@ -192,8 +192,10 @@ class ScoresetMapping(BaseModel):
     """Provide all mapped scores for a scoreset."""
 
     metadata: Any  # TODO get exact MaveDB metadata structure?
-    dcd_mapping_version: str = dcd_mapping_version
-    mapped_date_utc: str = datetime.datetime.now(tz=datetime.UTC).isoformat()
+    dcd_mapping_version: str = Field(default=dcd_mapping_version)
+    mapped_date_utc: str = Field(
+        default=datetime.datetime.now(tz=datetime.UTC).isoformat()
+    )
     computed_protein_reference_sequence: ComputedReferenceSequence | None = None
     mapped_protein_reference_sequence: MappedReferenceSequence | None = None
     computed_genomic_reference_sequence: ComputedReferenceSequence | None = None
