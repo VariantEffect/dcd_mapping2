@@ -15,7 +15,9 @@ from pydantic import ValidationError
 
 from dcd_mapping.resource_utils import (
     LOCAL_STORE_PATH,
+    MAVEDB_BASE_URL,
     ResourceAcquisitionError,
+    authentication_header,
     http_download,
 )
 from dcd_mapping.schemas import ScoreRow, ScoresetMetadata, UniProtRef
@@ -42,7 +44,11 @@ def get_scoreset_urns() -> set[str]:
 
     :return: set of URN strings
     """
-    r = requests.get("https://api.mavedb.org/api/v1/experiments/", timeout=30)
+    r = requests.get(
+        f"{MAVEDB_BASE_URL}/api/v1/experiments/",
+        timeout=30,
+        headers=authentication_header(),
+    )
     r.raise_for_status()
     scoreset_urn_lists = [
         experiment["scoreSetUrns"]
@@ -78,7 +84,11 @@ def get_human_urns() -> list[str]:
     scoreset_urns = get_scoreset_urns()
     human_scoresets: list[str] = []
     for urn in scoreset_urns:
-        r = requests.get(f"https://api.mavedb.org/api/v1/score-sets/{urn}", timeout=30)
+        r = requests.get(
+            f"{MAVEDB_BASE_URL}/api/v1/score-sets/{urn}",
+            timeout=30,
+            headers=authentication_header(),
+        )
         try:
             r.raise_for_status()
         except requests.exceptions.HTTPError:
@@ -127,8 +137,8 @@ def get_raw_scoreset_metadata(
         dcd_mapping_dir = LOCAL_STORE_PATH
     metadata_file = dcd_mapping_dir / f"{scoreset_urn}_metadata.json"
     if not metadata_file.exists():
-        url = f"https://api.mavedb.org/api/v1/score-sets/{scoreset_urn}"
-        r = requests.get(url, timeout=30)
+        url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{scoreset_urn}"
+        r = requests.get(url, timeout=30, headers=authentication_header())
         try:
             r.raise_for_status()
         except requests.HTTPError as e:
@@ -246,7 +256,7 @@ def get_scoreset_records(
         if urn == "urn:mavedb:00000053-a-1":
             _get_experiment_53_scores(scores_csv, silent)
         else:
-            url = f"https://api.mavedb.org/api/v1/score-sets/{urn}/scores"
+            url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{urn}/scores"
             try:
                 http_download(url, scores_csv, silent)
             except requests.HTTPError as e:
