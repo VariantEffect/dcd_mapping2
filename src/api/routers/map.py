@@ -1,6 +1,7 @@
 """"Provide mapping router"""
 from cool_seq_tool.schemas import AnnotationLayer
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from requests import HTTPError
 
 from dcd_mapping.align import AlignmentError, BlatNotFoundError, align
@@ -57,12 +58,20 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
         msg = f"BLAT resource could not be acquired: {e}"
         raise HTTPException(status_code=500, detail=msg) from e
     except AlignmentError as e:
-        return ScoresetMapping(metadata=metadata, error_message=str(e).strip("'"))
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata, error_message=str(e).strip("'")
+            ).model_dump(exclude_none=True)
+        )
 
     try:
         transcript = await select_transcript(metadata, records, alignment_result)
     except (TxSelectError, KeyError, ValueError) as e:
-        return ScoresetMapping(metadata=metadata, error_message=str(e).strip("'"))
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata, error_message=str(e).strip("'")
+            ).model_dump(exclude_none=True)
+        )
     except HTTPError as e:
         msg = f"HTTP error occurred during transcript selection: {e}"
         raise HTTPException(status_code=500, detail=msg) from e
@@ -73,7 +82,11 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
     try:
         vrs_results = vrs_map(metadata, alignment_result, records, transcript, True)
     except VrsMapError as e:
-        return ScoresetMapping(metadata=metadata, error_message=str(e).strip("'"))
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata, error_message=str(e).strip("'")
+            ).model_dump(exclude_none=True)
+        )
     if vrs_results is None:
         return ScoresetMapping(
             metadata=metadata,
@@ -83,7 +96,11 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
     try:
         vrs_results = annotate(vrs_results, transcript, metadata, VrsVersion.V_2)
     except Exception as e:
-        return ScoresetMapping(metadata=metadata, error_message=str(e).strip("'"))
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata, error_message=str(e).strip("'")
+            ).model_dump(exclude_none=True)
+        )
     if vrs_results is None:
         return ScoresetMapping(
             metadata=metadata,
@@ -118,21 +135,27 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
                 # drop annotation layer from mapping object
                 mapped_scores.append(ScoreAnnotation(**m.model_dump()))
     except Exception as e:
-        return ScoresetMapping(metadata=metadata, error_message=str(e).strip("'"))
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata, error_message=str(e).strip("'")
+            ).model_dump(exclude_none=True)
+        )
 
-    return ScoresetMapping(
-        metadata=raw_metadata,
-        computed_protein_reference_sequence=reference_sequences[
-            AnnotationLayer.PROTEIN
-        ]["computed_reference_sequence"],
-        mapped_protein_reference_sequence=reference_sequences[AnnotationLayer.PROTEIN][
-            "mapped_reference_sequence"
-        ],
-        computed_genomic_reference_sequence=reference_sequences[
-            AnnotationLayer.GENOMIC
-        ]["computed_reference_sequence"],
-        mapped_genomic_reference_sequence=reference_sequences[AnnotationLayer.GENOMIC][
-            "mapped_reference_sequence"
-        ],
-        mapped_scores=mapped_scores,
+    return JSONResponse(
+        content=ScoresetMapping(
+            metadata=raw_metadata,
+            computed_protein_reference_sequence=reference_sequences[
+                AnnotationLayer.PROTEIN
+            ]["computed_reference_sequence"],
+            mapped_protein_reference_sequence=reference_sequences[
+                AnnotationLayer.PROTEIN
+            ]["mapped_reference_sequence"],
+            computed_genomic_reference_sequence=reference_sequences[
+                AnnotationLayer.GENOMIC
+            ]["computed_reference_sequence"],
+            mapped_genomic_reference_sequence=reference_sequences[
+                AnnotationLayer.GENOMIC
+            ]["mapped_reference_sequence"],
+            mapped_scores=mapped_scores,
+        ).model_dump(exclude_none=True)
     )
