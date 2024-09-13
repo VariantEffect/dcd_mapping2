@@ -205,6 +205,7 @@ def _get_best_hit(output: QueryResult, urn: str, chromosome: str | None) -> Hit:
         else:
             if list(output):
                 hit_chrs = [h.id for h in output]
+                # TODO should this be an error rather than a warning? it seems like a problem if we can't find a hit on the expected chromosome
                 _logger.warning(
                     "Failed to match hit chromosomes during alignment. URN: %s, expected chromosome: %s, hit chromosomes: %s",
                     urn,
@@ -221,8 +222,8 @@ def _get_best_hit(output: QueryResult, urn: str, chromosome: str | None) -> Hit:
             best_score_hit = hit
 
     if best_score_hit is None:
-        _logger.error("Couldn't get hits from %s -- check BLAT output.", urn)
-        raise AlignmentError
+        msg = f"Couldn't get BLAT hits from {urn}"
+        raise AlignmentError(msg)
 
     return best_score_hit
 
@@ -246,12 +247,8 @@ def _get_best_hsp(hit: Hit, urn: str, gene_location: GeneLocation | None) -> HSP
     else:
         best_hsp = max(hit, key=lambda hsp: hsp.score)
     if best_hsp is None:
-        _logger.error(
-            "Unable to get best HSP from hit -- this should be impossible? urn: %s, hit: %s",
-            urn,
-            hit,
-        )
-        raise AlignmentError
+        msg = f"Unable to get best HSP from BLAT hit: {hit}"
+        raise AlignmentError(msg)
     return best_hsp
 
 

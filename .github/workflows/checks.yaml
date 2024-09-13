@@ -4,6 +4,8 @@ jobs:
   test:
     name: test py${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    env:
+      MAVEDB_BASE_URL: https://api.mavedb.org
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]

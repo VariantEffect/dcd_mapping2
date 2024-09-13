@@ -1,12 +1,14 @@
 """Provide class definitions for commonly-used information objects."""
+import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from cool_seq_tool.schemas import AnnotationLayer, Strand, TranscriptPriority
 from ga4gh.vrs._internal.models import Allele, Haplotype
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from dcd_mapping import vrs_v1_schemas
+from dcd_mapping.version import dcd_mapping_version
 
 
 class TargetSequenceType(str, Enum):
@@ -152,10 +154,11 @@ class MappedScore(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
     accession_id: StrictStr
-    annotation_layer: AnnotationLayer
     score: str | None
-    pre_mapped: Allele | Haplotype
-    post_mapped: Allele | Haplotype
+    annotation_layer: AnnotationLayer | None = None
+    pre_mapped: Allele | Haplotype | None = None
+    post_mapped: Allele | Haplotype | None = None
+    error_message: str | None = None
 
 
 class ScoreAnnotation(BaseModel):
@@ -164,12 +167,15 @@ class ScoreAnnotation(BaseModel):
     This model defines what an individual mapping instance looks like in the final JSON.
     """
 
-    pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype
-    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype
-    vrs_version: VrsVersion
     mavedb_id: StrictStr
-    relation: Literal["SO:is_homologous_to"] = "SO:is_homologous_to"
-    score: float | None
+    relation: Literal[
+        "SO:is_homologous_to"
+    ] = "SO:is_homologous_to"  # TODO this should probably be None if pre_mapped is false?
+    pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None = None
+    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None = None
+    vrs_version: VrsVersion | None = None
+    score: float | None = None
+    error_message: str | None = None
 
 
 class ScoreAnnotationWithLayer(ScoreAnnotation):
@@ -179,15 +185,20 @@ class ScoreAnnotationWithLayer(ScoreAnnotation):
     Used for filtering individual annotations just before saving the final JSON product.
     """
 
-    annotation_layer: AnnotationLayer
+    annotation_layer: AnnotationLayer | None = None
 
 
 class ScoresetMapping(BaseModel):
     """Provide all mapped scores for a scoreset."""
 
     metadata: Any  # TODO get exact MaveDB metadata structure?
-    computed_protein_reference_sequence: ComputedReferenceSequence | None
-    mapped_protein_reference_sequence: MappedReferenceSequence | None
-    computed_genomic_reference_sequence: ComputedReferenceSequence | None
-    mapped_genomic_reference_sequence: MappedReferenceSequence | None
-    mapped_scores: list[ScoreAnnotation]
+    dcd_mapping_version: str = Field(default=dcd_mapping_version)
+    mapped_date_utc: str = Field(
+        default=datetime.datetime.now(tz=datetime.UTC).isoformat()
+    )
+    computed_protein_reference_sequence: ComputedReferenceSequence | None = None
+    mapped_protein_reference_sequence: MappedReferenceSequence | None = None
+    computed_genomic_reference_sequence: ComputedReferenceSequence | None = None
+    mapped_genomic_reference_sequence: MappedReferenceSequence | None = None
+    mapped_scores: list[ScoreAnnotation] | None = None
+    error_message: str | None = None
