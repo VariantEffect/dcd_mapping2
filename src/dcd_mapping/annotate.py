@@ -251,34 +251,35 @@ def _annotate_allele_mapping(
     post_mapped: Allele = mapped_score.post_mapped
 
     # get vrs_ref_allele_seq for pre-mapped variants
-    pre_mapped.extensions = [_get_vrs_ref_allele_seq(post_mapped, metadata, tx_results)]
+    pre_mapped.extensions = [_get_vrs_ref_allele_seq(pre_mapped, metadata, tx_results)]
 
-    # Determine reference sequence
-    if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
-        sequence_id = f"ga4gh:{mapped_score.post_mapped.location.sequenceReference.refgetAccession}"
-        accession = get_chromosome_identifier_from_vrs_id(sequence_id)
-        if accession is None:
-            raise ValueError
-        if accession.startswith("refseq:"):
-            accession = accession[7:]
-    else:
-        if tx_results is None:
-            raise ValueError  # impossible by definition
-        accession = tx_results.np
+    if post_mapped:
+        # Determine reference sequence
+        if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
+            sequence_id = f"ga4gh:{mapped_score.post_mapped.location.sequenceReference.refgetAccession}"
+            accession = get_chromosome_identifier_from_vrs_id(sequence_id)
+            if accession is None:
+                raise ValueError
+            if accession.startswith("refseq:"):
+                accession = accession[7:]
+        else:
+            if tx_results is None:
+                raise ValueError  # impossible by definition
+            accession = tx_results.np
 
-    sr = get_seqrepo()
-    loc = mapped_score.post_mapped.location
-    sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
-    ref = sr.get_sequence(sequence_id, loc.start, loc.end)
-    post_mapped.extensions = [
-        Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
-    ]
-    hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
-    post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
+        sr = get_seqrepo()
+        loc = mapped_score.post_mapped.location
+        sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
+        ref = sr.get_sequence(sequence_id, loc.start, loc.end)
+        post_mapped.extensions = [
+            Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
+        ]
+        hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
+        post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
 
     if vrs_version == VrsVersion.V_1_3:
         pre_mapped = _allele_to_vod(pre_mapped)
-        post_mapped = _allele_to_vod(post_mapped)
+        post_mapped = _allele_to_vod(post_mapped) if post_mapped else None
 
     return ScoreAnnotationWithLayer(
         pre_mapped=pre_mapped,
@@ -287,24 +288,27 @@ def _annotate_allele_mapping(
         mavedb_id=mapped_score.accession_id,
         score=float(mapped_score.score) if mapped_score.score else None,
         annotation_layer=mapped_score.annotation_layer,
+        error_message=mapped_score.error_message
+        if mapped_score.error_message
+        else None,  # TODO might not need if statement here
     )
 
 
 def _annotate_haplotype_mapping(
-    mapping: MappedScore,
+    mapped_score: MappedScore,
     tx_results: TxSelectResult | None,
     metadata: ScoresetMetadata,
     vrs_version: VrsVersion = VrsVersion.V_2,
 ) -> ScoreAnnotationWithLayer:
     """Perform annotations and, if necessary, create VRS 1.3 equivalents for haplotype mappings."""
-    pre_mapped: Haplotype = mapping.pre_mapped  # type: ignore
-    post_mapped: Haplotype = mapping.post_mapped  # type: ignore
+    pre_mapped: Haplotype = mapped_score.pre_mapped  # type: ignore
+    post_mapped: Haplotype = mapped_score.post_mapped  # type: ignore
     # get vrs_ref_allele_seq for pre-mapped variants
     for allele in pre_mapped.members:
         allele.extensions = [_get_vrs_ref_allele_seq(allele, metadata, tx_results)]
 
     # Determine reference sequence
-    if mapping.annotation_layer == AnnotationLayer.GENOMIC:
+    if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
         sequence_id = (
             f"ga4gh:{post_mapped.members[0].location.sequenceReference.refgetAccession}"
         )
@@ -318,28 +322,32 @@ def _annotate_haplotype_mapping(
             raise ValueError  # impossible by definition
         accession = tx_results.np
 
-    sr = get_seqrepo()
-    for allele in post_mapped.members:
-        loc = allele.location
-        sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
-        ref = sr.get_sequence(sequence_id, loc.start, loc.end)  # TODO type issues??
-        allele.extensions = [
-            Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
-        ]
-        hgvs, syntax = _get_hgvs_string(allele, accession)
-        allele.expressions = [Expression(syntax=syntax, value=hgvs)]
+    if post_mapped:
+        sr = get_seqrepo()
+        for allele in post_mapped.members:
+            loc = allele.location
+            sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
+            ref = sr.get_sequence(sequence_id, loc.start, loc.end)  # TODO type issues??
+            allele.extensions = [
+                Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
+            ]
+            hgvs, syntax = _get_hgvs_string(allele, accession)
+            allele.expressions = [Expression(syntax=syntax, value=hgvs)]
 
     if vrs_version == VrsVersion.V_1_3:
         pre_mapped = _haplotype_to_haplotype_1_3(pre_mapped)
-        post_mapped = _haplotype_to_haplotype_1_3(post_mapped)
+        post_mapped = _haplotype_to_haplotype_1_3(post_mapped) if post_mapped else None
 
     return ScoreAnnotationWithLayer(
         pre_mapped=pre_mapped,
         post_mapped=post_mapped,
         vrs_version=vrs_version,
-        mavedb_id=mapping.accession_id,
-        score=float(mapping.score) if mapping.score is not None else None,
-        annotation_layer=mapping.annotation_layer,
+        mavedb_id=mapped_score.accession_id,
+        score=float(mapped_score.score) if mapped_score.score is not None else None,
+        annotation_layer=mapped_score.annotation_layer,
+        error_message=mapped_score.error_message
+        if mapped_score.error_message
+        else None,  # TODO might not need if statement here
     )
 
 
@@ -367,16 +375,26 @@ def annotate(
     """
     score_annotations = []
     for mapped_score in mapped_scores:
-        if isinstance(mapped_score.pre_mapped, Haplotype) and isinstance(
-            mapped_score.post_mapped, Haplotype
+        if mapped_score.pre_mapped is None:
+            score_annotations.append(
+                ScoreAnnotationWithLayer(
+                    mavedb_id=mapped_score.accession_id,
+                    score=float(mapped_score.score) if mapped_score.score else None,
+                    error_message=mapped_score.error_message,
+                )
+            )
+        elif isinstance(mapped_score.pre_mapped, Haplotype) and (
+            isinstance(mapped_score.post_mapped, Haplotype)
+            or mapped_score.post_mapped is None
         ):
             score_annotations.append(
                 _annotate_haplotype_mapping(
                     mapped_score, tx_results, metadata, vrs_version
                 )
             )
-        elif isinstance(mapped_score.pre_mapped, Allele) and isinstance(
-            mapped_score.post_mapped, Allele
+        elif isinstance(mapped_score.pre_mapped, Allele) and (
+            isinstance(mapped_score.post_mapped, Allele)
+            or mapped_score.post_mapped is None
         ):
             score_annotations.append(
                 _annotate_allele_mapping(
@@ -384,6 +402,7 @@ def annotate(
                 )
             )
         else:
+            # TODO how to combine this error message with other potential error messages?
             ValueError("inconsistent variant structure")
 
     return score_annotations
@@ -432,9 +451,13 @@ def _get_mapped_reference_sequence(
     :return A MappedReferenceSequence object
     """
     if layer == AnnotationLayer.PROTEIN and tx_output is not None:
+        if tx_output.np is None:
+            msg = "No NP accession associated with reference transcript"
+            raise ValueError(msg)
         vrs_id = get_vrs_id_from_identifier(tx_output.np)
         if vrs_id is None:
-            raise ValueError
+            msg = "ID could not be acquired from Seqrepo for transcript identifier"
+            raise ValueError(msg)
         return MappedReferenceSequence(
             sequence_type=TargetSequenceType.PROTEIN,
             sequence_id=vrs_id,
@@ -443,7 +466,8 @@ def _get_mapped_reference_sequence(
     seq_id = get_chromosome_identifier(align_result.chrom)
     vrs_id = get_vrs_id_from_identifier(seq_id)
     if vrs_id is None:
-        raise ValueError
+        msg = "ID could not be acquired from Seqrepo for chromosome identifier"
+        raise ValueError(msg)
     return MappedReferenceSequence(
         sequence_type=TargetSequenceType.DNA,
         sequence_id=vrs_id,
@@ -467,6 +491,28 @@ def _set_scoreset_layer(
         if mapping.annotation_layer == AnnotationLayer.GENOMIC:
             return AnnotationLayer.GENOMIC
     return AnnotationLayer.PROTEIN
+
+
+def write_scoreset_mapping_to_json(
+    urn: str,
+    scoreset_mapping: ScoresetMapping,
+    output_path: Path | None = None,
+) -> Path:
+    """Write the given ScoresetMapping as a JSON at the specified
+    or default ouput path.
+    """
+    if not output_path:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        output_path = LOCAL_STORE_PATH / f"{urn}_mapping_{now}.json"
+
+    _logger.info("Saving mapping output to %s", output_path)
+    with output_path.open("w") as file:
+        json.dump(
+            scoreset_mapping.model_dump(exclude_unset=False, exclude_none=True),
+            file,
+            indent=4,
+        )
+    return output_path
 
 
 def save_mapped_output_json(
@@ -507,10 +553,22 @@ def save_mapped_output_json(
         reference_sequences[layer][
             "mapped_reference_sequence"
         ] = _get_mapped_reference_sequence(layer, tx_output, align_result)
+    # except Exception as e:
+    #     _logger.warning(
+    #         str(e)
+    #     )
+    #     output = ScoresetMapping(
+    #         metadata=metadata,
+    #         error_message = str(e).strip("'")
+    #     )
+
+    #     return write_scoreset_mapping_to_json
 
     mapped_scores: list[ScoreAnnotation] = []
     for m in mappings:
-        if m.annotation_layer in preferred_layers:
+        if m.pre_mapped is None:
+            mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+        elif m.annotation_layer in preferred_layers:
             # drop annotation layer from mapping object
             mapped_scores.append(ScoreAnnotation(**m.model_dump()))
 
@@ -531,15 +589,4 @@ def save_mapped_output_json(
         mapped_scores=mapped_scores,
     )
 
-    if not output_path:
-        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
-        output_path = LOCAL_STORE_PATH / f"{urn}_mapping_{now}.json"
-
-    _logger.info("Saving mapping output to %s", output_path)
-    with output_path.open("w") as file:
-        json.dump(
-            output.model_dump(exclude_unset=True, exclude_none=True),
-            file,
-            indent=4,
-        )
-    return output_path
+    return write_scoreset_mapping_to_json(urn, output, output_path)

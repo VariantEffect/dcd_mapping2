@@ -6,6 +6,9 @@ import click
 import requests
 from tqdm import tqdm
 
+MAVEDB_API_KEY = os.environ.get("MAVEDB_API_KEY")
+MAVEDB_BASE_URL = os.environ.get("MAVEDB_BASE_URL")
+
 LOCAL_STORE_PATH = Path(
     os.environ.get(
         "DCD_MAPPING_RESOURCES_DIR", Path.home() / ".local" / "share" / "dcd_mapping"
@@ -19,6 +22,11 @@ class ResourceAcquisitionError(Exception):
     """Raise when resource acquisition fails."""
 
 
+def authentication_header() -> dict | None:
+    """Fetch with api key envvar, if available."""
+    return {"X-API-key": MAVEDB_API_KEY} if MAVEDB_API_KEY is not None else None
+
+
 def http_download(url: str, out_path: Path, silent: bool = True) -> Path:
     """Download a file via HTTP.
 
@@ -30,7 +38,9 @@ def http_download(url: str, out_path: Path, silent: bool = True) -> Path:
     """
     if not silent:
         click.echo(f"Downloading {out_path.name} to {out_path.parents[0].absolute()}")
-    with requests.get(url, stream=True, timeout=30) as r:
+    with requests.get(
+        url, stream=True, timeout=30, headers=authentication_header()
+    ) as r:
         r.raise_for_status()
         total_size = int(r.headers.get("content-length", 0))
         with out_path.open("wb") as h:

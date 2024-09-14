@@ -15,7 +15,9 @@ from pydantic import ValidationError
 
 from dcd_mapping.resource_utils import (
     LOCAL_STORE_PATH,
+    MAVEDB_BASE_URL,
     ResourceAcquisitionError,
+    authentication_header,
     http_download,
 )
 from dcd_mapping.schemas import ScoreRow, ScoresetMetadata, UniProtRef
@@ -32,13 +34,21 @@ __all__ = [
 _logger = logging.getLogger(__name__)
 
 
+class ScoresetNotSupportedError(Exception):
+    """Raise when a score set cannot be mapped because it has characteristics that are not currently supported."""
+
+
 def get_scoreset_urns() -> set[str]:
     """Fetch all scoreset URNs. Since species is annotated at the scoreset target level,
     we can't yet filter on anything like `homo sapien` -- meaning this is fairly slow.
 
     :return: set of URN strings
     """
-    r = requests.get("https://api.mavedb.org/api/v1/experiments/", timeout=30)
+    r = requests.get(
+        f"{MAVEDB_BASE_URL}/api/v1/experiments/",
+        timeout=30,
+        headers=authentication_header(),
+    )
     r.raise_for_status()
     scoreset_urn_lists = [
         experiment["scoreSetUrns"]
@@ -74,7 +84,11 @@ def get_human_urns() -> list[str]:
     scoreset_urns = get_scoreset_urns()
     human_scoresets: list[str] = []
     for urn in scoreset_urns:
-        r = requests.get(f"https://api.mavedb.org/api/v1/score-sets/{urn}", timeout=30)
+        r = requests.get(
+            f"{MAVEDB_BASE_URL}/api/v1/score-sets/{urn}",
+            timeout=30,
+            headers=authentication_header(),
+        )
         try:
             r.raise_for_status()
         except requests.exceptions.HTTPError:
@@ -123,8 +137,8 @@ def get_raw_scoreset_metadata(
         dcd_mapping_dir = LOCAL_STORE_PATH
     metadata_file = dcd_mapping_dir / f"{scoreset_urn}_metadata.json"
     if not metadata_file.exists():
-        url = f"https://api.mavedb.org/api/v1/score-sets/{scoreset_urn}"
-        r = requests.get(url, timeout=30)
+        url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{scoreset_urn}"
+        r = requests.get(url, timeout=30, headers=authentication_header())
         try:
             r.raise_for_status()
         except requests.HTTPError as e:
@@ -156,13 +170,17 @@ def get_scoreset_metadata(
     """
     metadata = get_raw_scoreset_metadata(scoreset_urn, dcd_mapping_dir)
 
+    if len(metadata["targetGenes"]) > 1:
+        msg = f"Multiple target genes for {scoreset_urn}. Multi-target score sets are not currently supported."
+        raise ScoresetNotSupportedError(msg)
+    gene = metadata["targetGenes"][0]
+    target_sequence_gene = gene.get("targetSequence")
+    if target_sequence_gene is None:
+        msg = f"No target sequence available for {scoreset_urn}. Accession-based score sets are not currently supported."
+        raise ScoresetNotSupportedError(msg)
     if not _metadata_response_is_human(metadata):
         msg = f"Experiment for {scoreset_urn} contains no human targets"
-        raise ResourceAcquisitionError(msg)
-    if len(metadata["targetGenes"]) > 1:
-        msg = f"Multiple target genes for {scoreset_urn} -- look into this."
-        raise ResourceAcquisitionError(msg)
-    gene = metadata["targetGenes"][0]
+        raise ScoresetNotSupportedError(msg)
     try:
         structured_data = ScoresetMetadata(
             urn=metadata["urn"],
@@ -175,7 +193,7 @@ def get_scoreset_metadata(
     except (KeyError, ValidationError) as e:
         msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
         _logger.error(msg)
-        raise ResourceAcquisitionError(msg) from e
+        raise ScoresetNotSupportedError(msg) from e
 
     return structured_data
 
@@ -238,7 +256,7 @@ def get_scoreset_records(
         if urn == "urn:mavedb:00000053-a-1":
             _get_experiment_53_scores(scores_csv, silent)
         else:
-            url = f"https://api.mavedb.org/api/v1/score-sets/{urn}/scores"
+            url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{urn}/scores"
             try:
                 http_download(url, scores_csv, silent)
             except requests.HTTPError as e:
