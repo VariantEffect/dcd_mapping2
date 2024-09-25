@@ -623,6 +623,8 @@ def _construct_vrs_allele(
                 msg = "Must provide sequence id to construct pre-mapped VRS allele"
                 raise ValueError(msg)
             allele.location.sequenceReference.refgetAccession = sequence_id
+        else:
+            allele.location.sequenceReference.label = hgvs_string.split(":")[0]
 
         if "dup" in hgvs_string:
             allele.state.sequence = SequenceString(2 * _get_allele_sequence(allele))
@@ -675,14 +677,6 @@ def vrs_map(
     :param silent: If true, suppress console output
     :return: A list of mapping results
     """
-    # TODO address this hardcoding, and if we keep it, this should be a score set mapping error message
-    # if metadata.urn == "urn:mavedb:00000072-a-1":
-    #     msg = f"No RefSeq accession is available for {metadata.urn}."
-    #     if not silent:
-    #         click.echo(msg)
-    #     _logger.warning(msg)
-    #     return None
-
     if metadata.target_gene_category == TargetType.PROTEIN_CODING and transcript:
         return _map_protein_coding(
             metadata,
