@@ -162,14 +162,17 @@ class GeneNormalizerBuilder:
     """Singleton constructor for Gene Normalizer instance."""
 
     def __new__(cls) -> QueryHandler:
-        """Provide Gene Normalizer instance. Construct it if unavailable.
+        """Provide Gene Normalizer instance. If an instance has already been
+        constructed, close its connection and provide a new one.
 
         :return: singleton instance of ``QueryHandler`` for Gene Normalizer
         """
-        if not hasattr(cls, "instance"):
-            db = create_db()
-            q = QueryHandler(db)
-            cls.instance = q
+        if hasattr(cls, "instance"):
+            cls.instance.db.close_connection()
+            cls.instance = None
+
+        db = create_db()
+        cls.instance = QueryHandler(db)
         return cls.instance
 
 
