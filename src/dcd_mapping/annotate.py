@@ -29,7 +29,6 @@ from dcd_mapping.lookup import (
     get_seqrepo,
     get_vrs_id_from_identifier,
 )
-from dcd_mapping.mavedb_data import get_raw_scoreset_metadata, get_scoreset_metadata
 from dcd_mapping.resource_utils import LOCAL_STORE_PATH
 from dcd_mapping.schemas import (
     AlignmentResult,
@@ -409,7 +408,7 @@ def annotate(
 
 
 def _get_computed_reference_sequence(
-    ss: str,
+    metadata: ScoresetMetadata,
     layer: AnnotationLayer,
     tx_output: TxSelectResult | None = None,
 ) -> ComputedReferenceSequence:
@@ -429,7 +428,6 @@ def _get_computed_reference_sequence(
             sequence_type=TargetSequenceType.PROTEIN,
             sequence_id=seq_id,
         )
-    metadata = get_scoreset_metadata(ss)
     seq_id = f"ga4gh:SQ.{sha512t24u(metadata.target_sequence.encode('ascii'))}"
     return ComputedReferenceSequence(
         sequence=metadata.target_sequence,
@@ -516,7 +514,7 @@ def write_scoreset_mapping_to_json(
 
 
 def save_mapped_output_json(
-    urn: str,
+    metadata: ScoresetMetadata,
     mappings: list[ScoreAnnotationWithLayer],
     align_result: AlignmentResult,
     tx_output: TxSelectResult | None,
@@ -533,10 +531,9 @@ def save_mapped_output_json(
         <dcd_mapping_data_dir>/urn:mavedb:00000XXX-X-X_mapping_<ISO8601 datetime>.json
     :return: output location
     """
-    metadata = get_raw_scoreset_metadata(urn)
     if preferred_layer_only:
         preferred_layers = {
-            _set_scoreset_layer(urn, mappings),
+            _set_scoreset_layer(metadata.urn, mappings),
         }
     else:
         preferred_layers = {mapping.annotation_layer for mapping in mappings}
@@ -549,20 +546,10 @@ def save_mapped_output_json(
     for layer in preferred_layers:
         reference_sequences[layer][
             "computed_reference_sequence"
-        ] = _get_computed_reference_sequence(urn, layer, tx_output)
+        ] = _get_computed_reference_sequence(metadata, layer, tx_output)
         reference_sequences[layer][
             "mapped_reference_sequence"
         ] = _get_mapped_reference_sequence(layer, tx_output, align_result)
-    # except Exception as e:
-    #     _logger.warning(
-    #         str(e)
-    #     )
-    #     output = ScoresetMapping(
-    #         metadata=metadata,
-    #         error_message = str(e).strip("'")
-    #     )
-
-    #     return write_scoreset_mapping_to_json
 
     mapped_scores: list[ScoreAnnotation] = []
     for m in mappings:
@@ -573,7 +560,7 @@ def save_mapped_output_json(
             mapped_scores.append(ScoreAnnotation(**m.model_dump()))
 
     output = ScoresetMapping(
-        metadata=metadata,
+        metadata=metadata.model_dump(),
         computed_protein_reference_sequence=reference_sequences[
             AnnotationLayer.PROTEIN
         ]["computed_reference_sequence"],
@@ -589,4 +576,4 @@ def save_mapped_output_json(
         mapped_scores=mapped_scores,
     )
 
-    return write_scoreset_mapping_to_json(urn, output, output_path)
+    return write_scoreset_mapping_to_json(metadata.urn, output, output_path)

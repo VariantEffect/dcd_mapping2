@@ -24,6 +24,7 @@ from dcd_mapping.mavedb_data import (
     ScoresetNotSupportedError,
     get_scoreset_metadata,
     get_scoreset_records,
+    with_mavedb_score_set,
 )
 from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import (
@@ -264,7 +265,7 @@ async def map_scoreset(
         return
     try:
         final_output = save_mapped_output_json(
-            metadata.urn,
+            metadata,
             vrs_results,
             alignment_result,
             transcript,
@@ -287,12 +288,14 @@ async def map_scoreset(
     _emit_info(f"Annotated scores saved to: {final_output}.", silent)
 
 
+@with_mavedb_score_set
 async def map_scoreset_urn(
     urn: str,
     output_path: Path | None = None,
     vrs_version: VrsVersion = VrsVersion.V_2,
     prefer_genomic: bool = False,
     silent: bool = True,
+    store_path: Path | None = None,
 ) -> None:
     """Perform end-to-end mapping for a scoreset.
 
@@ -302,8 +305,8 @@ async def map_scoreset_urn(
     :param silent: if True, suppress console information output
     """
     try:
-        metadata = get_scoreset_metadata(urn)
-        records = get_scoreset_records(urn, silent)
+        metadata = get_scoreset_metadata(urn, store_path)
+        records = get_scoreset_records(urn, silent, store_path)
     except ScoresetNotSupportedError as e:
         _emit_info(f"Score set not supported: {e}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
