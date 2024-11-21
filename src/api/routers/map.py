@@ -49,6 +49,14 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
         msg = f"Unable to acquire resource from MaveDB: {e}"
         raise HTTPException(status_code=500, detail=msg) from e
 
+    if not records:
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata,
+                error_message="Score set contains no variants to map",
+            ).model_dump(exclude_none=True)
+        )
+
     try:
         alignment_result = align(metadata, True)
     except BlatNotFoundError as e:

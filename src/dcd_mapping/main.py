@@ -321,6 +321,20 @@ async def map_scoreset_urn(
         _logger.critical(msg)
         click.echo(f"Error: {msg}")
         raise e
+
+    if not records:
+        _emit_info("Score set contains no variants to map", silent, logging.ERROR)
+        final_output = write_scoreset_mapping_to_json(
+            urn,
+            ScoresetMapping(
+                metadata=metadata,
+                error_message="Score set contains no variants to map",
+            ),
+            output_path,
+        )
+        _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
+        return
+
     await map_scoreset(
         metadata, records, output_path, vrs_version, prefer_genomic, silent
     )
