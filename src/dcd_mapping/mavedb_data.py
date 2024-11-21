@@ -2,11 +2,14 @@
 
 Much of this can/should be replaced by the ``mavetools`` library? (and/or ``wags-tails``.)
 """
+
 import csv
 import json
 import logging
 import tempfile
 import zipfile
+from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +23,7 @@ from dcd_mapping.resource_utils import (
     authentication_header,
     http_download,
 )
-from dcd_mapping.schemas import ScoreRow, ScoresetMetadata, UniProtRef
+from dcd_mapping.schemas import ScoreRow, ScoresetMapping, ScoresetMetadata, UniProtRef
 
 __all__ = [
     "get_scoreset_urns",
@@ -135,6 +138,7 @@ def get_raw_scoreset_metadata(
     """
     if not dcd_mapping_dir:
         dcd_mapping_dir = LOCAL_STORE_PATH
+
     metadata_file = dcd_mapping_dir / f"{scoreset_urn}_metadata.json"
     if not metadata_file.exists():
         url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{scoreset_urn}"
@@ -265,3 +269,27 @@ def get_scoreset_records(
                 raise ResourceAcquisitionError(msg) from e
 
     return _load_scoreset_records(scores_csv)
+
+
+def with_mavedb_score_set(fn: Callable) -> Callable:
+    @wraps(fn)
+    async def wrapper(*args, **kwargs) -> ScoresetMapping:  # noqa: ANN002
+        urn = args[0] if args else kwargs["urn"]
+        silent = kwargs.get("silent", False)
+
+        with tempfile.TemporaryDirectory(
+            prefix=f"{LOCAL_STORE_PATH.as_posix()}/"
+        ) as temp_dir:
+            # Set up metadata and scores for the current run. Now they will be accessible by these functions
+            # without the need to download the data again.
+            temp_dir_as_path = Path(temp_dir)
+            get_scoreset_metadata(urn, temp_dir_as_path)
+            get_scoreset_records(urn, silent, temp_dir_as_path)
+
+            # Pass the storage path of the temp directory to the wrapped function as a kwarg.
+            kwargs["store_path"] = temp_dir_as_path
+            v: ScoresetMapping = await fn(*args, **kwargs)
+
+            return v
+
+    return wrapper

@@ -1,4 +1,6 @@
 """"Provide mapping router"""
+from pathlib import Path
+
 from cool_seq_tool.schemas import AnnotationLayer
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -17,6 +19,7 @@ from dcd_mapping.mavedb_data import (
     get_raw_scoreset_metadata,
     get_scoreset_metadata,
     get_scoreset_records,
+    with_mavedb_score_set,
 )
 from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import ScoreAnnotation, ScoresetMapping, VrsVersion
@@ -29,7 +32,8 @@ router = APIRouter(
 
 
 @router.post(path="/map/{urn}", status_code=200, response_model=ScoresetMapping)
-async def map_scoreset(urn: str) -> ScoresetMapping:
+@with_mavedb_score_set
+async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapping:
     """Perform end-to-end mapping for a scoreset.
 
     :param urn: identifier for a scoreset.
@@ -38,8 +42,8 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
     :param silent: if True, suppress console information output
     """
     try:
-        metadata = get_scoreset_metadata(urn)
-        records = get_scoreset_records(urn, True)
+        metadata = get_scoreset_metadata(urn, store_path)
+        records = get_scoreset_records(urn, True, store_path)
     except ScoresetNotSupportedError as e:
         return ScoresetMapping(
             metadata=None,
@@ -48,6 +52,14 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
     except ResourceAcquisitionError as e:
         msg = f"Unable to acquire resource from MaveDB: {e}"
         raise HTTPException(status_code=500, detail=msg) from e
+
+    if not records:
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata,
+                error_message="Score set contains no variants to map",
+            ).model_dump(exclude_none=True)
+        )
 
     try:
         alignment_result = align(metadata, True)
@@ -108,7 +120,7 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
         )
 
     try:
-        raw_metadata = get_raw_scoreset_metadata(urn)
+        raw_metadata = get_raw_scoreset_metadata(urn, store_path)
         preferred_layers = {
             _set_scoreset_layer(urn, vrs_results),
         }
@@ -124,7 +136,7 @@ async def map_scoreset(urn: str) -> ScoresetMapping:
         for layer in preferred_layers:
             reference_sequences[layer][
                 "computed_reference_sequence"
-            ] = _get_computed_reference_sequence(urn, layer, transcript)
+            ] = _get_computed_reference_sequence(metadata, layer, transcript)
             reference_sequences[layer][
                 "mapped_reference_sequence"
             ] = _get_mapped_reference_sequence(layer, transcript, alignment_result)
