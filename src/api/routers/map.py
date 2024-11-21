@@ -120,7 +120,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
         )
 
     try:
-        raw_metadata = get_raw_scoreset_metadata(urn)
+        raw_metadata = get_raw_scoreset_metadata(urn, store_path)
         preferred_layers = {
             _set_scoreset_layer(urn, vrs_results),
         }
