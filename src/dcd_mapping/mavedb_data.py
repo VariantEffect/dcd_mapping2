@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from dcd_mapping.resource_utils import (
@@ -283,8 +284,17 @@ def with_mavedb_score_set(fn: Callable) -> Callable:
             # Set up metadata and scores for the current run. Now they will be accessible by these functions
             # without the need to download the data again.
             temp_dir_as_path = Path(temp_dir)
-            get_scoreset_metadata(urn, temp_dir_as_path)
-            get_scoreset_records(urn, silent, temp_dir_as_path)
+            try:
+                get_scoreset_metadata(urn, temp_dir_as_path)
+                get_scoreset_records(urn, silent, temp_dir_as_path)
+            except ScoresetNotSupportedError as e:
+                return ScoresetMapping(
+                    metadata=None,
+                    error_message=str(e).strip("'"),
+                )
+            except ResourceAcquisitionError as e:
+                msg = f"Unable to acquire resource from MaveDB: {e}"
+                raise HTTPException(status_code=500, detail=msg) from e
 
             # Pass the storage path of the temp directory to the wrapped function as a kwarg.
             kwargs["store_path"] = temp_dir_as_path
