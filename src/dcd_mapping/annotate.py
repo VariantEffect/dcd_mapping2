@@ -306,22 +306,20 @@ def _annotate_haplotype_mapping(
     for allele in pre_mapped.members:
         allele.extensions = [_get_vrs_ref_allele_seq(allele, metadata, tx_results)]
 
-    # Determine reference sequence
-    if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
-        sequence_id = (
-            f"ga4gh:{post_mapped.members[0].location.sequenceReference.refgetAccession}"
-        )
-        accession = get_chromosome_identifier_from_vrs_id(sequence_id)
-        if accession is None:
-            raise ValueError
-        if accession.startswith("refseq:"):
-            accession = accession[7:]
-    else:
-        if tx_results is None:
-            raise ValueError  # impossible by definition
-        accession = tx_results.np
-
     if post_mapped:
+        # Determine reference sequence
+        if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
+            sequence_id = f"ga4gh:{post_mapped.members[0].location.sequenceReference.refgetAccession}"
+            accession = get_chromosome_identifier_from_vrs_id(sequence_id)
+            if accession is None:
+                raise ValueError
+            if accession.startswith("refseq:"):
+                accession = accession[7:]
+        else:
+            if tx_results is None:
+                raise ValueError  # impossible by definition
+            accession = tx_results.np
+
         sr = get_seqrepo()
         for allele in post_mapped.members:
             loc = allele.location
