@@ -1,3 +1,3 @@
 """Provide dcd mapping version"""
 
-dcd_mapping_version = "2024.1.2"
+dcd_mapping_version = "2024.1.3"
