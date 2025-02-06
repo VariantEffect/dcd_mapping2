@@ -46,7 +46,11 @@ from gene.database import create_db
 from gene.query import QueryHandler
 from gene.schemas import MatchType, SourceName
 
-from dcd_mapping.schemas import GeneLocation, ManeDescription, ScoresetMetadata
+from dcd_mapping.schemas import (
+    GeneLocation,
+    ManeDescription,
+    TargetGene,
+)
 
 __all__ = [
     "CoolSeqToolBuilder",
@@ -287,25 +291,25 @@ def _get_hgnc_symbol(term: str) -> str | None:
     return None
 
 
-def get_gene_symbol(metadata: ScoresetMetadata) -> str | None:
-    """Acquire HGNC gene symbol given provided metadata from scoreset.
+def get_gene_symbol(target_gene: TargetGene) -> str | None:
+    """Acquire HGNC gene symbol given provided target gene metadata from MaveDB.
 
     Right now, we use two sources for normalizing:
     1. UniProt ID, if available
     2. Target name: specifically, we try the first word in the name (this could
     cause some problems and we should double-check it)
 
-    :param ScoresetMetadata: data given by MaveDB API
+    :param target_gene: target gene metadata given by MaveDB API
     :return: gene symbol if available
     """
-    if metadata.target_uniprot_ref:
-        result = _get_hgnc_symbol(metadata.target_uniprot_ref.id)
+    if target_gene.target_uniprot_ref:
+        result = _get_hgnc_symbol(target_gene.target_uniprot_ref.id)
         if result:
             return result
 
     # try taking the first word in the target name
-    if metadata.target_gene_name:
-        parsed_name = metadata.target_gene_name.split(" ")[0]
+    if target_gene.target_gene_name:
+        parsed_name = target_gene.target_gene_name.split(" ")[0]
         return _get_hgnc_symbol(parsed_name)
     return None
 
@@ -324,21 +328,21 @@ def _normalize_gene(term: str) -> Gene | None:
 
 
 def _get_normalized_gene_response(
-    metadata: ScoresetMetadata,
+    target_gene: TargetGene,
 ) -> Gene | None:
     """Fetch best normalized concept given available scoreset metadata.
 
     :param metadata: salient scoreset metadata items
     :return: Normalized gene if available
     """
-    if metadata.target_uniprot_ref:
-        gene_descriptor = _normalize_gene(metadata.target_uniprot_ref.id)
+    if target_gene.target_uniprot_ref:
+        gene_descriptor = _normalize_gene(target_gene.target_uniprot_ref.id)
         if gene_descriptor:
             return gene_descriptor
 
     # try taking the first word in the target name
-    if metadata.target_gene_name:
-        parsed_name = metadata.target_gene_name.split(" ")[0]
+    if target_gene.target_gene_name:
+        parsed_name = target_gene.target_gene_name.split(" ")[0]
         gene_descriptor = _normalize_gene(parsed_name)
         if gene_descriptor:
             return gene_descriptor
@@ -371,7 +375,7 @@ def _get_genomic_interval(
     return None
 
 
-def get_gene_location(metadata: ScoresetMetadata) -> GeneLocation | None:
+def get_gene_location(target_gene: TargetGene) -> GeneLocation | None:
     """Acquire gene location data from gene normalizer using metadata provided by
     scoreset.
 
@@ -380,10 +384,10 @@ def get_gene_location(metadata: ScoresetMetadata) -> GeneLocation | None:
     2. Target name: specifically, we try the first word in the name (this could
     cause some problems and we should double-check it)
 
-    :param metadata: data given by MaveDB API
+    :param target_gene: data given by MaveDB API
     :return: gene location data if available
     """
-    gene_descriptor = _get_normalized_gene_response(metadata)
+    gene_descriptor = _get_normalized_gene_response(target_gene)
     if not gene_descriptor or not gene_descriptor.extensions:
         return None
 

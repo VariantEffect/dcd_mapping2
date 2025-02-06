@@ -40,15 +40,22 @@ class UniProtRef(BaseModel):
     offset: int
 
 
-class ScoresetMetadata(BaseModel):
-    """Store all relevant metadata from metadata reported for scoreset by MaveDB"""
+class TargetGene(BaseModel):
+    """Store metadata for a target gene from a MaveDB score set"""
 
-    urn: str
     target_gene_name: str
     target_gene_category: TargetType
     target_sequence: str
     target_sequence_type: TargetSequenceType
+    target_sequence_label: str
     target_uniprot_ref: UniProtRef | None = None
+
+
+class ScoresetMetadata(BaseModel):
+    """Store all relevant metadata from metadata reported for scoreset by MaveDB"""
+
+    urn: str
+    target_genes: dict[str, TargetGene]
 
 
 class ScoreRow(BaseModel):

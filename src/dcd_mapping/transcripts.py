@@ -22,6 +22,7 @@ from dcd_mapping.schemas import (
     ManeDescription,
     ScoreRow,
     ScoresetMetadata,
+    TargetGene,
     TargetSequenceType,
     TargetType,
     TranscriptDescription,
@@ -38,7 +39,7 @@ class TxSelectError(Exception):
 
 
 async def _get_compatible_transcripts(
-    metadata: ScoresetMetadata, align_result: AlignmentResult
+    target_gene: TargetGene, align_result: AlignmentResult
 ) -> list[list[str]]:
     """Acquire matching transcripts
 
@@ -51,7 +52,7 @@ async def _get_compatible_transcripts(
     else:
         aligned_chrom = align_result.chrom
     chromosome = get_chromosome_identifier(aligned_chrom)
-    gene_symbol = get_gene_symbol(metadata)
+    gene_symbol = get_gene_symbol(target_gene)
     if not gene_symbol:
         raise TxSelectError
     transcript_matches = []
@@ -145,7 +146,7 @@ def _get_protein_sequence(target_sequence: str) -> str:
 
 
 async def _select_protein_reference(
-    metadata: ScoresetMetadata, align_result: AlignmentResult
+    target_gene: TargetGene, align_result: AlignmentResult
 ) -> TxSelectResult:
     """Select preferred transcript for protein reference sequence
 
@@ -155,22 +156,20 @@ async def _select_protein_reference(
     :raise TxSelectError: if no matching MANE transcripts and unable to get UniProt ID/
     reference sequence
     """
-    matching_transcripts = await _get_compatible_transcripts(metadata, align_result)
+    matching_transcripts = await _get_compatible_transcripts(target_gene, align_result)
     if not matching_transcripts:
         common_transcripts = None
     else:
         common_transcripts = _reduce_compatible_transcripts(matching_transcripts)
     if not common_transcripts:
-        if not metadata.target_uniprot_ref:
-            msg = f"Unable to find matching transcripts for {metadata.urn}"
+        if not target_gene.target_uniprot_ref:
+            msg = f"Unable to find matching transcripts for target gene {target_gene.target_gene_name}"
             raise TxSelectError(msg)
-        protein_sequence = get_uniprot_sequence(metadata.target_uniprot_ref.id)
-        np_accession = metadata.target_uniprot_ref.id
-        ref_sequence = get_uniprot_sequence(metadata.target_uniprot_ref.id)
+        protein_sequence = get_uniprot_sequence(target_gene.target_uniprot_ref.id)
+        np_accession = target_gene.target_uniprot_ref.id
+        ref_sequence = get_uniprot_sequence(target_gene.target_uniprot_ref.id)
         if not ref_sequence:
-            msg = (
-                f"Unable to grab reference sequence from uniprot.org for {metadata.urn}"
-            )
+            msg = f"Unable to grab reference sequence from uniprot.org for target gene {target_gene.target_gene_name}"
             raise ValueError(msg)
         nm_accession = None
         tx_mode = None
@@ -186,8 +185,7 @@ async def _select_protein_reference(
         np_accession = best_tx.refseq_prot
         tx_mode = best_tx.transcript_priority
 
-    protein_sequence = _get_protein_sequence(metadata.target_sequence)
-    # TODO -- look at these two lines
+    protein_sequence = _get_protein_sequence(target_gene.target_sequence)
     is_full_match = ref_sequence.find(protein_sequence) != -1
     start = ref_sequence.find(protein_sequence[:10])
 
@@ -201,10 +199,10 @@ async def _select_protein_reference(
     )
 
 
-def _offset_target_sequence(metadata: ScoresetMetadata, records: list[ScoreRow]) -> int:
+def _offset_target_sequence(target_gene: TargetGene, records: list[ScoreRow]) -> int:
     """Find start location in target sequence
 
-    :param metadata: MaveDB metadata for score set
+    :param target_gene: MaveDB metadata for target gene
     :param records: individual score records (including MAVE-HGVS descriptions)
     :return: starting index position (may be 0)
     """
@@ -232,7 +230,7 @@ def _offset_target_sequence(metadata: ScoresetMetadata, records: list[ScoreRow])
                     amino_acids_by_position[loc] = seq1(aa)
 
     err_locs = []
-    protein_sequence = Seq(metadata.target_sequence).translate(table="1")
+    protein_sequence = Seq(target_gene.target_sequence).translate(table="1")
     for i in range(len(protein_sequence)):
         if (
             str(i) in amino_acids_by_position
@@ -251,7 +249,7 @@ def _offset_target_sequence(metadata: ScoresetMetadata, records: list[ScoreRow])
     for value in amino_acids_by_position.values():
         seq += value
 
-    protein_sequence = _get_protein_sequence(metadata.target_sequence)
+    protein_sequence = _get_protein_sequence(target_gene.target_sequence)
     offset = 0
 
     if protein_sequence in seq:
@@ -308,22 +306,24 @@ def _handle_edge_cases(
 
 
 async def select_transcript(
-    metadata: ScoresetMetadata,
+    scoreset_urn: str,
+    target_gene: TargetGene,
     records: list[ScoreRow],
     align_result: AlignmentResult,
 ) -> TxSelectResult | None:
-    """Select appropriate human reference sequence for scoreset.
+    """Select appropriate human reference sequence for one target in a score set.
 
-    * Unnecessary for regulatory/other noncoding scoresets which report genomic
+    * Unnecessary for regulatory/other noncoding targets in score sets which report genomic
     variations.
-    * For protein scoresets, identify a matching RefSeq protein reference sequence.
+    * For protein-coding targets, identify a matching RefSeq protein reference sequence.
 
-    :param metadata: Scoreset metadata from MaveDB
+    :param scoreset_urn: MaveDB URN for score set, used for hardcoding for certain score sets
+    :param target_gene: Target gene metadata from MaveDB
     :param records:
     :param align_result: alignment results
     :return: Transcript description (accession ID, offset, selected sequence, etc)
     """
-    if metadata.urn.startswith("urn:mavedb:00000097"):
+    if scoreset_urn.startswith("urn:mavedb:00000097"):
         _logger.info(
             "Score sets in urn:mavedb:00000097 are already expressed in full HGVS strings -- using predefined results because additional hard-coding is unnecessary"
         )
@@ -333,16 +333,56 @@ async def select_transcript(
             start=0,
             is_full_match=False,
             transcript_mode=TranscriptPriority.MANE_SELECT,
-            sequence=_get_protein_sequence(metadata.target_sequence),
+            sequence=_get_protein_sequence(target_gene.target_sequence),
         )
 
-    if metadata.target_gene_category != TargetType.PROTEIN_CODING:
-        _logger.debug("%s is regulatory/noncoding -- skipping transcript selection")
+    if target_gene.target_gene_category != TargetType.PROTEIN_CODING:
+        _logger.debug(
+            "%s is regulatory/noncoding -- skipping transcript selection",
+            target_gene.target_gene_name,
+        )
         return None
-    transcript_reference = await _select_protein_reference(metadata, align_result)
-    if transcript_reference and metadata.target_sequence_type == TargetSequenceType.DNA:
-        offset = _offset_target_sequence(metadata, records)
+    transcript_reference = await _select_protein_reference(target_gene, align_result)
+    if (
+        transcript_reference
+        and target_gene.target_sequence_type == TargetSequenceType.DNA
+    ):
+        offset = _offset_target_sequence(target_gene, records)
         if offset:
             transcript_reference.start = offset
 
-    return _handle_edge_cases(metadata.urn, transcript_reference)
+    return _handle_edge_cases(scoreset_urn, transcript_reference)
+
+
+async def select_transcripts(
+    scoreset_metadata: ScoresetMetadata,
+    records: list[ScoreRow],
+    align_results: dict[str, AlignmentResult],
+) -> dict[str, TxSelectResult]:
+    """Select appropriate human reference sequence for each target in a score set.
+    :param scoreset_metadata: Metadata for score set from MaveDB API
+    :param records: Variant/score records from MaveDB API
+    :param align_results: Alignment results for all targets in score set.
+        * Dict where keys are target labels and values are alignment result objects
+    :return: dict where keys are target labels and values are objects describing selected transcript (accession ID, offset, selected sequence, etc)
+    """
+    selected_transcripts = {}
+    for target_gene in scoreset_metadata.target_genes:
+        # TODO it isn't efficient to go through records each time. Maybe we should initialize records as a dictionary where variants/scores are organized by target label.
+        # select only records associated with this target
+        target_associated_records = [
+            record
+            for record in records
+            if (
+                record.hgvs_pro.startswith(target_gene)
+                or record.hgvs_nt.startswith(target_gene)
+            )
+        ]
+        selected_transcripts[target_gene] = await select_transcript(
+            scoreset_urn=scoreset_metadata.urn,
+            target_gene=scoreset_metadata.target_genes[target_gene],
+            records=target_associated_records,
+            align_result=align_results[target_gene],
+        )
+
+    return selected_transcripts

@@ -33,7 +33,7 @@ from dcd_mapping.schemas import (
     ScoresetMetadata,
     VrsVersion,
 )
-from dcd_mapping.transcripts import TxSelectError, select_transcript
+from dcd_mapping.transcripts import TxSelectError, select_transcripts
 from dcd_mapping.vrs_map import VrsMapError, vrs_map
 
 _logger = logging.getLogger(__name__)
@@ -156,7 +156,7 @@ async def map_scoreset(
 
     _emit_info(f"Performing alignment for {metadata.urn}...", silent)
     try:
-        alignment_result = align(metadata, silent)
+        alignment_results = align(metadata, silent)
     except BlatNotFoundError as e:
         msg = "BLAT command appears missing. Ensure it is available on the $PATH or use the environment variable BLAT_BIN_PATH to point to it. See instructions in the README prerequisites section for more."
         _emit_info(msg, silent, logging.ERROR)
@@ -179,7 +179,7 @@ async def map_scoreset(
 
     _emit_info("Selecting reference sequence...", silent)
     try:
-        transcript = await select_transcript(metadata, records, alignment_result)
+        transcripts = await select_transcripts(metadata, records, alignment_results)
     except (TxSelectError, KeyError, ValueError) as e:
         _emit_info(
             f"Transcript selection failed for scoreset {metadata.urn}",
@@ -211,7 +211,7 @@ async def map_scoreset(
 
     _emit_info("Mapping to VRS...", silent)
     try:
-        vrs_results = vrs_map(metadata, alignment_result, records, transcript, silent)
+        vrs_results = vrs_map(metadata, alignment_results, records, transcripts, silent)
     except VrsMapError as e:
         _emit_info(
             f"VRS mapping failed for scoreset {metadata.urn}", silent, logging.ERROR
@@ -239,7 +239,7 @@ async def map_scoreset(
 
     _emit_info("Annotating metadata and saving to file...", silent)
     try:
-        vrs_results = annotate(vrs_results, transcript, metadata, vrs_version)
+        vrs_results = annotate(vrs_results, transcripts, metadata, vrs_version)
     except Exception as e:  # TODO create AnnotationError class and replace ValueErrors in annotation steps with AnnotationErrors
         _emit_info(
             f"VRS annotation failed for scoreset {metadata.urn}", silent, logging.ERROR
@@ -267,8 +267,8 @@ async def map_scoreset(
         final_output = save_mapped_output_json(
             metadata,
             vrs_results,
-            alignment_result,
-            transcript,
+            alignment_results,
+            transcripts,
             prefer_genomic,
             output_path,
         )

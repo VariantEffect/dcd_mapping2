@@ -17,6 +17,7 @@ import requests
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from dcd_mapping.lookup import DataLookupError
 from dcd_mapping.resource_utils import (
     LOCAL_STORE_PATH,
     MAVEDB_BASE_URL,
@@ -24,7 +25,13 @@ from dcd_mapping.resource_utils import (
     authentication_header,
     http_download,
 )
-from dcd_mapping.schemas import ScoreRow, ScoresetMapping, ScoresetMetadata, UniProtRef
+from dcd_mapping.schemas import (
+    ScoreRow,
+    ScoresetMapping,
+    ScoresetMetadata,
+    TargetGene,
+    UniProtRef,
+)
 
 __all__ = [
     "get_scoreset_urns",
@@ -174,33 +181,41 @@ def get_scoreset_metadata(
     :raise ResourceAcquisitionError: if unable to acquire metadata
     """
     metadata = get_raw_scoreset_metadata(scoreset_urn, dcd_mapping_dir)
+    target_genes = {}
+    multi_target = len(metadata["targetGenes"]) > 1
 
-    if len(metadata["targetGenes"]) > 1:
-        msg = f"Multiple target genes for {scoreset_urn}. Multi-target score sets are not currently supported."
-        raise ScoresetNotSupportedError(msg)
-    gene = metadata["targetGenes"][0]
-    target_sequence_gene = gene.get("targetSequence")
-    if target_sequence_gene is None:
-        msg = f"No target sequence available for {scoreset_urn}. Accession-based score sets are not currently supported."
-        raise ScoresetNotSupportedError(msg)
-    if not _metadata_response_is_human(metadata):
-        msg = f"Experiment for {scoreset_urn} contains no human targets"
-        raise ScoresetNotSupportedError(msg)
-    try:
-        structured_data = ScoresetMetadata(
-            urn=metadata["urn"],
-            target_gene_name=gene["name"],
-            target_gene_category=gene["category"],
-            target_sequence=gene["targetSequence"]["sequence"],
-            target_sequence_type=gene["targetSequence"]["sequenceType"],
-            target_uniprot_ref=_get_uniprot_ref(metadata),
-        )
-    except (KeyError, ValidationError) as e:
-        msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
-        _logger.error(msg)
-        raise ScoresetNotSupportedError(msg) from e
+    for gene in metadata["targetGenes"]:
+        target_sequence_gene = gene.get("targetSequence")
+        if target_sequence_gene is None:
+            msg = f"No target sequence available for {scoreset_urn}. Accession-based score sets are not currently supported."
+            raise ScoresetNotSupportedError(msg)
+        if not _metadata_response_is_human(metadata):
+            msg = f"Experiment for {scoreset_urn} contains no human targets"
+            raise ScoresetNotSupportedError(msg)
+        try:
+            target_sequence_label = gene["targetSequence"].get("label")
+            if target_sequence_label is None:
+                # if there are not multiple targets, label is not required by mavedb,
+                # so use target gene name as the label.
+                if not multi_target:
+                    target_sequence_label = gene["name"]
+                else:
+                    msg = f"No target label provided for target in multi-target score set {scoreset_urn}."
+                    raise DataLookupError(msg)
+            target_genes[target_sequence_label] = TargetGene(
+                target_gene_name=gene["name"],
+                target_gene_category=gene["category"],
+                target_sequence=gene["targetSequence"]["sequence"],
+                target_sequence_type=gene["targetSequence"]["sequenceType"],
+                target_sequence_label=target_sequence_label,
+                target_uniprot_ref=_get_uniprot_ref(metadata),
+            )
+        except (KeyError, ValidationError) as e:
+            msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
+            _logger.error(msg)
+            raise ScoresetNotSupportedError(msg) from e
 
-    return structured_data
+    return ScoresetMetadata(urn=scoreset_urn, target_genes=target_genes)
 
 
 def _load_scoreset_records(path: Path) -> list[ScoreRow]:
