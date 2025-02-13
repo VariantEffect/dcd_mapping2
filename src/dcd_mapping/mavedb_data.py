@@ -218,13 +218,18 @@ def get_scoreset_metadata(
     return ScoresetMetadata(urn=scoreset_urn, target_genes=target_genes)
 
 
-def _load_scoreset_records(path: Path) -> list[ScoreRow]:
+def _load_scoreset_records(
+    path: Path, metadata: ScoresetMetadata
+) -> dict[str, list[ScoreRow]]:
     """Load scoreset records from CSV file.
+    Organize scoreset records by reference sequence prefix / target gene label.
+    If no reference sequence prefix is provided, the score set should only have one
+    target, so use the one target's label.
 
     This method is intentionally identified as "private", but is refactored out for
     use during testing.
     """
-    scores_data: list[ScoreRow] = []
+    scores_data: dict[str, list[ScoreRow]] = {}
     with path.open() as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
@@ -232,7 +237,33 @@ def _load_scoreset_records(path: Path) -> list[ScoreRow]:
                 row["score"] = None
             else:
                 row["score"] = row["score"]
-            scores_data.append(ScoreRow(**row))
+            if row["hgvs_nt"] != "NA":
+                # TODO check assumption of no colon in hgvs unless reference sequence identifier present
+                prefix = row["hgvs_nt"].split(":")[0] if ":" in row["hgvs_nt"] else None
+            elif row["hgvs_pro"] != "NA":
+                # TODO check assumption of no colon in hgvs unless reference sequence identifier present
+                prefix = (
+                    row["hgvs_pro"].split(":")[0] if ":" in row["hgvs_pro"] else None
+                )
+            else:
+                # Should we quit the whole mapping job if this comes up, or just skip this row and only quit if none contain hgvs_nt or hgvs_pro?
+                msg = f"Each score row in {metadata.urn} must contain hgvs_nt or hgvs_pro variant description "
+                raise ScoresetNotSupportedError(msg)
+            # If no reference sequence prefix is provided, the score set should only have one
+            # target, so use the one target's label.
+            if prefix is None:
+                if len(metadata.target_genes) == 1:
+                    # don't know name of key, so loop through dictionary
+                    # and use the key of the single-entry metadata.target_genes dict as the key for this new dict
+                    for target_gene in metadata.target_genes:
+                        prefix = target_gene
+                else:
+                    msg = f"Multi-target score set {metadata.urn} does not contain target sequence labels in variant HGVS strings."
+                    raise ScoresetNotSupportedError(msg)
+            if prefix in scores_data:
+                scores_data[prefix].append(ScoreRow(**row))
+            else:
+                scores_data[prefix] = [ScoreRow(**row)]
     return scores_data
 
 
@@ -253,8 +284,8 @@ def _get_experiment_53_scores(outfile: Path, silent: bool) -> None:
 
 
 def get_scoreset_records(
-    urn: str, silent: bool = True, dcd_mapping_dir: Path | None = None
-) -> list[ScoreRow]:
+    metadata: ScoresetMetadata, silent: bool = True, dcd_mapping_dir: Path | None = None
+) -> dict[str, list[ScoreRow]]:
     """Get scoreset records.
 
     Only hit the MaveDB API if unavailable locally. That means data must be refreshed
@@ -270,13 +301,13 @@ def get_scoreset_records(
     """
     if not dcd_mapping_dir:
         dcd_mapping_dir = LOCAL_STORE_PATH
-    scores_csv = dcd_mapping_dir / f"{urn}_scores.csv"
+    scores_csv = dcd_mapping_dir / f"{metadata.urn}_scores.csv"
     # TODO use smarter/more flexible caching methods
     if not scores_csv.exists():
-        if urn == "urn:mavedb:00000053-a-1":
+        if metadata.urn == "urn:mavedb:00000053-a-1":
             _get_experiment_53_scores(scores_csv, silent)
         else:
-            url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{urn}/scores"
+            url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{metadata.urn}/scores"
             try:
                 http_download(url, scores_csv, silent)
             except requests.HTTPError as e:
@@ -284,7 +315,7 @@ def get_scoreset_records(
                 _logger.error(msg)
                 raise ResourceAcquisitionError(msg) from e
 
-    return _load_scoreset_records(scores_csv)
+    return _load_scoreset_records(scores_csv, metadata)
 
 
 def with_mavedb_score_set(fn: Callable) -> Callable:
@@ -300,8 +331,8 @@ def with_mavedb_score_set(fn: Callable) -> Callable:
             # without the need to download the data again.
             temp_dir_as_path = Path(temp_dir)
             try:
-                get_scoreset_metadata(urn, temp_dir_as_path)
-                get_scoreset_records(urn, silent, temp_dir_as_path)
+                metadata = get_scoreset_metadata(urn, temp_dir_as_path)
+                get_scoreset_records(metadata, silent, temp_dir_as_path)
             except ScoresetNotSupportedError as e:
                 return ScoresetMapping(
                     metadata=None,

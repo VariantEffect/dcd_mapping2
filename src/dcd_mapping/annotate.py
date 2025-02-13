@@ -39,10 +39,12 @@ from dcd_mapping.schemas import (
     ScoreAnnotationWithLayer,
     ScoresetMapping,
     ScoresetMetadata,
+    TargetGene,
     TargetSequenceType,
     TxSelectResult,
     VrsVersion,
 )
+from dcd_mapping.transcripts import TxSelectError
 
 _logger = logging.getLogger(__name__)
 
@@ -133,14 +135,15 @@ def _offset_allele_ref_seq(ss: str, start: int, end: int) -> tuple[int, int]:
 
 
 def _get_vrs_ref_allele_seq(
-    allele: Allele, metadata: ScoresetMetadata, tx_select_results: TxSelectResult | None
+    allele: Allele,
+    metadata: TargetGene,
+    urn: str,
+    tx_select_results: TxSelectResult | None,
 ) -> Extension:
     """Create `vrs_ref_allele_seq` property."""
-    start, end = _offset_allele_ref_seq(
-        metadata.urn, allele.location.start, allele.location.end
-    )
+    start, end = _offset_allele_ref_seq(urn, allele.location.start, allele.location.end)
     if (
-        metadata.urn.startswith(
+        urn.startswith(
             (
                 "urn:mavedb:00000047",
                 "urn:mavedb:00000048",
@@ -149,6 +152,7 @@ def _get_vrs_ref_allele_seq(
             )
         )
         and tx_select_results is not None
+        and isinstance(tx_select_results, TxSelectResult)
     ):
         seq = tx_select_results.sequence
         ref = seq[start:end]
@@ -241,8 +245,9 @@ def _get_hgvs_string(allele: Allele, accession: str) -> tuple[str, Syntax]:
 
 def _annotate_allele_mapping(
     mapped_score: MappedScore,
-    tx_results: TxSelectResult | None,
-    metadata: ScoresetMetadata,
+    tx_results: TxSelectResult | TxSelectError | None,
+    metadata: TargetGene,
+    urn: str,
     vrs_version: VrsVersion = VrsVersion.V_2,
 ) -> ScoreAnnotationWithLayer:
     """Perform annotations and, if necessary, create VRS 1.3 equivalents for allele mappings."""
@@ -250,7 +255,9 @@ def _annotate_allele_mapping(
     post_mapped: Allele = mapped_score.post_mapped
 
     # get vrs_ref_allele_seq for pre-mapped variants
-    pre_mapped.extensions = [_get_vrs_ref_allele_seq(pre_mapped, metadata, tx_results)]
+    pre_mapped.extensions = [
+        _get_vrs_ref_allele_seq(pre_mapped, metadata, urn, tx_results)
+    ]
 
     if post_mapped:
         # Determine reference sequence
@@ -262,7 +269,7 @@ def _annotate_allele_mapping(
             if accession.startswith("refseq:"):
                 accession = accession[7:]
         else:
-            if tx_results is None:
+            if tx_results is None or isinstance(tx_results, TxSelectError):
                 raise ValueError  # impossible by definition
             accession = tx_results.np
 
@@ -295,8 +302,9 @@ def _annotate_allele_mapping(
 
 def _annotate_haplotype_mapping(
     mapped_score: MappedScore,
-    tx_results: TxSelectResult | None,
-    metadata: ScoresetMetadata,
+    tx_results: TxSelectResult | TxSelectError | None,
+    metadata: TargetGene,
+    urn: str,
     vrs_version: VrsVersion = VrsVersion.V_2,
 ) -> ScoreAnnotationWithLayer:
     """Perform annotations and, if necessary, create VRS 1.3 equivalents for haplotype mappings."""
@@ -304,7 +312,7 @@ def _annotate_haplotype_mapping(
     post_mapped: Haplotype = mapped_score.post_mapped  # type: ignore
     # get vrs_ref_allele_seq for pre-mapped variants
     for allele in pre_mapped.members:
-        allele.extensions = [_get_vrs_ref_allele_seq(allele, metadata, tx_results)]
+        allele.extensions = [_get_vrs_ref_allele_seq(allele, metadata, urn, tx_results)]
 
     if post_mapped:
         # Determine reference sequence
@@ -316,7 +324,7 @@ def _annotate_haplotype_mapping(
             if accession.startswith("refseq:"):
                 accession = accession[7:]
         else:
-            if tx_results is None:
+            if tx_results is None or isinstance(tx_results, TxSelectError):
                 raise ValueError  # impossible by definition
             accession = tx_results.np
 
@@ -350,8 +358,9 @@ def _annotate_haplotype_mapping(
 
 def annotate(
     mapped_scores: list[MappedScore],
-    tx_results: TxSelectResult | None,
-    metadata: ScoresetMetadata,
+    tx_results: TxSelectResult | TxSelectError | None,
+    metadata: TargetGene,
+    urn: str,
     vrs_version: VrsVersion = VrsVersion.V_2,
 ) -> list[ScoreAnnotationWithLayer]:
     """Given a list of mappings, add additional contextual data:
@@ -367,7 +376,8 @@ def annotate(
 
     :param vrs_results: in-progress variant mappings
     :param tx_select_results: transcript selection if available
-    :param metadata: MaveDB scoreset metadata
+    :param metadata: Target gene metadata from MaveDB API
+    :param urn: Score set URN
     :return: annotated mappings objects
     """
     score_annotations = []
@@ -386,7 +396,7 @@ def annotate(
         ):
             score_annotations.append(
                 _annotate_haplotype_mapping(
-                    mapped_score, tx_results, metadata, vrs_version
+                    mapped_score, tx_results, metadata, urn, vrs_version
                 )
             )
         elif isinstance(mapped_score.pre_mapped, Allele) and (
@@ -395,7 +405,7 @@ def annotate(
         ):
             score_annotations.append(
                 _annotate_allele_mapping(
-                    mapped_score, tx_results, metadata, vrs_version
+                    mapped_score, tx_results, metadata, urn, vrs_version
                 )
             )
         else:
@@ -406,20 +416,22 @@ def annotate(
 
 
 def _get_computed_reference_sequence(
-    metadata: ScoresetMetadata,
+    metadata: TargetGene,
     layer: AnnotationLayer,
-    tx_output: TxSelectResult | None = None,
-) -> ComputedReferenceSequence:
+    tx_output: TxSelectResult | TxSelectError | None = None,
+) -> ComputedReferenceSequence | None:
     """Report the computed reference sequence for a score set
 
-    :param ss: A score set string
+    :param metadata: Target gene metadata from MaveDB API
     :param layer: AnnotationLayer
     :param tx_output: Transcript data for a score set
     :return A ComputedReferenceSequence object
     """
     if layer == AnnotationLayer.PROTEIN:
-        if tx_output is None:
-            raise ValueError
+        if tx_output is None or isinstance(tx_output, TxSelectError):
+            # TODO catch this error - don't stop whole job for one failed target
+            # raise ValueError
+            return None
         seq_id = f"ga4gh:SQ.{sha512t24u(tx_output.sequence.encode('ascii'))}"
         return ComputedReferenceSequence(
             sequence=tx_output.sequence,
@@ -436,24 +448,31 @@ def _get_computed_reference_sequence(
 
 def _get_mapped_reference_sequence(
     layer: AnnotationLayer,
-    tx_output: TxSelectResult | None = None,
+    tx_output: TxSelectResult | TxSelectError | None = None,
     align_result: AlignmentResult | None = None,
-) -> MappedReferenceSequence:
+) -> MappedReferenceSequence | None:
     """Report the mapped reference sequence for a score set
 
-    :param ss: A score set string
     :param layer: AnnotationLayer
     :param tx_output: Transcript data for a score set
     :return A MappedReferenceSequence object
     """
-    if layer == AnnotationLayer.PROTEIN and tx_output is not None:
+    if (
+        layer == AnnotationLayer.PROTEIN
+        and tx_output is not None
+        and isinstance(tx_output, TxSelectResult)
+    ):
         if tx_output.np is None:
-            msg = "No NP accession associated with reference transcript"
-            raise ValueError(msg)
+            # TODO catch this error, don't fail whole job for one target
+            # msg = "No NP accession associated with reference transcript"
+            # raise ValueError(msg)
+            return None
         vrs_id = get_vrs_id_from_identifier(tx_output.np)
         if vrs_id is None:
-            msg = "ID could not be acquired from Seqrepo for transcript identifier"
-            raise ValueError(msg)
+            # TODO catch this error, don't fail whole job for one target
+            # msg = "ID could not be acquired from Seqrepo for transcript identifier"
+            # raise ValueError(msg)
+            return None
         return MappedReferenceSequence(
             sequence_type=TargetSequenceType.PROTEIN,
             sequence_id=vrs_id,
@@ -462,8 +481,10 @@ def _get_mapped_reference_sequence(
     seq_id = get_chromosome_identifier(align_result.chrom)
     vrs_id = get_vrs_id_from_identifier(seq_id)
     if vrs_id is None:
-        msg = "ID could not be acquired from Seqrepo for chromosome identifier"
-        raise ValueError(msg)
+        # TODO catch this error, don't fail whole job for one target
+        # msg = "ID could not be acquired from Seqrepo for chromosome identifier"
+        # raise ValueError(msg)
+        return None
     return MappedReferenceSequence(
         sequence_type=TargetSequenceType.DNA,
         sequence_id=vrs_id,
@@ -513,64 +534,69 @@ def write_scoreset_mapping_to_json(
 
 def save_mapped_output_json(
     metadata: ScoresetMetadata,
-    mappings: list[ScoreAnnotationWithLayer],
-    align_result: AlignmentResult,
-    tx_output: TxSelectResult | None,
+    mappings: dict[str, ScoreAnnotationWithLayer],
+    align_results: dict[str, AlignmentResult],
+    tx_output: dict[str, TxSelectResult | TxSelectError | None],
     preferred_layer_only: bool = False,
     output_path: Path | None = None,
 ) -> Path:
     """Save mapping output for a score set in a JSON file
 
     :param urn: Score set accession
-    :param mave_vrs_mappings: A dictionary of VrsObject1_x objects
-    :param align_result: Alignment information for a score set
-    :param tx_output: Transcript output for a score set
+    :param mappings: A dictionary of annotated VRS mappings for each target
+    :param align_result: A dictionary of alignment information for each target
+    :param tx_output: A dictionary of transcript output for each target
     :param output_path: specific location to save output to. Default to
         <dcd_mapping_data_dir>/urn:mavedb:00000XXX-X-X_mapping_<ISO8601 datetime>.json
     :return: output location
     """
-    if preferred_layer_only:
-        preferred_layers = {
-            _set_scoreset_layer(metadata.urn, mappings),
-        }
-    else:
-        preferred_layers = {mapping.annotation_layer for mapping in mappings}
-
-    reference_sequences = {
-        layer: {"computed_reference_sequence": None, "mapped_reference_sequence": None}
-        for layer in AnnotationLayer
-    }
-
-    for layer in preferred_layers:
-        reference_sequences[layer][
-            "computed_reference_sequence"
-        ] = _get_computed_reference_sequence(metadata, layer, tx_output)
-        reference_sequences[layer][
-            "mapped_reference_sequence"
-        ] = _get_mapped_reference_sequence(layer, tx_output, align_result)
-
+    # set preferred layers for each target, to allow a mix of coding and noncoding targets
+    # TODO maybe this should be reevaluated and we should only allow one preferred layer per score set,
+    # since I can't imagine an experimental assay where some variants are assayed as nucleotide variants
+    # and others are assayed as amino acid variants.
+    reference_sequences: dict[str, dict] = {}
     mapped_scores: list[ScoreAnnotation] = []
-    for m in mappings:
-        if m.pre_mapped is None:
-            mapped_scores.append(ScoreAnnotation(**m.model_dump()))
-        elif m.annotation_layer in preferred_layers:
-            # drop annotation layer from mapping object
-            mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+    for target_gene in mappings:
+        if preferred_layer_only:
+            preferred_layers = {
+                _set_scoreset_layer(metadata.urn, mappings[target_gene]),
+            }
+        else:
+            preferred_layers = {
+                mapping.annotation_layer for mapping in mappings[target_gene]
+            }
 
+        reference_sequences[target_gene] = {
+            layer: {
+                "computed_reference_sequence": None,
+                "mapped_reference_sequence": None,
+            }
+            for layer in AnnotationLayer
+        }
+
+        for layer in preferred_layers:
+            reference_sequences[target_gene][layer][
+                "computed_reference_sequence"
+            ] = _get_computed_reference_sequence(
+                metadata.target_genes[target_gene], layer, tx_output[target_gene]
+            )
+            reference_sequences[target_gene][layer][
+                "mapped_reference_sequence"
+            ] = _get_mapped_reference_sequence(
+                layer, tx_output[target_gene], align_results[target_gene]
+            )
+
+        for m in mappings[target_gene]:
+            if m.pre_mapped is None:
+                mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+            elif m.annotation_layer in preferred_layers:
+                # drop annotation layer from mapping object
+                mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+
+    # TODO drop any Nonetype reference sequences
     output = ScoresetMapping(
         metadata=metadata.model_dump(),
-        computed_protein_reference_sequence=reference_sequences[
-            AnnotationLayer.PROTEIN
-        ]["computed_reference_sequence"],
-        mapped_protein_reference_sequence=reference_sequences[AnnotationLayer.PROTEIN][
-            "mapped_reference_sequence"
-        ],
-        computed_genomic_reference_sequence=reference_sequences[
-            AnnotationLayer.GENOMIC
-        ]["computed_reference_sequence"],
-        mapped_genomic_reference_sequence=reference_sequences[AnnotationLayer.GENOMIC][
-            "mapped_reference_sequence"
-        ],
+        reference_sequences=reference_sequences,
         mapped_scores=mapped_scores,
     )
 

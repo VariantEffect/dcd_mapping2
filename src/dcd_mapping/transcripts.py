@@ -170,7 +170,7 @@ async def _select_protein_reference(
         ref_sequence = get_uniprot_sequence(target_gene.target_uniprot_ref.id)
         if not ref_sequence:
             msg = f"Unable to grab reference sequence from uniprot.org for target gene {target_gene.target_gene_name}"
-            raise ValueError(msg)
+            raise TxSelectError(msg)
         nm_accession = None
         tx_mode = None
     else:
@@ -356,9 +356,9 @@ async def select_transcript(
 
 async def select_transcripts(
     scoreset_metadata: ScoresetMetadata,
-    records: list[ScoreRow],
+    records: dict[str, list[ScoreRow]],
     align_results: dict[str, AlignmentResult],
-) -> dict[str, TxSelectResult]:
+) -> dict[str, TxSelectResult | Exception | None]:
     """Select appropriate human reference sequence for each target in a score set.
     :param scoreset_metadata: Metadata for score set from MaveDB API
     :param records: Variant/score records from MaveDB API
@@ -368,21 +368,14 @@ async def select_transcripts(
     """
     selected_transcripts = {}
     for target_gene in scoreset_metadata.target_genes:
-        # TODO it isn't efficient to go through records each time. Maybe we should initialize records as a dictionary where variants/scores are organized by target label.
-        # select only records associated with this target
-        target_associated_records = [
-            record
-            for record in records
-            if (
-                record.hgvs_pro.startswith(target_gene)
-                or record.hgvs_nt.startswith(target_gene)
+        try:
+            selected_transcripts[target_gene] = await select_transcript(
+                scoreset_urn=scoreset_metadata.urn,
+                target_gene=scoreset_metadata.target_genes[target_gene],
+                records=records[target_gene],
+                align_result=align_results[target_gene],
             )
-        ]
-        selected_transcripts[target_gene] = await select_transcript(
-            scoreset_urn=scoreset_metadata.urn,
-            target_gene=scoreset_metadata.target_genes[target_gene],
-            records=target_associated_records,
-            align_result=align_results[target_gene],
-        )
+        except (TxSelectError, KeyError) as e:
+            selected_transcripts[target_gene] = e
 
     return selected_transcripts

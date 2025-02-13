@@ -33,6 +33,7 @@ from dcd_mapping.schemas import (
     TargetType,
     TxSelectResult,
 )
+from dcd_mapping.transcripts import TxSelectError
 
 __all__ = ["vrs_map", "VrsMapError"]
 
@@ -280,6 +281,13 @@ def _parse_raw_variant_str(raw_description: str) -> list[str]:
     :param raw_description: A string that may contain a list of variant descriptions or a single variant description
     :return: A list of HGVS strings
     """
+    # some variant strings follow mavehgvs format, meaning they don't have a reference sequence id and colon preceding the c./g./n./p. prefix
+    # the reference sequence information has previously been parsed for score sets with multiple targets,
+    # so can discard the reference sequence id and colon if they are present
+    # NOTE: this will need to be changed for accession-based mapping - cannot discard reference unless it has been previously parsed.
+    # TODO check assumption of no colon unless reference sequence identifier is supplied!
+    if ":" in raw_description:
+        raw_description = raw_description.split(":")[1]
     if "[" in raw_description:
         prefix = raw_description[0:2]
         return [prefix + var for var in set(raw_description[3:-1].split(";"))]
@@ -529,14 +537,14 @@ def _hgvs_nt_is_valid(hgvs_nt: str) -> bool:
 def _map_protein_coding(
     metadata: ScoresetMetadata,
     records: list[ScoreRow],
-    transcript: TxSelectResult,
+    transcript: TxSelectResult | TxSelectError,
     align_result: AlignmentResult,
 ) -> list[MappedScore]:
     """Perform mapping on protein coding experiment results
 
     :param metadata: The metadata for a score set
     :param records: The list of MAVE variants in a given score set
-    :param transcript: The transcript data for a score set
+    :param transcript: The transcript data for a score set, or an error message describing why an expected transcript is missing
     :param align_results: The alignment data for a score set
     :return: A list of mappings
     """
@@ -552,7 +560,15 @@ def _map_protein_coding(
 
     variations: list[MappedScore] = []
     for row in records:
-        hgvs_pro_mappings = _map_protein_coding_pro(row, psequence_id, transcript)
+        if isinstance(transcript, TxSelectError):
+            # TODO create pre mapped allele
+            hgvs_pro_mappings = MappedScore(
+                accession_id=row.accession,
+                score=row.score,
+                error_message=str(transcript).strip("'"),
+            )
+        else:
+            hgvs_pro_mappings = _map_protein_coding_pro(row, psequence_id, transcript)
         if hgvs_pro_mappings:
             variations.append(hgvs_pro_mappings)
 
@@ -664,13 +680,13 @@ def vrs_map(
     metadata: ScoresetMetadata,
     align_result: AlignmentResult,
     records: list[ScoreRow],
-    transcript: TxSelectResult | None = None,
+    transcript: TxSelectResult | TxSelectError | None = None,
     silent: bool = True,
 ) -> list[MappedScore] | None:
     """Given a description of a MAVE scoreset and an aligned transcript, generate
     the corresponding VRS objects.
 
-    :param metadata: salient MAVE scoreset metadata
+    :param metadata: target gene metadata from MaveDB API
     :param align_result: output from the sequence alignment process
     :param records: scoreset records
     :param transcript: output of transcript selection process
