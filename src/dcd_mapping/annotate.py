@@ -571,7 +571,7 @@ def save_mapped_output_json(
                 "computed_reference_sequence": None,
                 "mapped_reference_sequence": None,
             }
-            for layer in AnnotationLayer
+            for layer in preferred_layers
         }
 
         for layer in preferred_layers:
@@ -593,7 +593,19 @@ def save_mapped_output_json(
                 # drop annotation layer from mapping object
                 mapped_scores.append(ScoreAnnotation(**m.model_dump()))
 
-    # TODO drop any Nonetype reference sequences
+    # drop Nonetype reference sequences
+    for target_gene in reference_sequences:
+        for layer in list(reference_sequences[target_gene].keys()):
+            if (
+                reference_sequences[target_gene][layer]["mapped_reference_sequence"]
+                is None
+                and reference_sequences[target_gene][layer][
+                    "computed_reference_sequence"
+                ]
+                is None
+            ) or layer is None:
+                del reference_sequences[target_gene][layer]
+
     output = ScoresetMapping(
         metadata=metadata.model_dump(),
         reference_sequences=reference_sequences,
