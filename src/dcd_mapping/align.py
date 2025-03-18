@@ -180,35 +180,36 @@ def _get_blat_output(metadata: ScoresetMetadata, silent: bool) -> Any:  # noqa: 
     :return: dict where keys are target gene identifiers and values are BLAT query result objects
     :raise AlignmentError: if BLAT subprocess returns error code
     """
-    with tempfile.NamedTemporaryFile() as tmp_file:
-        query_file = _build_query_file(metadata, Path(tmp_file.name))
-        target_sequence_type = _get_target_sequence_type(metadata)
-        if target_sequence_type == TargetSequenceType.PROTEIN:
-            target_args = "-q=prot -t=dnax"
-        elif target_sequence_type == TargetSequenceType.DNA:
-            target_args = ""
-        else:
-            # TODO implement support for mixed types, not hard to do - just split blat into two files and run command with each set of arguments.
-            msg = "Mapping for score sets with a mix of nucleotide and protein target sequences is not currently supported."
-            raise NotImplementedError(msg)
-        process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
-        out_file = _write_blat_output_tempfile(process_result)
+    return parse_blat(f"{metadata.urn}_blat.psl", "blat-psl")
+    # with tempfile.NamedTemporaryFile() as tmp_file:
+    #     query_file = _build_query_file(metadata, Path(tmp_file.name))
+    #     target_sequence_type = _get_target_sequence_type(metadata)
+    #     if target_sequence_type == TargetSequenceType.PROTEIN:
+    #         target_args = "-q=prot -t=dnax"
+    #     elif target_sequence_type == TargetSequenceType.DNA:
+    #         target_args = ""
+    #     else:
+    #         # TODO implement support for mixed types, not hard to do - just split blat into two files and run command with each set of arguments.
+    #         msg = "Mapping for score sets with a mix of nucleotide and protein target sequences is not currently supported."
+    #         raise NotImplementedError(msg)
+    #     process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
+    #     out_file = _write_blat_output_tempfile(process_result)
 
-        try:
-            output = parse_blat(out_file, "blat-psl")
+    #     try:
+    #         output = parse_blat(out_file, "blat-psl")
 
-        # TODO reevaluate this code block - are there cases in mavedb where target sequence type is incorrectly supplied?
-        except ValueError:
-            target_args = "-q=dnax -t=dnax"
-            process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
-            out_file = _write_blat_output_tempfile(process_result)
-            try:
-                output = parse_blat(out_file, "blat-psl")
-            except ValueError as e:
-                msg = f"Unable to run successful BLAT on {metadata.urn}"
-                raise AlignmentError(msg) from e
+    #     # TODO reevaluate this code block - are there cases in mavedb where target sequence type is incorrectly supplied?
+    #     except ValueError:
+    #         target_args = "-q=dnax -t=dnax"
+    #         process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
+    #         out_file = _write_blat_output_tempfile(process_result)
+    #         try:
+    #             output = parse_blat(out_file, "blat-psl")
+    #         except ValueError as e:
+    #             msg = f"Unable to run successful BLAT on {metadata.urn}"
+    #             raise AlignmentError(msg) from e
 
-    return output
+    # return output
 
 
 def _get_best_hit(output: QueryResult, chromosome: str | None) -> Hit:
@@ -335,6 +336,9 @@ def align(
     alignment_results = {}
     for blat_result in blat_output:
         target_label = blat_result.id
+        # blat names the result id "query" if there is only one query; replace "query" with the target gene name for single-target score sets
+        if target_label == "query" and len(scoreset_metadata.target_genes) == 1:
+            target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
         target_gene = scoreset_metadata.target_genes[target_label]
         alignment_results[target_label] = _get_best_match(blat_result, target_gene)
     return alignment_results
