@@ -28,7 +28,7 @@ from dcd_mapping.schemas import (
     AlignmentResult,
     MappedScore,
     ScoreRow,
-    ScoresetMetadata,
+    TargetGene,
     TargetSequenceType,
     TargetType,
     TxSelectResult,
@@ -535,14 +535,14 @@ def _hgvs_nt_is_valid(hgvs_nt: str) -> bool:
 
 
 def _map_protein_coding(
-    metadata: ScoresetMetadata,
+    metadata: TargetGene,
     records: list[ScoreRow],
     transcript: TxSelectResult | TxSelectError,
     align_result: AlignmentResult,
 ) -> list[MappedScore]:
     """Perform mapping on protein coding experiment results
 
-    :param metadata: The metadata for a score set
+    :param metadata: Target gene metadata from MaveDB API
     :param records: The list of MAVE variants in a given score set
     :param transcript: The transcript data for a score set, or an error message describing why an expected transcript is missing
     :param align_results: The alignment data for a score set
@@ -582,13 +582,13 @@ def _map_protein_coding(
 
 
 def _map_regulatory_noncoding(
-    metadata: ScoresetMetadata,
+    metadata: TargetGene,
     records: list[ScoreRow],
     align_result: AlignmentResult,
 ) -> list[MappedScore]:
     """Perform mapping on noncoding/regulatory experiment results
 
-    :param metadata: metadata for URN
+    :param metadata: Target gene metadata from MaveDB API
     :param records: list of MAVE experiment result rows
     :param align_result: An AlignmentResult object for a score set
     :return: A list of VRS mappings
@@ -677,7 +677,7 @@ def _construct_vrs_allele(
 
 
 def vrs_map(
-    metadata: ScoresetMetadata,
+    metadata: TargetGene,
     align_result: AlignmentResult,
     records: list[ScoreRow],
     transcript: TxSelectResult | TxSelectError | None = None,
