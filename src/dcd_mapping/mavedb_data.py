@@ -70,20 +70,24 @@ def get_scoreset_urns() -> set[str]:
 
 
 def _metadata_response_is_human(json_response: dict) -> bool:
-    """Check that response from scoreset metadata API refers to a human genome target.
-
+    """Check that response from scoreset metadata API refers to a score set containing only human genome targets.
     :param json_response: response from scoreset metadata API
     :return: True if contains a target tagged as ``"Homo sapiens"``
     """
     for target_gene in json_response.get("targetGenes", []):
+        # for now, assume that genomic coordinate-based score sets are always human,
+        # since users are not allowed to upload non-human coordinate-based score sets
+        if target_gene.get("targetAccession"):
+            continue
+
         organism = (
             target_gene.get("targetSequence", {})
             .get("taxonomy", {})
             .get("organismName")
         )
-        if organism == "Homo sapiens":
-            return True
-    return False
+        if organism != "Homo sapiens":
+            return False
+    return True
 
 
 def get_human_urns() -> list[str]:
@@ -185,31 +189,40 @@ def get_scoreset_metadata(
     multi_target = len(metadata["targetGenes"]) > 1
 
     for gene in metadata["targetGenes"]:
-        target_sequence_gene = gene.get("targetSequence")
-        if target_sequence_gene is None:
-            msg = f"No target sequence available for {scoreset_urn}. Accession-based score sets are not currently supported."
-            raise ScoresetNotSupportedError(msg)
         if not _metadata_response_is_human(metadata):
-            msg = f"Experiment for {scoreset_urn} contains no human targets"
+            # TODO allow score sets with mix of human and non-human targets? This may not come up, but is doable with a little restructuring.
+            msg = f"Experiment for {scoreset_urn} contains non-human targets"
             raise ScoresetNotSupportedError(msg)
         try:
-            target_sequence_label = gene["targetSequence"].get("label")
-            if target_sequence_label is None:
-                # if there are not multiple targets, label is not required by mavedb,
-                # so use target gene name as the label.
-                if not multi_target:
-                    target_sequence_label = gene["name"]
-                else:
-                    msg = f"No target label provided for target in multi-target score set {scoreset_urn}."
-                    raise DataLookupError(msg)
-            target_genes[target_sequence_label] = TargetGene(
-                target_gene_name=gene["name"],
-                target_gene_category=gene["category"],
-                target_sequence=gene["targetSequence"]["sequence"],
-                target_sequence_type=gene["targetSequence"]["sequenceType"],
-                target_sequence_label=target_sequence_label,
-                target_uniprot_ref=_get_uniprot_ref(metadata),
-            )
+            target_gene_sequence = gene.get("targetSequence")
+            target_gene_accession = gene.get("targetAccession")
+
+            if target_gene_sequence:
+                target_sequence_label = target_gene_sequence.get("label")
+                if target_sequence_label is None:
+                    # if there are not multiple targets, label is not required by mavedb,
+                    # so use target gene name as the label.
+                    if not multi_target:
+                        target_sequence_label = gene["name"]
+                    else:
+                        msg = f"No target label provided for target in multi-target score set {scoreset_urn}."
+                        raise DataLookupError(msg)
+                target_genes[target_sequence_label] = TargetGene(
+                    target_gene_name=gene["name"],
+                    target_gene_category=gene["category"],
+                    target_sequence=target_gene_sequence["sequence"],
+                    target_sequence_type=target_gene_sequence["sequenceType"],
+                    target_sequence_label=target_sequence_label,
+                    target_uniprot_ref=_get_uniprot_ref(metadata),
+                )
+            elif target_gene_accession:
+                target_accession_id = target_gene_accession["accession"]
+                target_genes[target_accession_id] = TargetGene(
+                    target_gene_name=gene["name"],
+                    target_gene_category=gene["category"],
+                    target_accession_id=target_accession_id,
+                    target_accession_assembly=target_gene_accession["assembly"],
+                )
         except (KeyError, ValidationError) as e:
             msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
             _logger.error(msg)
@@ -253,12 +266,9 @@ def _load_scoreset_records(
             # target, so use the one target's label.
             if prefix is None:
                 if len(metadata.target_genes) == 1:
-                    # don't know name of key, so loop through dictionary
-                    # and use the key of the single-entry metadata.target_genes dict as the key for this new dict
-                    for target_gene in metadata.target_genes:
-                        prefix = target_gene
+                    prefix = list(metadata.target_genes.keys())[0]  # noqa: RUF015
                 else:
-                    msg = f"Multi-target score set {metadata.urn} does not contain target sequence labels in variant HGVS strings."
+                    msg = f"Score set {metadata.urn} contains one or more variant HGVS strings without a reference sequence label. All variant HGVS strings must contain a reference sequence label or accession ID unless the score set contains a single target sequence."
                     raise ScoresetNotSupportedError(msg)
             if prefix in scores_data:
                 scores_data[prefix].append(ScoreRow(**row))

@@ -357,7 +357,7 @@ async def select_transcript(
 async def select_transcripts(
     scoreset_metadata: ScoresetMetadata,
     records: dict[str, list[ScoreRow]],
-    align_results: dict[str, AlignmentResult],
+    align_results: dict[str, AlignmentResult | None],
 ) -> dict[str, TxSelectResult | Exception | None]:
     """Select appropriate human reference sequence for each target in a score set.
     :param scoreset_metadata: Metadata for score set from MaveDB API
@@ -368,14 +368,32 @@ async def select_transcripts(
     """
     selected_transcripts = {}
     for target_gene in scoreset_metadata.target_genes:
-        try:
-            selected_transcripts[target_gene] = await select_transcript(
-                scoreset_urn=scoreset_metadata.urn,
-                target_gene=scoreset_metadata.target_genes[target_gene],
-                records=records[target_gene],
-                align_result=align_results[target_gene],
-            )
-        except (TxSelectError, KeyError) as e:
-            selected_transcripts[target_gene] = e
+        if scoreset_metadata.target_genes[target_gene].target_accession_id:
+            # for accession-based targets, create tx select objects for protein sequence accessions only
+            accession_id = scoreset_metadata.target_genes[
+                target_gene
+            ].target_accession_id
+            # TODO create full list of possible protein accession prefixes
+            if accession_id.startswith(("NP_", "ENSP_")):
+                # TODO make sequence field optional instead of leaving blank here?
+                selected_transcripts[target_gene] = TxSelectResult(
+                    np=accession_id,
+                    start=0,
+                    is_full_match=True,
+                    sequence="",
+                    transcript_mode=None,
+                )
+            else:
+                selected_transcripts[target_gene] = None
+        else:
+            try:
+                selected_transcripts[target_gene] = await select_transcript(
+                    scoreset_urn=scoreset_metadata.urn,
+                    target_gene=scoreset_metadata.target_genes[target_gene],
+                    records=records[target_gene],
+                    align_result=align_results[target_gene],
+                )
+            except (TxSelectError, KeyError) as e:
+                selected_transcripts[target_gene] = e
 
     return selected_transcripts

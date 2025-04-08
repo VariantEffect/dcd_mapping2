@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from itertools import cycle
 
 from Bio.Seq import Seq
+from bioutils.accessions import infer_namespace
 from cool_seq_tool.schemas import AnnotationLayer, Strand
 from ga4gh.core import ga4gh_identify, sha512t24u
 from ga4gh.vrs._internal.models import (
@@ -20,6 +21,7 @@ from mavehgvs.util import parse_variant_strings
 from mavehgvs.variant import Variant
 
 from dcd_mapping.lookup import (
+    cdot_rest,
     get_chromosome_identifier,
     get_seqrepo,
     translate_hgvs_to_vrs,
@@ -68,11 +70,26 @@ def _process_any_aa_code(hgvs_pro_string: str) -> str:
     return hgvs_pro_string
 
 
+def is_intronic_variant(variant: Variant) -> bool:
+    """Return True if given Variant is intronic, otherwise return False.
+    Supports single or multi-position variants.
+    """
+    if isinstance(variant.positions, Iterable):
+        if any(position.is_intronic() for position in variant.positions):
+            return True
+    else:
+        if variant.positions.is_intronic():
+            return True
+
+    return False
+
+
 def _create_pre_mapped_hgvs_strings(
     raw_description: str,
     layer: AnnotationLayer,
     tx: TxSelectResult | None = None,
     alignment: AlignmentResult | None = None,
+    accession_id: str | None = None,
 ) -> list[str]:
     """Generate a list of (pre-mapped) HGVS strings from one long string containing many valid HGVS substrings
 
@@ -85,13 +102,14 @@ def _create_pre_mapped_hgvs_strings(
     :param layer: An enum denoting the targeted annotation layer of these HGVS strings
     :param tx: A TxSelectResult object defining the transcript we are mapping to (or None).
     :param alignment: An AlignmentResult object defining the alignment we are mapping to (or None).
+    :param accession_id: An accession id describing the reference sequence (for accession-based target gene variants)
     :return: A list of HGVS strings prior to being mapped to the `tx` or `alignment`
     """
     if layer is AnnotationLayer.PROTEIN and tx is None:
         msg = f"Transcript result must be provided for {layer} annotations (Transcript was `{tx}`)."
         raise ValueError(msg)
-    if layer is AnnotationLayer.GENOMIC and alignment is None:
-        msg = f"Alignment result must be provided for {layer} annotations (Alignment was `{alignment}`)."
+    if layer is AnnotationLayer.GENOMIC and alignment is None and accession_id is None:
+        msg = f"Alignment result or accession ID must be provided for {layer} annotations (Alignment was `{alignment}`)."
         raise ValueError(msg)
 
     raw_variant_strings = _parse_raw_variant_str(raw_description)
@@ -103,10 +121,18 @@ def _create_pre_mapped_hgvs_strings(
             msg = f"Variant could not be parsed by mavehgvs: {error}"
             raise ValueError(msg)
 
+        # ga4gh hgvs_tools does not support intronic variants, so they will err out when vrs allele translator is called
+        # therefore skip them there
+        if is_intronic_variant(variant):
+            msg = f"Variant is intronic and cannot be processed: {variant}"
+            raise ValueError(msg)
+
+        if accession_id:
+            hgvs_strings.append(accession_id + ":" + str(variant))
         # Ideally we would create an HGVS string namespaced to GA4GH. The line below
         # creates such a string, but it is not able to be parsed by the GA4GH VRS translator.
         # hgvs_strings.append('ga4gh:' + sequence_id + ':' + str(variant))
-        if layer is AnnotationLayer.PROTEIN:
+        elif layer is AnnotationLayer.PROTEIN:
             assert tx  # noqa: S101. mypy help
             hgvs_strings.append(tx.np + ":" + str(variant))
         elif layer is AnnotationLayer.GENOMIC:
@@ -155,6 +181,12 @@ def _create_post_mapped_hgvs_strings(
     for variant, error in zip(variants, errors, strict=True):
         if error is not None:
             msg = f"Variant could not be parsed by mavehgvs: {error}"
+            raise ValueError(msg)
+
+        # ga4gh hgvs_tools does not support intronic variants, so they will err out when vrs allele translator is called
+        # therefore skip them there
+        if is_intronic_variant(variant):
+            msg = f"Variant is intronic and cannot be processed: {variant}"
             raise ValueError(msg)
 
         if layer is AnnotationLayer.PROTEIN:
@@ -284,7 +316,6 @@ def _parse_raw_variant_str(raw_description: str) -> list[str]:
     # some variant strings follow mavehgvs format, meaning they don't have a reference sequence id and colon preceding the c./g./n./p. prefix
     # the reference sequence information has previously been parsed for score sets with multiple targets,
     # so can discard the reference sequence id and colon if they are present
-    # NOTE: this will need to be changed for accession-based mapping - cannot discard reference unless it has been previously parsed.
     # TODO check assumption of no colon unless reference sequence identifier is supplied!
     if ":" in raw_description:
         raw_description = raw_description.split(":")[1]
@@ -405,7 +436,7 @@ def _map_protein_coding_pro(
 def _map_genomic(
     row: ScoreRow,
     sequence_id: str,
-    align_result: AlignmentResult,
+    align_result: AlignmentResult | None,
 ) -> MappedScore:
     """Construct VRS object mapping for ``hgvs_nt`` variant column entry
 
@@ -416,6 +447,15 @@ def _map_genomic(
     :param align_result: The transcript selection information for a score set
     :return: VRS mapping object if mapping succeeds
     """
+    namespace = infer_namespace(sequence_id)
+    if namespace is None:
+        if sequence_id.startswith("SQ."):
+            # if the sequence id starts with SQ, it is a target sequence which is in the ga4gh namespace
+            namespace = "ga4gh"
+        else:
+            msg = f"Namespace could not be inferred from sequence: {sequence_id}"
+            raise ValueError(msg)
+
     if (
         row.hgvs_nt in {"_wt", "_sy", "="}
         or "fs"
@@ -431,55 +471,146 @@ def _map_genomic(
             error_message=f"Can't process variant syntax {row.hgvs_nt}",
         )
 
-    try:
-        pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
-            row.hgvs_nt,
-            AnnotationLayer.GENOMIC,
-            alignment=align_result,
-        )
-        pre_mapped_genomic = _construct_vrs_allele(
-            pre_mapped_hgvs_strings,
-            AnnotationLayer.GENOMIC,
-            sequence_id,
-            True,
-        )
-    except Exception as e:
-        _logger.warning(
-            "An error occurred while generating pre-mapped genomic variant for %s, accession %s: %s",
-            row.hgvs_nt,
-            row.accession,
-            str(e),
-        )
-        return MappedScore(
-            accession_id=row.accession, score=row.score, error_message=str(e)
-        )
+    if align_result is None:
+        # for contig accession based score sets, no mapping is performed,
+        # so pre- and post-mapped alleles are the same
+        try:
+            pre_mapped_hgvs_strings = (
+                post_mapped_hgvs_strings
+            ) = _create_pre_mapped_hgvs_strings(
+                row.hgvs_nt,
+                AnnotationLayer.GENOMIC,
+                accession_id=sequence_id,
+            )
+            # accession-based pre-mapped alleles should be constructed like post-mapped alleles (sequence id is gathered from hgvs string rather than manually provided)
+            pre_mapped_genomic = _construct_vrs_allele(
+                pre_mapped_hgvs_strings,
+                AnnotationLayer.GENOMIC,
+                None,
+                False,
+            )
+            post_mapped_genomic = _construct_vrs_allele(
+                post_mapped_hgvs_strings,
+                AnnotationLayer.GENOMIC,
+                None,
+                False,
+            )
+        except Exception as e:
+            _logger.warning(
+                "An error occurred while generating genomic variant for %s, accession %s: %s",
+                row.hgvs_nt,
+                row.accession,
+                str(e),
+            )
+            return MappedScore(
+                accession_id=row.accession, score=row.score, error_message=str(e)
+            )
 
-    try:
-        post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
-            row.hgvs_nt,
-            AnnotationLayer.GENOMIC,
-            alignment=align_result,
-        )
-        post_mapped_genomic = _construct_vrs_allele(
-            post_mapped_hgvs_strings,
-            AnnotationLayer.GENOMIC,
-            None,
-            False,
-        )
-    except Exception as e:
-        _logger.warning(
-            "An error occurred while generating post-mapped genomic variant for %s, accession %s: %s",
-            row.hgvs_nt,
-            row.accession,
-            str(e),
-        )
-        return MappedScore(
-            accession_id=row.accession,
-            score=row.score,
-            annotation_layer=AnnotationLayer.GENOMIC,
-            pre_mapped=pre_mapped_genomic,
-            error_message=str(e),
-        )
+    elif namespace.lower() in ("refseq", "ncbi", "ensembl"):
+        # nm/enst way
+        try:
+            pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
+                row.hgvs_nt,
+                AnnotationLayer.GENOMIC,
+                accession_id=sequence_id,
+            )
+            # accession-based pre-mapped alleles should be constructed like post-mapped alleles (sequence id is gathered from hgvs string rather than manually provided)
+            pre_mapped_genomic = _construct_vrs_allele(
+                pre_mapped_hgvs_strings,
+                AnnotationLayer.GENOMIC,
+                None,
+                False,
+            )
+        except Exception as e:
+            _logger.warning(
+                "An error occurred while generating pre-mapped genomic variant for %s, accession %s: %s",
+                row.hgvs_nt,
+                row.accession,
+                str(e),
+            )
+            return MappedScore(
+                accession_id=row.accession, score=row.score, error_message=str(e)
+            )
+        try:
+            post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
+                row.hgvs_nt,
+                AnnotationLayer.GENOMIC,
+                alignment=align_result,
+            )
+            post_mapped_genomic = _construct_vrs_allele(
+                post_mapped_hgvs_strings,
+                AnnotationLayer.GENOMIC,
+                None,
+                False,
+            )
+        except Exception as e:
+            _logger.warning(
+                "An error occurred while generating post-mapped genomic variant for %s, accession %s: %s",
+                row.hgvs_nt,
+                row.accession,
+                str(e),
+            )
+            return MappedScore(
+                accession_id=row.accession,
+                score=row.score,
+                annotation_layer=AnnotationLayer.GENOMIC,
+                pre_mapped=pre_mapped_genomic,
+                error_message=str(e),
+            )
+    elif namespace.lower() == "ga4gh":
+        # target seq way
+        try:
+            pre_mapped_hgvs_strings = _create_pre_mapped_hgvs_strings(
+                row.hgvs_nt,
+                AnnotationLayer.GENOMIC,
+                alignment=align_result,
+            )
+            pre_mapped_genomic = _construct_vrs_allele(
+                pre_mapped_hgvs_strings,
+                AnnotationLayer.GENOMIC,
+                sequence_id,
+                True,
+            )
+        except Exception as e:
+            _logger.warning(
+                "An error occurred while generating pre-mapped genomic variant for %s, accession %s: %s",
+                row.hgvs_nt,
+                row.accession,
+                str(e),
+            )
+            return MappedScore(
+                accession_id=row.accession, score=row.score, error_message=str(e)
+            )
+
+        try:
+            post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
+                row.hgvs_nt,
+                AnnotationLayer.GENOMIC,
+                alignment=align_result,
+            )
+            post_mapped_genomic = _construct_vrs_allele(
+                post_mapped_hgvs_strings,
+                AnnotationLayer.GENOMIC,
+                None,
+                False,
+            )
+        except Exception as e:
+            _logger.warning(
+                "An error occurred while generating post-mapped genomic variant for %s, accession %s: %s",
+                row.hgvs_nt,
+                row.accession,
+                str(e),
+            )
+            return MappedScore(
+                accession_id=row.accession,
+                score=row.score,
+                annotation_layer=AnnotationLayer.GENOMIC,
+                pre_mapped=pre_mapped_genomic,
+                error_message=str(e),
+            )
+    else:
+        msg = f"Reference sequence namespace not supported: {namespace}"
+        raise ValueError(msg)
 
     return MappedScore(
         accession_id=row.accession,
@@ -603,6 +734,52 @@ def _map_regulatory_noncoding(
     return variations
 
 
+def store_accession(
+    accession_id: str,
+) -> None:
+    namespace = infer_namespace(accession_id)
+    alias_dict_list = [{"namespace": namespace, "alias": accession_id}]
+    cd = cdot_rest()
+    sequence = cd.get_seq(accession_id)
+    sr = get_seqrepo()
+    sr.sr.store(sequence, alias_dict_list)
+
+
+def _map_accession(
+    metadata: TargetGene,
+    records: list[ScoreRow],
+    align_result: AlignmentResult
+    | None,  # NP and NC accessions won't have alignment results
+    transcript: TxSelectResult | None,
+) -> list[MappedScore]:
+    variations: list[MappedScore] = []
+    sequence_id = metadata.target_accession_id
+    if sequence_id is None:
+        raise ValueError
+
+    store_accession(sequence_id)
+
+    # TODO full list of protein accession id prefixes
+    if metadata.target_accession_id.startswith(("NP", "ENSP")):
+        for row in records:
+            hgvs_pro_mappings = _map_protein_coding_pro(
+                row,
+                sequence_id,
+                transcript,
+            )
+            variations.append(hgvs_pro_mappings)
+    # TODO full list of transcript and contig accession id prefixes
+    elif metadata.target_accession_id.startswith(("NM", "ENST", "NC")):
+        for row in records:
+            hgvs_nt_mappings = _map_genomic(row, sequence_id, align_result)
+            variations.append(hgvs_nt_mappings)
+    else:
+        msg = f"Unrecognized accession prefix for accession id {metadata.target_accession_id}"
+        raise ValueError(msg)
+
+    return variations
+
+
 def _rle_to_lse(
     rle: ReferenceLengthExpression, location: SequenceLocation
 ) -> LiteralSequenceExpression:
@@ -678,7 +855,7 @@ def _construct_vrs_allele(
 
 def vrs_map(
     metadata: TargetGene,
-    align_result: AlignmentResult,
+    align_result: AlignmentResult | None,
     records: list[ScoreRow],
     transcript: TxSelectResult | TxSelectError | None = None,
     silent: bool = True,
@@ -693,6 +870,8 @@ def vrs_map(
     :param silent: If true, suppress console output
     :return: A list of mapping results
     """
+    if metadata.target_accession_id:
+        return _map_accession(metadata, records, align_result, transcript)
     if metadata.target_gene_category == TargetType.PROTEIN_CODING and transcript:
         return _map_protein_coding(
             metadata,

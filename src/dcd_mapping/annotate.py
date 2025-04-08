@@ -419,14 +419,36 @@ def _get_computed_reference_sequence(
     metadata: TargetGene,
     layer: AnnotationLayer,
     tx_output: TxSelectResult | TxSelectError | None = None,
-) -> ComputedReferenceSequence | None:
+) -> ComputedReferenceSequence | MappedReferenceSequence | None:
     """Report the computed reference sequence for a score set
 
     :param metadata: Target gene metadata from MaveDB API
     :param layer: AnnotationLayer
     :param tx_output: Transcript data for a score set
-    :return A ComputedReferenceSequence object
+    :return A ComputedReferenceSequence object,
+    or if the target gene is accession-based, a mapped reference sequence describing the pre-mapped reference
     """
+    # accession-based target genes always use accession id as pre-mapped reference sequence
+    if metadata.target_accession_id:
+        seq_id = get_vrs_id_from_identifier(metadata.target_accession_id)
+        # use MappedReferenceSequence type because there should be an accession id but no sequence.
+        # for accession-based target genes, the object returned by this function describes the provided reference accession
+        # whereas the object returned by _get_mapped_reference_sequence describes the mapped reference accession, which could be a chromosome for ex.
+        seq_type: TargetSequenceType
+        # TODO full list of protein accession id prefixes
+        if metadata.target_accession_id.startswith(("NP", "ENSP")):
+            seq_type = TargetSequenceType.PROTEIN
+        # TODO full list of transcript and contig accession id prefixes
+        elif metadata.target_accession_id.startswith(("NM", "ENST", "NC")):
+            seq_type = TargetSequenceType.DNA
+        else:
+            msg = f"Unrecognized accession prefix for accession id {metadata.target_accession_id}"
+            raise ValueError(msg)
+        return MappedReferenceSequence(
+            sequence_type=seq_type,
+            sequence_id=seq_id,
+            sequence_accessions=[metadata.target_accession_id],
+        )
     if layer == AnnotationLayer.PROTEIN:
         if tx_output is None or isinstance(tx_output, TxSelectError):
             # TODO catch this error - don't stop whole job for one failed target

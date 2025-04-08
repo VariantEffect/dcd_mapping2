@@ -12,10 +12,12 @@ import logging
 import os
 from pathlib import Path
 
+import hgvs
 import polars as pl
 import requests
 from biocommons.seqrepo import SeqRepo
 from biocommons.seqrepo.seqaliasdb.seqaliasdb import sqlite3
+from cdot.hgvs.dataproviders import ChainedSeqFetcher, FastaSeqFetcher, RESTDataProvider
 from cool_seq_tool.app import (
     LRG_REFSEQGENE_PATH,
     MANE_SUMMARY_PATH,
@@ -42,6 +44,7 @@ from ga4gh.vrs._internal.models import (
 )
 from ga4gh.vrs.dataproxy import SeqRepoDataProxy, coerce_namespace
 from ga4gh.vrs.extras.translator import AlleleTranslator
+from ga4gh.vrs.utils.hgvs_tools import HgvsTools
 from gene.database import create_db
 from gene.query import QueryHandler
 from gene.schemas import MatchType, SourceName
@@ -69,6 +72,23 @@ __all__ = [
     "get_uniprot_sequence",
 ]
 _logger = logging.getLogger(__name__)
+
+# ---------------------------------- Cdot ---------------------------------- #
+
+
+GENOMIC_FASTA_FILES = [
+    "/home/.local/share/dcd_mapping/GCF_000001405.39_GRCh38.p13_genomic.fna.gz",
+    "/home/.local/share/dcd_mapping/GCF_000001405.25_GRCh37.p13_genomic.fna.gz",
+]
+
+
+def seqfetcher() -> ChainedSeqFetcher:
+    return ChainedSeqFetcher(*[FastaSeqFetcher(file) for file in GENOMIC_FASTA_FILES])
+
+
+def cdot_rest() -> RESTDataProvider:
+    return RESTDataProvider(seqfetcher=seqfetcher())
+
 
 # ---------------------------------- Global ---------------------------------- #
 
@@ -180,6 +200,15 @@ class GeneNormalizerBuilder:
         return cls.instance
 
 
+def init_hgvs_tools(self, data_proxy=None):  # noqa: ANN202, ANN001
+    """Initialize HgvsTools with cdot as data provider"""
+    self.parser = hgvs.parser.Parser()
+    self.data_proxy = data_proxy
+    cdot_provider = cdot_rest()
+    self.normalizer = hgvs.normalizer.Normalizer(cdot_provider, validate=True)
+    self.variant_mapper = hgvs.variantmapper.VariantMapper(cdot_provider)
+
+
 class TranslatorBuilder:
     """Singleton constructor for VRS Translator instance."""
 
@@ -190,6 +219,8 @@ class TranslatorBuilder:
         :return: singleton instance of ``AlleleTranslator``
         """
         if not hasattr(cls, "instance"):
+            # monkey patch to use cdot instead of UTA as HgvsTools data provider
+            HgvsTools.__init__ = init_hgvs_tools
             tr = AlleleTranslator(data_proxy)
             cls.instance = tr
         else:
@@ -430,6 +461,11 @@ def get_chromosome_identifier(chromosome: str) -> str:
     :return: latest ID if available
     :raise KeyError: if unable to retrieve identifier
     """
+    # target sequence alignment references are chromosome names like ``"8"``, ``"X"``
+    # but accession alignment information from cdot has reference accessions, beginning with "NC_"
+    # for "NC_" identifiers, just return the identifier
+    if chromosome.startswith("NC_"):
+        return chromosome
     if not chromosome.startswith("chr"):
         chromosome = f"chr{chromosome}"
     sr = get_seqrepo()

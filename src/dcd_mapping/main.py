@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 from requests import HTTPError
 
-from dcd_mapping.align import AlignmentError, BlatNotFoundError, align
+from dcd_mapping.align import AlignmentError, BlatNotFoundError, build_alignment_result
 from dcd_mapping.annotate import (
     annotate,
     save_mapped_output_json,
@@ -156,7 +156,8 @@ async def map_scoreset(
 
     _emit_info(f"Performing alignment for {metadata.urn}...", silent)
     try:
-        alignment_results = align(metadata, silent)
+        # dictionary where keys are target gene labels or accession ids, and values are alignment result objects
+        alignment_results = build_alignment_result(metadata, silent)
     except BlatNotFoundError as e:
         msg = "BLAT command appears missing. Ensure it is available on the $PATH or use the environment variable BLAT_BIN_PATH to point to it. See instructions in the README prerequisites section for more."
         _emit_info(msg, silent, logging.ERROR)
@@ -168,6 +169,15 @@ async def map_scoreset(
         _emit_info(
             f"Alignment failed for scoreset  {metadata.urn} {e}", silent, logging.ERROR
         )
+        final_output = write_scoreset_mapping_to_json(
+            metadata.urn,
+            ScoresetMapping(metadata=metadata, error_message=str(e).strip("'")),
+            output_path,
+        )
+        _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
+        return
+    except ScoresetNotSupportedError as e:
+        _emit_info(f"Score set not supported: {e}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
             ScoresetMapping(metadata=metadata, error_message=str(e).strip("'")),

@@ -14,9 +14,7 @@ from Bio.SearchIO._model import Hit, QueryResult
 from cool_seq_tool.schemas import Strand
 
 from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
-from dcd_mapping.mavedb_data import (
-    LOCAL_STORE_PATH,
-)
+from dcd_mapping.mavedb_data import LOCAL_STORE_PATH, ScoresetNotSupportedError
 from dcd_mapping.resource_utils import (
     ResourceAcquisitionError,
     http_download,
@@ -180,36 +178,35 @@ def _get_blat_output(metadata: ScoresetMetadata, silent: bool) -> Any:  # noqa: 
     :return: dict where keys are target gene identifiers and values are BLAT query result objects
     :raise AlignmentError: if BLAT subprocess returns error code
     """
-    return parse_blat(f"{metadata.urn}_blat.psl", "blat-psl")
-    # with tempfile.NamedTemporaryFile() as tmp_file:
-    #     query_file = _build_query_file(metadata, Path(tmp_file.name))
-    #     target_sequence_type = _get_target_sequence_type(metadata)
-    #     if target_sequence_type == TargetSequenceType.PROTEIN:
-    #         target_args = "-q=prot -t=dnax"
-    #     elif target_sequence_type == TargetSequenceType.DNA:
-    #         target_args = ""
-    #     else:
-    #         # TODO implement support for mixed types, not hard to do - just split blat into two files and run command with each set of arguments.
-    #         msg = "Mapping for score sets with a mix of nucleotide and protein target sequences is not currently supported."
-    #         raise NotImplementedError(msg)
-    #     process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
-    #     out_file = _write_blat_output_tempfile(process_result)
+    with tempfile.NamedTemporaryFile() as tmp_file:
+        query_file = _build_query_file(metadata, Path(tmp_file.name))
+        target_sequence_type = _get_target_sequence_type(metadata)
+        if target_sequence_type == TargetSequenceType.PROTEIN:
+            target_args = "-q=prot -t=dnax"
+        elif target_sequence_type == TargetSequenceType.DNA:
+            target_args = ""
+        else:
+            # TODO consider implementing support for mixed types, not hard to do - just split blat into two files and run command with each set of arguments.
+            msg = "Mapping for score sets with a mix of nucleotide and protein target sequences is not currently supported."
+            raise NotImplementedError(msg)
+        process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
+        out_file = _write_blat_output_tempfile(process_result)
 
-    #     try:
-    #         output = parse_blat(out_file, "blat-psl")
+        try:
+            output = parse_blat(out_file, "blat-psl")
 
-    #     # TODO reevaluate this code block - are there cases in mavedb where target sequence type is incorrectly supplied?
-    #     except ValueError:
-    #         target_args = "-q=dnax -t=dnax"
-    #         process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
-    #         out_file = _write_blat_output_tempfile(process_result)
-    #         try:
-    #             output = parse_blat(out_file, "blat-psl")
-    #         except ValueError as e:
-    #             msg = f"Unable to run successful BLAT on {metadata.urn}"
-    #             raise AlignmentError(msg) from e
+        # TODO reevaluate this code block - are there cases in mavedb where target sequence type is incorrectly supplied?
+        except ValueError:
+            target_args = "-q=dnax -t=dnax"
+            process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
+            out_file = _write_blat_output_tempfile(process_result)
+            try:
+                output = parse_blat(out_file, "blat-psl")
+            except ValueError as e:
+                msg = f"Unable to run successful BLAT on {metadata.urn}"
+                raise AlignmentError(msg) from e
 
-    # return output
+    return output
 
 
 def _get_best_hit(output: QueryResult, chromosome: str | None) -> Hit:
@@ -342,3 +339,106 @@ def align(
         target_gene = scoreset_metadata.target_genes[target_label]
         alignment_results[target_label] = _get_best_match(blat_result, target_gene)
     return alignment_results
+
+
+def fetch_alignment(
+    metadata: ScoresetMetadata, silent: bool
+) -> dict[str, AlignmentResult | None]:
+    alignment_results = {}
+    for target_gene in metadata.target_genes:
+        accession_id = metadata.target_genes[target_gene].target_accession_id
+        # protein and contig/chromosome accession ids do not need to be aligned to the genome
+        if accession_id.startswith(("NP", "ENSP", "NC_")):
+            alignment_results[accession_id] = None
+        else:
+            url = f"https://cdot.cc/transcript/{accession_id}"
+            r = requests.get(url, timeout=30)
+
+            try:
+                r.raise_for_status()
+            except requests.HTTPError as e:
+                msg = f"Received HTTPError from {url} for scoreset {metadata.urn}"
+                _logger.error(msg)
+                raise ResourceAcquisitionError(msg) from e
+
+            cdot_mapping = r.json()
+            alignment_results[accession_id] = parse_cdot_mapping(cdot_mapping, silent)
+    return alignment_results
+
+
+def parse_cdot_mapping(cdot_mapping: dict, silent: bool) -> AlignmentResult:
+    # blat psl & AlignmentResult: 0-based, start inclusive, stop exclusive
+    # cdot: 1-based, start inclusive, stop inclusive
+    # so, to "translate" cdot ranges to AlignmentResult-style ranges:
+    # subtract 1 from start and end to go from 1-based to 0-based coord,
+    # and then add 1 to the stop to go from inclusive to exclusive
+    # so just subtract 1 from start and do nothing to end
+
+    grch38 = cdot_mapping.get("genome_builds", {}).get("GRCh38")
+    grch37 = cdot_mapping.get("genome_builds", {}).get("GRCh37")
+    mapping = grch38 if grch38 else grch37
+    if mapping is None:
+        msg = f"Cdot transcript results for transcript {cdot_mapping.get('id')} do not include GRCh37 or GRCh38 mapping"
+        raise AlignmentError(msg)
+
+    chrom = mapping["contig"]
+    strand = Strand.POSITIVE if mapping["strand"] == "+" else Strand.NEGATIVE
+    query_subranges = []
+    hit_subranges = []
+    for exon in mapping["exons"]:
+        query_subranges.append(SequenceRange(start=exon[3] - 1, end=exon[4]))
+        hit_subranges.append(SequenceRange(start=exon[0] - 1, end=exon[1]))
+
+    if strand == Strand.POSITIVE:
+        query_range = SequenceRange(
+            start=query_subranges[0].start, end=query_subranges[-1].end
+        )
+        hit_range = SequenceRange(
+            start=hit_subranges[0].start, end=hit_subranges[-1].end
+        )
+    else:
+        query_range = SequenceRange(
+            start=query_subranges[-1].start, end=query_subranges[0].end
+        )
+        hit_range = SequenceRange(
+            start=hit_subranges[-1].start, end=hit_subranges[0].end
+        )
+
+    return AlignmentResult(
+        chrom=chrom,
+        strand=strand,
+        query_range=query_range,
+        query_subranges=query_subranges,
+        hit_range=hit_range,
+        hit_subranges=hit_subranges,
+    )
+
+
+def build_alignment_result(
+    metadata: ScoresetMetadata, silent: bool
+) -> dict[str, AlignmentResult | None]:
+    # NOTE: Score set must contain all accession-based target genes or all sequence-based target genes
+    # This decision was made because it is most efficient to run BLAT all together, so the alignment function
+    # works on an entire score set rather than per target gene.
+    # However, if the need arises, we can allow both types of target genes in a score set.
+
+    # determine whether score set is accession-based or sequence-based
+    score_set_type = None
+    for target_gene in metadata.target_genes:
+        if metadata.target_genes[target_gene].target_accession_id:
+            if score_set_type == "sequence":
+                msg = "Score set contains both accession-based and sequence-based target genes. This is not currently supported."
+                raise ScoresetNotSupportedError(msg)
+            score_set_type = "accession"
+        else:
+            if score_set_type == "accession":
+                msg = "Score set contains both accession-based and sequence-based target genes. This is not currently supported."
+                raise ScoresetNotSupportedError(msg)
+            score_set_type = "sequence"
+
+    if score_set_type == "sequence":
+        alignment_result = align(metadata, silent)
+    else:
+        alignment_result = fetch_alignment(metadata, silent)
+
+    return alignment_result

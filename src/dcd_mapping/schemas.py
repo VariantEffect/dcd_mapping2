@@ -45,10 +45,12 @@ class TargetGene(BaseModel):
 
     target_gene_name: str
     target_gene_category: TargetType
-    target_sequence: str
-    target_sequence_type: TargetSequenceType
-    target_sequence_label: str
+    target_sequence: str | None = None
+    target_sequence_type: TargetSequenceType | None = None
+    target_sequence_label: str | None = None
     target_uniprot_ref: UniProtRef | None = None
+    target_accession_id: str | None = None
+    target_accession_assembly: str | None = None
 
 
 class ScoresetMetadata(BaseModel):
@@ -106,8 +108,8 @@ class AlignmentResult(BaseModel):
 
     chrom: str
     strand: Strand
-    coverage: float
-    ident_pct: float
+    coverage: float | None = None
+    ident_pct: float | None = None
     query_range: SequenceRange
     query_subranges: list[SequenceRange]
     hit_range: SequenceRange
