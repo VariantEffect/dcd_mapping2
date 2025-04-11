@@ -213,9 +213,9 @@ class ScoresetMapping(BaseModel):
     #         dict[str, ComputedReferenceSequence | MappedReferenceSequence | None],
     #     ],
     # ] | None = None
-    computed_protein_reference_sequence: ComputedReferenceSequence | None = None
+    computed_protein_reference_sequence: ComputedReferenceSequence | MappedReferenceSequence | None = None
     mapped_protein_reference_sequence: MappedReferenceSequence | None = None
-    computed_genomic_reference_sequence: ComputedReferenceSequence | None = None
+    computed_genomic_reference_sequence: ComputedReferenceSequence | MappedReferenceSequence | None = None
     mapped_genomic_reference_sequence: MappedReferenceSequence | None = None
     mapped_scores: list[ScoreAnnotation] | None = None
     error_message: str | None = None

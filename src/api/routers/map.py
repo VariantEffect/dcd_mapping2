@@ -41,7 +41,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
     """
     try:
         metadata = get_scoreset_metadata(urn, store_path)
-        records = get_scoreset_records(urn, True, store_path)
+        records = get_scoreset_records(metadata, True, store_path)
     except ScoresetNotSupportedError as e:
         return ScoresetMapping(
             metadata=None,
@@ -134,7 +134,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
             ).model_dump(exclude_none=True)
         )
     # TODO this should instead check if all values in dict are none. or might not need this at all.
-    if vrs_results is None or len(vrs_results) == 0:
+    if annotated_vrs_results is None or len(annotated_vrs_results) == 0:
         return ScoresetMapping(
             metadata=metadata,
             error_message="No annotated variant mappings available for this score set",
@@ -144,11 +144,11 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
     # This version works for accession based score sets.
     # Not implementing multi-target changes because this will require corresponding changes on mavedb-api and we want to get this on staging quickly right now.
     # For now, only accept single-target score sets so that we don't need to change structure of JSON output.
-    target_gene = list(metadata["target_genes"].keys())[0]  # noqa: RUF015
+    target_gene = list(metadata.target_genes.keys())[0]  # noqa: RUF015
     try:
         raw_metadata = get_raw_scoreset_metadata(urn, store_path)
         preferred_layers = {
-            _set_scoreset_layer(urn, vrs_results[target_gene]),
+            _set_scoreset_layer(urn, annotated_vrs_results[target_gene]),
         }
 
         reference_sequences = {
@@ -172,7 +172,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
             )
 
         mapped_scores: list[ScoreAnnotation] = []
-        for m in vrs_results:
+        for m in annotated_vrs_results[target_gene]:
             if m.annotation_layer in preferred_layers:
                 # drop annotation layer from mapping object
                 mapped_scores.append(ScoreAnnotation(**m.model_dump()))
