@@ -665,6 +665,19 @@ def _hgvs_nt_is_valid(hgvs_nt: str) -> bool:
     )
 
 
+def _hgvs_pro_is_valid(hgvs_pro: str) -> bool:
+    """Check for invalid or unavailable protein MAVE-HGVS variation
+
+    :param hgvs_nt: MAVE_HGVS protein expression
+    :return: True if expression appears populated and valid
+    """
+    return (
+        (hgvs_pro not in {"_wt", "_sy", "NA"})
+        and (len(hgvs_pro) != 3)
+        and ("fs" not in hgvs_pro)
+    )
+
+
 def _map_protein_coding(
     metadata: TargetGene,
     records: list[ScoreRow],
@@ -691,7 +704,14 @@ def _map_protein_coding(
 
     variations: list[MappedScore] = []
     for row in records:
-        if isinstance(transcript, TxSelectError):
+        hgvs_nt_mappings = None
+        hgvs_pro_mappings = None
+        if _hgvs_nt_is_valid(row.hgvs_nt):
+            hgvs_nt_mappings = _map_genomic(row, gsequence_id, align_result)
+
+        if (
+            isinstance(transcript, TxSelectError) and not hgvs_nt_mappings
+        ):  # only create error message if there is not an hgvs nt mapping
             # TODO create pre mapped allele
             hgvs_pro_mappings = MappedScore(
                 accession_id=row.accession,
@@ -699,16 +719,24 @@ def _map_protein_coding(
                 error_message=str(transcript).strip("'"),
             )
         else:
-            hgvs_pro_mappings = _map_protein_coding_pro(row, psequence_id, transcript)
+            if _hgvs_pro_is_valid(row.hgvs_pro):
+                hgvs_pro_mappings = _map_protein_coding_pro(
+                    row, psequence_id, transcript
+                )
+            elif (
+                not hgvs_nt_mappings
+            ):  # only create error message if there is not an hgvs nt mapping
+                hgvs_pro_mappings = MappedScore(
+                    accession_id=row.accession,
+                    score=row.score,
+                    error_message="Invalid protein variant syntax",
+                )
+
+        # append both pro and nt mappings if both available
         if hgvs_pro_mappings:
             variations.append(hgvs_pro_mappings)
-
-        if _hgvs_nt_is_valid(row.hgvs_nt):
-            hgvs_nt_mappings = _map_genomic(row, gsequence_id, align_result)
-
-            if hgvs_nt_mappings:
-                variations.append(hgvs_nt_mappings)
-
+        if hgvs_nt_mappings:
+            variations.append(hgvs_nt_mappings)
     return variations
 
 

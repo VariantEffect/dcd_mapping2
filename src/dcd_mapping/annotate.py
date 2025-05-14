@@ -469,12 +469,14 @@ def _get_computed_reference_sequence(
 
 
 def _get_mapped_reference_sequence(
+    metadata: TargetGene,
     layer: AnnotationLayer,
     tx_output: TxSelectResult | TxSelectError | None = None,
     align_result: AlignmentResult | None = None,
 ) -> MappedReferenceSequence | None:
     """Report the mapped reference sequence for a score set
 
+    :param metadata: Target gene metadata from MaveDB API
     :param layer: AnnotationLayer
     :param tx_output: Transcript data for a score set
     :return A MappedReferenceSequence object
@@ -500,13 +502,21 @@ def _get_mapped_reference_sequence(
             sequence_id=vrs_id,
             sequence_accessions=[tx_output.np],
         )
-    seq_id = get_chromosome_identifier(align_result.chrom)
+    # accession-based score sets with genomic accession do not have alignment results
+    if (
+        align_result is None
+        and metadata.target_accession_id
+        and metadata.target_accession_id.startswith("NC")
+    ):
+        seq_id = metadata.target_accession_id
+    else:
+        seq_id = get_chromosome_identifier(align_result.chrom)
     vrs_id = get_vrs_id_from_identifier(seq_id)
     if vrs_id is None:
         # TODO catch this error, don't fail whole job for one target
-        # msg = "ID could not be acquired from Seqrepo for chromosome identifier"
-        # raise ValueError(msg)
-        return None
+        msg = "ID could not be acquired from Seqrepo for chromosome identifier"
+        raise ValueError(msg)
+        # return None
     return MappedReferenceSequence(
         sequence_type=TargetSequenceType.DNA,
         sequence_id=vrs_id,
@@ -593,9 +603,11 @@ def save_mapped_output_json(
                 "computed_reference_sequence": None,
                 "mapped_reference_sequence": None,
             }
-            for layer in preferred_layers
+            # TODO change this back after reimplementing multi-target mapping
+            for layer in AnnotationLayer
         }
-
+        # sometimes Nonetype layers show up in preferred layers dict; remove these
+        preferred_layers.discard(None)
         for layer in preferred_layers:
             reference_sequences[target_gene][layer][
                 "computed_reference_sequence"
@@ -605,7 +617,10 @@ def save_mapped_output_json(
             reference_sequences[target_gene][layer][
                 "mapped_reference_sequence"
             ] = _get_mapped_reference_sequence(
-                layer, tx_output[target_gene], align_results[target_gene]
+                metadata.target_genes[target_gene],
+                layer,
+                tx_output[target_gene],
+                align_results[target_gene],
             )
 
         for m in mappings[target_gene]:
@@ -615,21 +630,43 @@ def save_mapped_output_json(
                 # drop annotation layer from mapping object
                 mapped_scores.append(ScoreAnnotation(**m.model_dump()))
 
-    # drop Nonetype reference sequences
-    for target_gene in reference_sequences:
-        for layer in list(reference_sequences[target_gene].keys()):
-            if (
-                reference_sequences[target_gene][layer]["mapped_reference_sequence"]
-                is None
-                and reference_sequences[target_gene][layer][
-                    "computed_reference_sequence"
-                ]
-                is None
-            ) or layer is None:
-                del reference_sequences[target_gene][layer]
+        # TODO drop this "continue" after reimplementing multi-target mapping
+        continue
 
+        # TODO add this back after reimplementing multi-target mapping
+        # drop Nonetype reference sequences
+        # for target_gene in reference_sequences:
+        #     for layer in list(reference_sequences[target_gene].keys()):
+        #         if (
+        #             reference_sequences[target_gene][layer]["mapped_reference_sequence"]
+        #             is None
+        #             and reference_sequences[target_gene][layer][
+        #                 "computed_reference_sequence"
+        #             ]
+        #             is None
+        #         ) or layer is None:
+        #             del reference_sequences[target_gene][layer]
+
+        # TODO drop this "continue" after reimplementing multi-target mapping
+        continue
+    # TODO drop this after reimplementing multi-target mapping
+    reference_sequences = reference_sequences.popitem()[1]  # get only value in dict
+    # TODO change this back after reimplementing multi-target mapping
+    # this only works for --prefer_genomic right now, which is fine because we're going to change it back after reimplementing multi-target mapping
     output = ScoresetMapping(
         metadata=metadata.model_dump(),
+        computed_protein_reference_sequence=reference_sequences[
+            AnnotationLayer.PROTEIN
+        ]["computed_reference_sequence"],
+        mapped_protein_reference_sequence=reference_sequences[AnnotationLayer.PROTEIN][
+            "mapped_reference_sequence"
+        ],
+        computed_genomic_reference_sequence=reference_sequences[
+            AnnotationLayer.GENOMIC
+        ]["computed_reference_sequence"],
+        mapped_genomic_reference_sequence=reference_sequences[AnnotationLayer.GENOMIC][
+            "mapped_reference_sequence"
+        ],
         reference_sequences=reference_sequences,
         mapped_scores=mapped_scores,
     )

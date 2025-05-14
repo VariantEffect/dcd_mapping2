@@ -336,6 +336,13 @@ def align(
         # blat names the result id "query" if there is only one query; replace "query" with the target gene name for single-target score sets
         if target_label == "query" and len(scoreset_metadata.target_genes) == 1:
             target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
+        # NOTE this is a temporary fix that will not work for multi-target score sets!
+        # blat automatically reformats query names.
+        if (
+            target_label not in scoreset_metadata.target_genes
+            and len(scoreset_metadata.target_genes) == 1
+        ):
+            target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
         target_gene = scoreset_metadata.target_genes[target_label]
         alignment_results[target_label] = _get_best_match(blat_result, target_gene)
     return alignment_results

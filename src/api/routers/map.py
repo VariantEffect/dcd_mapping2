@@ -158,7 +158,8 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
             }
             for layer in AnnotationLayer
         }
-
+        # sometimes Nonetype layers show up in preferred layers dict; remove these
+        preferred_layers.discard(None)
         for layer in preferred_layers:
             reference_sequences[layer][
                 "computed_reference_sequence"
@@ -168,7 +169,10 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
             reference_sequences[layer][
                 "mapped_reference_sequence"
             ] = _get_mapped_reference_sequence(
-                layer, transcripts[target_gene], alignment_results[target_gene]
+                metadata.target_genes[target_gene],
+                layer,
+                transcripts[target_gene],
+                alignment_results[target_gene],
             )
 
         mapped_scores: list[ScoreAnnotation] = []
