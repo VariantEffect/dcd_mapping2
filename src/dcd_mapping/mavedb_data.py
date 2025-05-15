@@ -187,9 +187,6 @@ def get_scoreset_metadata(
     metadata = get_raw_scoreset_metadata(scoreset_urn, dcd_mapping_dir)
     target_genes = {}
     multi_target = len(metadata["targetGenes"]) > 1
-    if multi_target:
-        msg = f"Multiple target genes for {scoreset_urn}. Multi-target score sets are not currently supported."
-        raise ScoresetNotSupportedError(msg)
 
     for gene in metadata["targetGenes"]:
         if not _metadata_response_is_human(metadata):

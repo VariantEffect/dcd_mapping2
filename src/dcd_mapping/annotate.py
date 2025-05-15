@@ -603,8 +603,7 @@ def save_mapped_output_json(
                 "computed_reference_sequence": None,
                 "mapped_reference_sequence": None,
             }
-            # TODO change this back after reimplementing multi-target mapping
-            for layer in AnnotationLayer
+            for layer in preferred_layers
         }
         # sometimes Nonetype layers show up in preferred layers dict; remove these
         preferred_layers.discard(None)
@@ -630,43 +629,21 @@ def save_mapped_output_json(
                 # drop annotation layer from mapping object
                 mapped_scores.append(ScoreAnnotation(**m.model_dump()))
 
-        # TODO drop this "continue" after reimplementing multi-target mapping
-        continue
-
-        # TODO add this back after reimplementing multi-target mapping
         # drop Nonetype reference sequences
-        # for target_gene in reference_sequences:
-        #     for layer in list(reference_sequences[target_gene].keys()):
-        #         if (
-        #             reference_sequences[target_gene][layer]["mapped_reference_sequence"]
-        #             is None
-        #             and reference_sequences[target_gene][layer][
-        #                 "computed_reference_sequence"
-        #             ]
-        #             is None
-        #         ) or layer is None:
-        #             del reference_sequences[target_gene][layer]
+        for target_gene in reference_sequences:
+            for layer in list(reference_sequences[target_gene].keys()):
+                if (
+                    reference_sequences[target_gene][layer]["mapped_reference_sequence"]
+                    is None
+                    and reference_sequences[target_gene][layer][
+                        "computed_reference_sequence"
+                    ]
+                    is None
+                ) or layer is None:
+                    del reference_sequences[target_gene][layer]
 
-        # TODO drop this "continue" after reimplementing multi-target mapping
-        continue
-    # TODO drop this after reimplementing multi-target mapping
-    reference_sequences = reference_sequences.popitem()[1]  # get only value in dict
-    # TODO change this back after reimplementing multi-target mapping
-    # this only works for --prefer_genomic right now, which is fine because we're going to change it back after reimplementing multi-target mapping
     output = ScoresetMapping(
         metadata=metadata.model_dump(),
-        computed_protein_reference_sequence=reference_sequences[
-            AnnotationLayer.PROTEIN
-        ]["computed_reference_sequence"],
-        mapped_protein_reference_sequence=reference_sequences[AnnotationLayer.PROTEIN][
-            "mapped_reference_sequence"
-        ],
-        computed_genomic_reference_sequence=reference_sequences[
-            AnnotationLayer.GENOMIC
-        ]["computed_reference_sequence"],
-        mapped_genomic_reference_sequence=reference_sequences[AnnotationLayer.GENOMIC][
-            "mapped_reference_sequence"
-        ],
         reference_sequences=reference_sequences,
         mapped_scores=mapped_scores,
     )

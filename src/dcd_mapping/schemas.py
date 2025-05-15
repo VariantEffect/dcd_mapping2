@@ -205,17 +205,16 @@ class ScoresetMapping(BaseModel):
     mapped_date_utc: str = Field(
         default=datetime.datetime.now(tz=datetime.UTC).isoformat()
     )
-    # TODO re-implement metadata change later to support multi-target score sets. will require corresponding changes in mavedb-api
-    # reference_sequences: dict[
-    #     str,
-    #     dict[
-    #         AnnotationLayer,
-    #         dict[str, ComputedReferenceSequence | MappedReferenceSequence | None],
-    #     ],
-    # ] | None = None
-    computed_protein_reference_sequence: ComputedReferenceSequence | MappedReferenceSequence | None = None
-    mapped_protein_reference_sequence: MappedReferenceSequence | None = None
-    computed_genomic_reference_sequence: ComputedReferenceSequence | MappedReferenceSequence | None = None
-    mapped_genomic_reference_sequence: MappedReferenceSequence | None = None
+    reference_sequences: dict[
+        str,
+        dict[
+            AnnotationLayer,
+            dict[str, ComputedReferenceSequence | MappedReferenceSequence | None],
+        ],
+    ] | None = None
+    # computed_protein_reference_sequence: ComputedReferenceSequence | MappedReferenceSequence | None = None
+    # mapped_protein_reference_sequence: MappedReferenceSequence | None = None
+    # computed_genomic_reference_sequence: ComputedReferenceSequence | MappedReferenceSequence | None = None
+    # mapped_genomic_reference_sequence: MappedReferenceSequence | None = None
     mapped_scores: list[ScoreAnnotation] | None = None
     error_message: str | None = None

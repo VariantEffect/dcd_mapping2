@@ -1,7 +1,6 @@
 """"Provide mapping router"""
 from pathlib import Path
 
-from cool_seq_tool.schemas import AnnotationLayer
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from requests import HTTPError
@@ -140,46 +139,60 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
             error_message="No annotated variant mappings available for this score set",
         )
 
-    # TODO this will need to be changed to support multi-target score sets.
-    # This version works for accession based score sets.
-    # Not implementing multi-target changes because this will require corresponding changes on mavedb-api and we want to get this on staging quickly right now.
-    # For now, only accept single-target score sets so that we don't need to change structure of JSON output.
-    target_gene = list(metadata.target_genes.keys())[0]  # noqa: RUF015
     try:
         raw_metadata = get_raw_scoreset_metadata(urn, store_path)
-        preferred_layers = {
-            _set_scoreset_layer(urn, annotated_vrs_results[target_gene]),
-        }
-
-        reference_sequences = {
-            layer: {
-                "computed_reference_sequence": None,
-                "mapped_reference_sequence": None,
-            }
-            for layer in AnnotationLayer
-        }
-        # sometimes Nonetype layers show up in preferred layers dict; remove these
-        preferred_layers.discard(None)
-        for layer in preferred_layers:
-            reference_sequences[layer][
-                "computed_reference_sequence"
-            ] = _get_computed_reference_sequence(
-                metadata.target_genes[target_gene], layer, transcripts[target_gene]
-            )
-            reference_sequences[layer][
-                "mapped_reference_sequence"
-            ] = _get_mapped_reference_sequence(
-                metadata.target_genes[target_gene],
-                layer,
-                transcripts[target_gene],
-                alignment_results[target_gene],
-            )
-
+        reference_sequences: dict[str, dict] = {}
         mapped_scores: list[ScoreAnnotation] = []
-        for m in annotated_vrs_results[target_gene]:
-            if m.annotation_layer in preferred_layers:
-                # drop annotation layer from mapping object
-                mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+        for target_gene in annotated_vrs_results:
+            preferred_layers = {
+                _set_scoreset_layer(urn, annotated_vrs_results[target_gene]),
+            }
+            reference_sequences[target_gene] = {
+                layer: {
+                    "computed_reference_sequence": None,
+                    "mapped_reference_sequence": None,
+                }
+                for layer in preferred_layers
+            }
+            # sometimes Nonetype layers show up in preferred layers dict; remove these
+            preferred_layers.discard(None)
+            for layer in preferred_layers:
+                reference_sequences[target_gene][layer][
+                    "computed_reference_sequence"
+                ] = _get_computed_reference_sequence(
+                    metadata.target_genes[target_gene], layer, transcripts[target_gene]
+                )
+                reference_sequences[target_gene][layer][
+                    "mapped_reference_sequence"
+                ] = _get_mapped_reference_sequence(
+                    metadata.target_genes[target_gene],
+                    layer,
+                    transcripts[target_gene],
+                    alignment_results[target_gene],
+                )
+
+            for m in annotated_vrs_results[target_gene]:
+                if m.pre_mapped is None:
+                    mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+                elif m.annotation_layer in preferred_layers:
+                    # drop annotation layer from mapping object
+                    mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+
+            # drop Nonetype reference sequences
+            for target_gene in reference_sequences:
+                for layer in list(reference_sequences[target_gene].keys()):
+                    if (
+                        reference_sequences[target_gene][layer][
+                            "mapped_reference_sequence"
+                        ]
+                        is None
+                        and reference_sequences[target_gene][layer][
+                            "computed_reference_sequence"
+                        ]
+                        is None
+                    ) or layer is None:
+                        del reference_sequences[target_gene][layer]
+
     except Exception as e:
         return JSONResponse(
             content=ScoresetMapping(
@@ -190,18 +203,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
     return JSONResponse(
         content=ScoresetMapping(
             metadata=raw_metadata,
-            computed_protein_reference_sequence=reference_sequences[
-                AnnotationLayer.PROTEIN
-            ]["computed_reference_sequence"],
-            mapped_protein_reference_sequence=reference_sequences[
-                AnnotationLayer.PROTEIN
-            ]["mapped_reference_sequence"],
-            computed_genomic_reference_sequence=reference_sequences[
-                AnnotationLayer.GENOMIC
-            ]["computed_reference_sequence"],
-            mapped_genomic_reference_sequence=reference_sequences[
-                AnnotationLayer.GENOMIC
-            ]["mapped_reference_sequence"],
+            reference_sequences=reference_sequences,
             mapped_scores=mapped_scores,
         ).model_dump(exclude_none=True)
     )
