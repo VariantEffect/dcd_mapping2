@@ -44,7 +44,7 @@ _logger = logging.getLogger(__name__)
 @click.option(
     "--prefer_genomic",
     is_flag=True,
-    default=True,
+    default=False,
     help="If mapped variants are available relative to a genomic sequence, only output the genomic mappings",
 )
 def cli(
