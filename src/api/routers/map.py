@@ -1,6 +1,7 @@
 """"Provide mapping router"""
 from pathlib import Path
 
+from cool_seq_tool.schemas import AnnotationLayer
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from requests import HTTPError
@@ -21,7 +22,13 @@ from dcd_mapping.mavedb_data import (
     with_mavedb_score_set,
 )
 from dcd_mapping.resource_utils import ResourceAcquisitionError
-from dcd_mapping.schemas import ScoreAnnotation, ScoresetMapping, VrsVersion
+from dcd_mapping.schemas import (
+    ScoreAnnotation,
+    ScoresetMapping,
+    TargetType,
+    TxSelectResult,
+    VrsVersion,
+)
 from dcd_mapping.transcripts import select_transcripts
 from dcd_mapping.vrs_map import VrsMapError, vrs_map
 
@@ -147,7 +154,8 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
             preferred_layers = {
                 _set_scoreset_layer(urn, annotated_vrs_results[target_gene]),
             }
-            reference_sequences[target_gene] = {
+            target_gene_name = metadata.target_genes[target_gene].target_gene_name
+            reference_sequences[target_gene_name] = {
                 layer: {
                     "computed_reference_sequence": None,
                     "mapped_reference_sequence": None,
@@ -157,12 +165,12 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
             # sometimes Nonetype layers show up in preferred layers dict; remove these
             preferred_layers.discard(None)
             for layer in preferred_layers:
-                reference_sequences[target_gene][layer][
+                reference_sequences[target_gene_name][layer][
                     "computed_reference_sequence"
                 ] = _get_computed_reference_sequence(
                     metadata.target_genes[target_gene], layer, transcripts[target_gene]
                 )
-                reference_sequences[target_gene][layer][
+                reference_sequences[target_gene_name][layer][
                     "mapped_reference_sequence"
                 ] = _get_mapped_reference_sequence(
                     metadata.target_genes[target_gene],
@@ -192,6 +200,23 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
                         is None
                     ) or layer is None:
                         del reference_sequences[target_gene][layer]
+
+            # if genomic layer, not accession-based, and target gene type is coding, add cdna entry (just the sequence accession) to reference_sequences dict
+            if (
+                AnnotationLayer.GENOMIC in reference_sequences[target_gene_name]
+                and metadata.target_genes[target_gene].target_gene_category
+                == TargetType.PROTEIN_CODING
+                and metadata.target_genes[target_gene].target_accession_id is None
+                and transcripts[target_gene] is not None
+                and isinstance(transcripts[target_gene], TxSelectResult)
+                and transcripts[target_gene].nm is not None
+            ):
+                reference_sequences[target_gene_name][AnnotationLayer.CDNA] = {
+                    "computed_reference_sequence": None,
+                    "mapped_reference_sequence": {
+                        "sequence_accessions": [transcripts[target_gene].nm]
+                    },
+                }
 
     except Exception as e:
         return JSONResponse(

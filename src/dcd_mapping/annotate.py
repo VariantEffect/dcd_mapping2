@@ -41,6 +41,7 @@ from dcd_mapping.schemas import (
     ScoresetMetadata,
     TargetGene,
     TargetSequenceType,
+    TargetType,
     TxSelectResult,
     VrsVersion,
 )
@@ -598,7 +599,10 @@ def save_mapped_output_json(
                 mapping.annotation_layer for mapping in mappings[target_gene]
             }
 
-        reference_sequences[target_gene] = {
+        # use target gene name in reference sequence dictionary, rather than the label, which differs between score sets
+        target_gene_name = metadata.target_genes[target_gene].target_gene_name
+
+        reference_sequences[target_gene_name] = {
             layer: {
                 "computed_reference_sequence": None,
                 "mapped_reference_sequence": None,
@@ -608,12 +612,12 @@ def save_mapped_output_json(
         # sometimes Nonetype layers show up in preferred layers dict; remove these
         preferred_layers.discard(None)
         for layer in preferred_layers:
-            reference_sequences[target_gene][layer][
+            reference_sequences[target_gene_name][layer][
                 "computed_reference_sequence"
             ] = _get_computed_reference_sequence(
                 metadata.target_genes[target_gene], layer, tx_output[target_gene]
             )
-            reference_sequences[target_gene][layer][
+            reference_sequences[target_gene_name][layer][
                 "mapped_reference_sequence"
             ] = _get_mapped_reference_sequence(
                 metadata.target_genes[target_gene],
@@ -621,6 +625,23 @@ def save_mapped_output_json(
                 tx_output[target_gene],
                 align_results[target_gene],
             )
+
+        # if genomic layer, not accession-based, and target gene type is coding, add cdna entry (just the sequence accession) to reference_sequences dict
+        if (
+            AnnotationLayer.GENOMIC in reference_sequences[target_gene_name]
+            and metadata.target_genes[target_gene].target_gene_category
+            == TargetType.PROTEIN_CODING
+            and metadata.target_genes[target_gene].target_accession_id is None
+            and tx_output[target_gene] is not None
+            and isinstance(tx_output[target_gene], TxSelectResult)
+            and tx_output[target_gene].nm is not None
+        ):
+            reference_sequences[target_gene_name][AnnotationLayer.CDNA] = {
+                "computed_reference_sequence": None,
+                "mapped_reference_sequence": {
+                    "sequence_accessions": [tx_output[target_gene].nm]
+                },
+            }
 
         for m in mappings[target_gene]:
             if m.pre_mapped is None:
