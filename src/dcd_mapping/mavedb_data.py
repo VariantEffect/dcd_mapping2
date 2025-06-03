@@ -190,7 +190,6 @@ def get_scoreset_metadata(
 
     for gene in metadata["targetGenes"]:
         if not _metadata_response_is_human(metadata):
-            # TODO allow score sets with mix of human and non-human targets? This may not come up, but is doable with a little restructuring.
             msg = f"Experiment for {scoreset_urn} contains non-human targets"
             raise ScoresetNotSupportedError(msg)
         try:
@@ -251,15 +250,12 @@ def _load_scoreset_records(
             else:
                 row["score"] = row["score"]
             if row["hgvs_nt"] != "NA":
-                # TODO check assumption of no colon in hgvs unless reference sequence identifier present
                 prefix = row["hgvs_nt"].split(":")[0] if ":" in row["hgvs_nt"] else None
             elif row["hgvs_pro"] != "NA":
-                # TODO check assumption of no colon in hgvs unless reference sequence identifier present
                 prefix = (
                     row["hgvs_pro"].split(":")[0] if ":" in row["hgvs_pro"] else None
                 )
             else:
-                # Should we quit the whole mapping job if this comes up, or just skip this row and only quit if none contain hgvs_nt or hgvs_pro?
                 msg = f"Each score row in {metadata.urn} must contain hgvs_nt or hgvs_pro variant description "
                 raise ScoresetNotSupportedError(msg)
             # If no reference sequence prefix is provided, the score set should only have one

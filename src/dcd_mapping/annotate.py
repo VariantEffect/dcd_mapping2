@@ -436,10 +436,8 @@ def _get_computed_reference_sequence(
         # for accession-based target genes, the object returned by this function describes the provided reference accession
         # whereas the object returned by _get_mapped_reference_sequence describes the mapped reference accession, which could be a chromosome for ex.
         seq_type: TargetSequenceType
-        # TODO full list of protein accession id prefixes
         if metadata.target_accession_id.startswith(("NP", "ENSP")):
             seq_type = TargetSequenceType.PROTEIN
-        # TODO full list of transcript and contig accession id prefixes
         elif metadata.target_accession_id.startswith(("NM", "ENST", "NC")):
             seq_type = TargetSequenceType.DNA
         else:
@@ -452,8 +450,6 @@ def _get_computed_reference_sequence(
         )
     if layer == AnnotationLayer.PROTEIN:
         if tx_output is None or isinstance(tx_output, TxSelectError):
-            # TODO catch this error - don't stop whole job for one failed target
-            # raise ValueError
             return None
         seq_id = f"ga4gh:SQ.{sha512t24u(tx_output.sequence.encode('ascii'))}"
         return ComputedReferenceSequence(
@@ -488,15 +484,9 @@ def _get_mapped_reference_sequence(
         and isinstance(tx_output, TxSelectResult)
     ):
         if tx_output.np is None:
-            # TODO catch this error, don't fail whole job for one target
-            # msg = "No NP accession associated with reference transcript"
-            # raise ValueError(msg)
             return None
         vrs_id = get_vrs_id_from_identifier(tx_output.np)
         if vrs_id is None:
-            # TODO catch this error, don't fail whole job for one target
-            # msg = "ID could not be acquired from Seqrepo for transcript identifier"
-            # raise ValueError(msg)
             return None
         return MappedReferenceSequence(
             sequence_type=TargetSequenceType.PROTEIN,
@@ -514,10 +504,7 @@ def _get_mapped_reference_sequence(
         seq_id = get_chromosome_identifier(align_result.chrom)
     vrs_id = get_vrs_id_from_identifier(seq_id)
     if vrs_id is None:
-        # TODO catch this error, don't fail whole job for one target
-        msg = "ID could not be acquired from Seqrepo for chromosome identifier"
-        raise ValueError(msg)
-        # return None
+        return None
     return MappedReferenceSequence(
         sequence_type=TargetSequenceType.DNA,
         sequence_id=vrs_id,
@@ -584,9 +571,6 @@ def save_mapped_output_json(
     :return: output location
     """
     # set preferred layers for each target, to allow a mix of coding and noncoding targets
-    # TODO maybe this should be reevaluated and we should only allow one preferred layer per score set,
-    # since I can't imagine an experimental assay where some variants are assayed as nucleotide variants
-    # and others are assayed as amino acid variants.
     reference_sequences: dict[str, dict] = {}
     mapped_scores: list[ScoreAnnotation] = []
     for target_gene in mappings:
