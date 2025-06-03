@@ -34,26 +34,49 @@ def test_get_scoreset_metadata(
     urn = "urn:mavedb:00000093-a-1"
     with requests_mock.Mocker() as m:
         m.get(
-            f"https://api.mavedb.org/api/v1/score-sets/{urn}",
+            f"http://api.mavedb.org/api/v1/score-sets/{urn}",
             json=scoreset_metadata_response[urn],
         )
         scoreset_metadata = get_scoreset_metadata(
             urn, dcd_mapping_dir=resources_data_dir
         )
         assert scoreset_metadata.urn == urn
-        assert scoreset_metadata.target_uniprot_ref
-        assert scoreset_metadata.target_uniprot_ref.id == "uniprot:P38398"
-        assert scoreset_metadata.target_uniprot_ref.offset == 0
+        assert scoreset_metadata.target_genes
+        assert (
+            scoreset_metadata.target_genes[
+                "BRCA1 translation start through RING domain"
+            ].target_uniprot_ref.id
+            == "uniprot:P38398"
+        )
+        assert (
+            scoreset_metadata.target_genes[
+                "BRCA1 translation start through RING domain"
+            ].target_uniprot_ref.offset
+            == 0
+        )
 
 
-def test_get_scoreset_records(resources_data_dir: Path, fixture_data_dir: Path):
+def test_get_scoreset_records(
+    resources_data_dir: Path, fixture_data_dir: Path, scoreset_metadata_response: dict
+):
     urn = "urn:mavedb:00000093-a-1"
     with (fixture_data_dir / f"{urn}_scores.csv").open() as f:
         scores_csv_text = f.read()
     with requests_mock.Mocker() as m:
         m.get(
-            f"https://api.mavedb.org/api/v1/score-sets/{urn}/scores",
+            f"http://api.mavedb.org/api/v1/score-sets/{urn}",
+            json=scoreset_metadata_response[urn],
+        )
+        scoreset_metadata = get_scoreset_metadata(
+            urn, dcd_mapping_dir=resources_data_dir
+        )
+        m.get(
+            f"http://api.mavedb.org/api/v1/score-sets/{urn}/scores",
             text=scores_csv_text,
         )
-        scoreset_records = get_scoreset_records(urn, dcd_mapping_dir=resources_data_dir)
-        assert len(scoreset_records) == 853
+        scoreset_records = get_scoreset_records(
+            scoreset_metadata, dcd_mapping_dir=resources_data_dir
+        )
+        assert (
+            len(scoreset_records["BRCA1 translation start through RING domain"]) == 853
+        )
