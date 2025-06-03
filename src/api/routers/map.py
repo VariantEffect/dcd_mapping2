@@ -39,7 +39,7 @@ router = APIRouter(
 
 @router.post(path="/map/{urn}", status_code=200, response_model=ScoresetMapping)
 @with_mavedb_score_set
-async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapping:
+async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse:
     """Perform end-to-end mapping for a scoreset.
 
     :param urn: identifier for a scoreset.
@@ -49,9 +49,11 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
         metadata = get_scoreset_metadata(urn, store_path)
         records = get_scoreset_records(metadata, True, store_path)
     except ScoresetNotSupportedError as e:
-        return ScoresetMapping(
-            metadata=None,
-            error_message=str(e).strip("'"),
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=None,
+                error_message=str(e).strip("'"),
+            ).model_dump(exclude_none=True)
         )
     except ResourceAcquisitionError as e:
         msg = f"Unable to acquire resource from MaveDB: {e}"
@@ -116,11 +118,14 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
                 metadata=metadata, error_message=str(e).strip("'")
             ).model_dump(exclude_none=True)
         )
-    # TODO this should instead check if all values in dict are none. or might not need this at all.
-    if vrs_results is None or len(vrs_results) == 0:
-        return ScoresetMapping(
-            metadata=metadata,
-            error_message="No variant mappings available for this score set",
+    if not vrs_results or all(
+        mapping_result is None for mapping_result in vrs_results.values()
+    ):
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata,
+                error_message="No variant mappings available for this score set",
+            ).model_dump(exclude_none=True)
         )
 
     annotated_vrs_results = {}
@@ -139,11 +144,14 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> ScoresetMapp
                 metadata=metadata, error_message=str(e).strip("'")
             ).model_dump(exclude_none=True)
         )
-    # TODO this should instead check if all values in dict are none. or might not need this at all.
-    if annotated_vrs_results is None or len(annotated_vrs_results) == 0:
-        return ScoresetMapping(
-            metadata=metadata,
-            error_message="No annotated variant mappings available for this score set",
+    if not annotated_vrs_results or all(
+        mapping_result is None for mapping_result in annotated_vrs_results.values()
+    ):
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata,
+                error_message="No annotated variant mappings available for this score set",
+            ).model_dump(exclude_none=True)
         )
 
     try:
