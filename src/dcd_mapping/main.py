@@ -233,8 +233,9 @@ async def map_scoreset(
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
         return
-    # TODO this should be if all values in dict are none. or might not need this at all.
-    if vrs_results is None or len(vrs_results) == 0:
+    if not vrs_results or all(
+        mapping_result is None for mapping_result in vrs_results.values()
+    ):
         _emit_info(f"No mapping available for {metadata.urn}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
@@ -260,7 +261,7 @@ async def map_scoreset(
                 metadata.urn,
                 vrs_version,
             )
-        except Exception as e:  # TODO create AnnotationError class and replace ValueErrors in annotation steps with AnnotationErrors
+        except Exception as e:
             _emit_info(
                 f"VRS annotation failed for scoreset {metadata.urn}",
                 silent,
@@ -273,8 +274,9 @@ async def map_scoreset(
             )
             _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
             return
-    # TODO this should be if all values in dict are none. or might not need this at all.
-    if annotated_vrs_results is None:
+    if not annotated_vrs_results or all(
+        mapping_result is None for mapping_result in annotated_vrs_results.values()
+    ):
         _emit_info(f"No annotation available for {metadata.urn}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
