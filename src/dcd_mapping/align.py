@@ -4,7 +4,6 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -167,7 +166,9 @@ def _get_target_sequence_type(metadata: ScoresetMetadata) -> TargetSequenceType 
         raise ValueError(msg)
 
 
-def _get_blat_output(metadata: ScoresetMetadata, silent: bool) -> Any:  # noqa: ANN401
+def _get_blat_output(
+    metadata: ScoresetMetadata, silent: bool
+) -> dict[str, QueryResult]:
     """Run a BLAT query and returns a path to the output object.
 
     If unable to produce a valid query the first time, then try a query using ``dnax``
@@ -195,7 +196,6 @@ def _get_blat_output(metadata: ScoresetMetadata, silent: bool) -> Any:  # noqa: 
         try:
             output = parse_blat(out_file, "blat-psl")
 
-        # TODO reevaluate this code block - are there cases in mavedb where target sequence type is incorrectly supplied?
         except ValueError:
             target_args = "-q=dnax -t=dnax"
             process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
@@ -336,13 +336,31 @@ def align(
         # blat names the result id "query" if there is only one query; replace "query" with the target gene name for single-target score sets
         if target_label == "query" and len(scoreset_metadata.target_genes) == 1:
             target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
-        # NOTE this is a temporary fix that will not work for multi-target score sets!
-        # blat automatically reformats query names.
-        if (
-            target_label not in scoreset_metadata.target_genes
-            and len(scoreset_metadata.target_genes) == 1
-        ):
-            target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
+        # blat automatically reformats query names, so sometimes they don't match our metadata
+        if target_label not in scoreset_metadata.target_genes:
+            # if single-target score set, don't need to match by name
+            if len(scoreset_metadata.target_genes) == 1:
+                target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
+            else:
+                # try to match query name to a target gene in the metadata
+                matches = 0
+                for target_gene_name in scoreset_metadata.target_genes:
+                    blat_target_gene_name = (
+                        target_gene_name.split(" ")[0]
+                        .replace("(", "")
+                        .replace(")", "")
+                        .replace(",", "")
+                    )
+                    if blat_target_gene_name == target_label:
+                        target_label = target_gene_name
+                        matches += 1
+                # we may be missing some blat reformatting rules here - if so, this error will be thrown
+                if matches == 0:
+                    msg = f"BLAT result {target_label} does not match any target gene names in scoreset {scoreset_metadata.urn}."
+                    raise AlignmentError(msg)
+                if matches > 1:
+                    # could happen if multiple target genes have the same first word in their label (unlikely)
+                    msg = f"BLAT result {target_label} matches multiple target gene names in scoreset {scoreset_metadata.urn}"
         target_gene = scoreset_metadata.target_genes[target_label]
         alignment_results[target_label] = _get_best_match(blat_result, target_gene)
     return alignment_results
