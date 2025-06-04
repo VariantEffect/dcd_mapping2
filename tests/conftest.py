@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from cdot.hgvs.dataproviders import ChainedSeqFetcher, FastaSeqFetcher
 
 from dcd_mapping.schemas import (
     AlignmentResult,
@@ -216,3 +217,18 @@ def mock_seqrepo_access(mocker: MagicMock):
     mocker.patch("dcd_mapping.vrs_map.get_seqrepo", return_value=mock_seqrepo_access)
     mocker.patch("dcd_mapping.lookup.get_seqrepo", return_value=mock_seqrepo_access)
     return mock_seqrepo_access
+
+
+@pytest.fixture()
+def data_provider(fixture_data_dir: Path):
+    """Provide a ChainedSeqFetcher with mocked fasta files for testing.
+    Currently, no tests actually use cdot, but a FileNotFoundError would be raised
+    without this fixture when cdot is imported into dcd_mapping.vrs_map.
+    """
+    # NOTE: This fasta file would not work for test cases that actually use cdot fetching,
+    # it is only meant to avoid a FileNotFoundError.
+    test_fasta_file = fixture_data_dir / "test.fasta"
+
+    seqfetcher = ChainedSeqFetcher(FastaSeqFetcher(test_fasta_file))
+
+    yield seqfetcher  # noqa: PT022
