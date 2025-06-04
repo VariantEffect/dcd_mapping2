@@ -34,7 +34,7 @@ def test_get_scoreset_metadata(
     urn = "urn:mavedb:00000093-a-1"
     with requests_mock.Mocker() as m:
         m.get(
-            f"http://api.mavedb.org/api/v1/score-sets/{urn}",
+            f"https://api.mavedb.org/api/v1/score-sets/{urn}",
             json=scoreset_metadata_response[urn],
         )
         scoreset_metadata = get_scoreset_metadata(
@@ -64,14 +64,14 @@ def test_get_scoreset_records(
         scores_csv_text = f.read()
     with requests_mock.Mocker() as m:
         m.get(
-            f"http://api.mavedb.org/api/v1/score-sets/{urn}",
+            f"https://api.mavedb.org/api/v1/score-sets/{urn}",
             json=scoreset_metadata_response[urn],
         )
         scoreset_metadata = get_scoreset_metadata(
             urn, dcd_mapping_dir=resources_data_dir
         )
         m.get(
-            f"http://api.mavedb.org/api/v1/score-sets/{urn}/scores",
+            f"https://api.mavedb.org/api/v1/score-sets/{urn}/scores",
             text=scores_csv_text,
         )
         scoreset_records = get_scoreset_records(
