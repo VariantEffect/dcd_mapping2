@@ -4,10 +4,12 @@
 we're focused on remaining consistent w/ previous results.
 * Move expected data into a separate JSON file or something?
 """
+from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from cdot.hgvs.dataproviders import ChainedSeqFetcher
 from cool_seq_tool.schemas import AnnotationLayer
 from ga4gh.vrs._internal.models import Allele, Haplotype
 
@@ -74,7 +76,9 @@ def get_fixtures(
 ):
     def _get_fixtures(urn: str):
         return (
-            _load_scoreset_records(fixture_data_dir / f"{urn}_scores.csv"),
+            _load_scoreset_records(
+                fixture_data_dir / f"{urn}_scores.csv", scoreset_metadata_fixture[urn]
+            ),
             scoreset_metadata_fixture[urn],
             align_result_fixture[urn],
             transcript_results_fixture[urn],
@@ -86,6 +90,7 @@ def get_fixtures(
 def test_2_a_2(
     get_fixtures,
     mock_seqrepo_access: MagicMock,
+    data_provider: Generator[ChainedSeqFetcher, None, None],
 ):
     urn = "urn:mavedb:00000002-a-2"
     records, metadata, align_result, tx_result = get_fixtures(urn)
@@ -102,11 +107,20 @@ def test_2_a_2(
         },
     }
 
-    mappings = vrs_map(metadata, align_result, records, transcript=tx_result)
-    assert mappings is not None
-    assert len(mappings) == 1
+    mappings = {}
+    with patch("dcd_mapping.lookup.seqfetcher") as mock_cdot_seqfetcher:
+        mock_cdot_seqfetcher.return_value = data_provider
+        for target_gene in metadata.target_genes:
+            mappings[target_gene] = vrs_map(
+                metadata=metadata.target_genes[target_gene],
+                align_result=align_result[target_gene],
+                records=records[target_gene],
+                transcript=tx_result[target_gene],
+            )
+    assert mappings["hYAP65 WW domain"] is not None
+    assert len(mappings["hYAP65 WW domain"]) == 1
 
-    for m in mappings:
+    for m in mappings["hYAP65 WW domain"]:
         _assert_correct_vrs_map(m, expected_mappings_data)
 
     store_calls = [
@@ -127,6 +141,7 @@ def test_2_a_2(
 def test_41_a_1(
     get_fixtures,
     mock_seqrepo_access: MagicMock,
+    data_provider: Generator[ChainedSeqFetcher, None, None],
 ):
     urn = "urn:mavedb:00000041-a-1"
     records, metadata, align_result, tx_result = get_fixtures(urn)
@@ -154,11 +169,20 @@ def test_41_a_1(
         },
     }
 
-    mappings = vrs_map(metadata, align_result, records, transcript=tx_result)
-    assert mappings is not None
-    assert len(mappings) == 5
+    mappings = {}
+    with patch("dcd_mapping.lookup.seqfetcher") as mock_cdot_seqfetcher:
+        mock_cdot_seqfetcher.return_value = data_provider
+        for target_gene in metadata.target_genes:
+            mappings[target_gene] = vrs_map(
+                metadata=metadata.target_genes[target_gene],
+                align_result=align_result[target_gene],
+                records=records[target_gene],
+                transcript=tx_result[target_gene],
+            )
+    assert mappings["Src catalytic domain"] is not None
+    assert len(mappings["Src catalytic domain"]) == 5
 
-    for m in mappings:
+    for m in mappings["Src catalytic domain"]:
         _assert_correct_vrs_map(m, expected_mappings_data)
 
     store_calls = [
@@ -179,6 +203,7 @@ def test_41_a_1(
 def test_99_a_1(
     get_fixtures,
     mock_seqrepo_access: MagicMock,
+    data_provider: Generator[ChainedSeqFetcher, None, None],
 ):
     urn = "urn:mavedb:00000099-a-1"
     records, metadata, align_result, tx_result = get_fixtures(urn)
@@ -217,11 +242,20 @@ def test_99_a_1(
             "post_mapped": "ga4gh:VA.HSfipwsg28LbqwITCawzumz_OWZYu_jM",
         },
     }
-    mappings = vrs_map(metadata, align_result, records, transcript=tx_result)
-    assert mappings is not None
-    assert len(mappings) == 8  # includes protein and genomic for all 4 rows
+    mappings = {}
+    with patch("dcd_mapping.lookup.seqfetcher") as mock_cdot_seqfetcher:
+        mock_cdot_seqfetcher.return_value = data_provider
+        for target_gene in metadata.target_genes:
+            mappings[target_gene] = vrs_map(
+                metadata=metadata.target_genes[target_gene],
+                align_result=align_result[target_gene],
+                records=records[target_gene],
+                transcript=tx_result[target_gene],
+            )
+    assert mappings["RHO"] is not None
+    assert len(mappings["RHO"]) == 8  # includes protein and genomic for all 4 rows
 
-    for m in mappings:
+    for m in mappings["RHO"]:
         _assert_correct_vrs_map(m, expected_mappings_data)
 
     store_calls = [
@@ -242,6 +276,7 @@ def test_99_a_1(
 def test_103_c_1(
     get_fixtures,
     mock_seqrepo_access: MagicMock,
+    data_provider: Generator[ChainedSeqFetcher, None, None],
 ):
     urn = "urn:mavedb:00000103-c-1"
     records, metadata, align_result, tx_result = get_fixtures(urn)
@@ -265,10 +300,19 @@ def test_103_c_1(
         },
     }
 
-    mappings = vrs_map(metadata, align_result, records, transcript=tx_result)
-    assert mappings is not None
-    assert len(mappings) == 4
-    for m in mappings:
+    mappings = {}
+    with patch("dcd_mapping.lookup.seqfetcher") as mock_cdot_seqfetcher:
+        mock_cdot_seqfetcher.return_value = data_provider
+        for target_gene in metadata.target_genes:
+            mappings[target_gene] = vrs_map(
+                metadata=metadata.target_genes[target_gene],
+                align_result=align_result[target_gene],
+                records=records[target_gene],
+                transcript=tx_result[target_gene],
+            )
+    assert mappings["MAPK1"] is not None
+    assert len(mappings["MAPK1"]) == 4
+    for m in mappings["MAPK1"]:
         _assert_correct_vrs_map(m, expected_mappings_data)
 
     store_calls = [
@@ -285,12 +329,10 @@ def test_103_c_1(
 def test_1_b_2(
     get_fixtures,
     mock_seqrepo_access: MagicMock,
+    data_provider: Generator[ChainedSeqFetcher, None, None],
 ):
     urn = "urn:mavedb:00000001-b-2"
     records, metadata, align_result, tx_result = get_fixtures(urn)
-
-    mappings = vrs_map(metadata, align_result, records, transcript=tx_result)
-    assert mappings is not None
 
     expected_mappings_data = {
         ("urn:mavedb:00000001-b-2#444", AnnotationLayer.PROTEIN): {
@@ -327,21 +369,22 @@ def test_1_b_2(
         },
     }
 
-    mappings = vrs_map(metadata, align_result, records, transcript=tx_result)
-    assert mappings is not None
-    assert len(mappings) == 8
-    for m in mappings:
+    mappings = {}
+    with patch("dcd_mapping.lookup.seqfetcher") as mock_cdot_seqfetcher:
+        mock_cdot_seqfetcher.return_value = data_provider
+        for target_gene in metadata.target_genes:
+            mappings[target_gene] = vrs_map(
+                metadata=metadata.target_genes[target_gene],
+                align_result=align_result[target_gene],
+                records=records[target_gene],
+                transcript=tx_result[target_gene],
+            )
+    assert mappings["SUMO1"] is not None
+    assert len(mappings["SUMO1"]) == 8
+    for m in mappings["SUMO1"]:
         _assert_correct_vrs_map(m, expected_mappings_data)
 
     store_calls = [
-        (
-            "MSDQEAKPSTEDLGDKKEGEYIKLKVIGQDSSEIHFKVKMTTHLKKLKESYCQRQGVPMNSLRFLFEGQRIADNHTPKELGMEEEDVIEVYQEQTGGHSTV",
-            [{"namespace": "ga4gh", "alias": "SQ.VkCzFNsbifqfq61Mud6oGmz0ID6CLIip"}],
-        ),
-        (
-            "ATGTCTGACCAGGAGGCAAAACCTTCAACTGAGGACTTGGGGGATAAGAAGGAAGGTGAATATATTAAACTCAAAGTCATTGGACAGGATAGCAGTGAGATTCACTTCAAAGTGAAAATGACAACACATCTCAAGAAACTCAAAGAATCATACTGTCAAAGACAGGGTGTTCCAATGAATTCACTCAGGTTTCTCTTTGAGGGTCAGAGAATTGCTGATAATCATACTCCAAAAGAACTGGGAATGGAGGAAGAAGATGTGATTGAAGTTTATCAGGAACAAACGGGGGGTCATTCAACAGTTTAG",
-            [{"namespace": "ga4gh", "alias": "SQ.i1KiGldkfULl1XcEI-XBwhiM7x3PK5Xk"}],
-        ),
         (
             "MSDQEAKPSTEDLGDKKEGEYIKLKVIGQDSSEIHFKVKMTTHLKKLKESYCQRQGVPMNSLRFLFEGQRIADNHTPKELGMEEEDVIEVYQEQTGGHSTV",
             [{"namespace": "ga4gh", "alias": "SQ.VkCzFNsbifqfq61Mud6oGmz0ID6CLIip"}],

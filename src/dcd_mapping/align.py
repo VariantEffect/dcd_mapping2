@@ -8,14 +8,12 @@ from urllib.parse import urlparse
 
 import requests
 from Bio.SearchIO import HSP
-from Bio.SearchIO import read as read_blat
+from Bio.SearchIO import parse as parse_blat
 from Bio.SearchIO._model import Hit, QueryResult
 from cool_seq_tool.schemas import Strand
 
 from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
-from dcd_mapping.mavedb_data import (
-    LOCAL_STORE_PATH,
-)
+from dcd_mapping.mavedb_data import LOCAL_STORE_PATH, ScoresetNotSupportedError
 from dcd_mapping.resource_utils import (
     ResourceAcquisitionError,
     http_download,
@@ -25,6 +23,7 @@ from dcd_mapping.schemas import (
     GeneLocation,
     ScoresetMetadata,
     SequenceRange,
+    TargetGene,
     TargetSequenceType,
 )
 
@@ -61,7 +60,10 @@ def _build_query_file(scoreset_metadata: ScoresetMetadata, query_file: Path) -> 
     :return: Yielded Path to constructed file. Deletes file once complete.
     """
     _logger.debug("Writing BLAT query to %s", query_file)
-    lines = [">query", scoreset_metadata.target_sequence]
+    lines = []
+    for target_gene in scoreset_metadata.target_genes:
+        lines.append(f">{target_gene}")
+        lines.append(scoreset_metadata.target_genes[target_gene].target_sequence)
     _write_query_file(query_file, lines)
     return query_file
 
@@ -143,7 +145,30 @@ def _write_blat_output_tempfile(result: subprocess.CompletedProcess) -> str:
     return tmp.name
 
 
-def _get_blat_output(metadata: ScoresetMetadata, silent: bool) -> QueryResult:
+def _get_target_sequence_type(metadata: ScoresetMetadata) -> TargetSequenceType | str:
+    """Get overall target sequence type for a score set's target genes.
+    Protein if all target sequences are protein sequences, nucleotide if all target
+    sequences are nucleotide sequences, and mixed if there is a mix within the score set.
+    :param metadata: object containing score set attributes
+    :return: TargetSequenceType enum (protein or nucleotide) or string "mixed"
+    """
+    target_sequence_types = set()
+    for target_gene in metadata.target_genes:
+        target_sequence_types.add(
+            metadata.target_genes[target_gene].target_sequence_type
+        )
+    if len(target_sequence_types) > 1:
+        return "mixed"
+    elif len(target_sequence_types) == 1:  # noqa: RET505
+        return target_sequence_types.pop()
+    else:
+        msg = f"Target sequence types not available for score set {metadata.urn}"
+        raise ValueError(msg)
+
+
+def _get_blat_output(
+    metadata: ScoresetMetadata, silent: bool
+) -> dict[str, QueryResult]:
     """Run a BLAT query and returns a path to the output object.
 
     If unable to produce a valid query the first time, then try a query using ``dnax``
@@ -151,26 +176,32 @@ def _get_blat_output(metadata: ScoresetMetadata, silent: bool) -> QueryResult:
 
     :param scoreset_metadata: object containing scoreset attributes
     :param silent: suppress BLAT command output
-    :return: BLAT query result
+    :return: dict where keys are target gene identifiers and values are BLAT query result objects
     :raise AlignmentError: if BLAT subprocess returns error code
     """
     with tempfile.NamedTemporaryFile() as tmp_file:
         query_file = _build_query_file(metadata, Path(tmp_file.name))
-        if metadata.target_sequence_type == TargetSequenceType.PROTEIN:
+        target_sequence_type = _get_target_sequence_type(metadata)
+        if target_sequence_type == TargetSequenceType.PROTEIN:
             target_args = "-q=prot -t=dnax"
-        else:
+        elif target_sequence_type == TargetSequenceType.DNA:
             target_args = ""
+        else:
+            # TODO consider implementing support for mixed types, not hard to do - just split blat into two files and run command with each set of arguments.
+            msg = "Mapping for score sets with a mix of nucleotide and protein target sequences is not currently supported."
+            raise NotImplementedError(msg)
         process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
         out_file = _write_blat_output_tempfile(process_result)
 
         try:
-            output = read_blat(out_file, "blat-psl")
+            output = parse_blat(out_file, "blat-psl")
+
         except ValueError:
             target_args = "-q=dnax -t=dnax"
             process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
             out_file = _write_blat_output_tempfile(process_result)
             try:
-                output = read_blat(out_file, "blat-psl")
+                output = parse_blat(out_file, "blat-psl")
             except ValueError as e:
                 msg = f"Unable to run successful BLAT on {metadata.urn}"
                 raise AlignmentError(msg) from e
@@ -178,7 +209,7 @@ def _get_blat_output(metadata: ScoresetMetadata, silent: bool) -> QueryResult:
     return output
 
 
-def _get_best_hit(output: QueryResult, urn: str, chromosome: str | None) -> Hit:
+def _get_best_hit(output: QueryResult, chromosome: str | None) -> Hit:
     """Get best hit from BLAT output.
 
     First, try to return hit corresponding to expected chromosome taken from scoreset
@@ -186,7 +217,6 @@ def _get_best_hit(output: QueryResult, urn: str, chromosome: str | None) -> Hit:
     the hit with the single highest-scoring HSP.
 
     :param output: BLAT output
-    :param urn: scoreset URN to use in error messages
     :param chromosome: refseq chromosome ID, e.g. ``"NC_000001.11"``
     :return: best Hit
     :raise AlignmentError: if unable to get hits from output
@@ -207,8 +237,8 @@ def _get_best_hit(output: QueryResult, urn: str, chromosome: str | None) -> Hit:
                 hit_chrs = [h.id for h in output]
                 # TODO should this be an error rather than a warning? it seems like a problem if we can't find a hit on the expected chromosome
                 _logger.warning(
-                    "Failed to match hit chromosomes during alignment. URN: %s, expected chromosome: %s, hit chromosomes: %s",
-                    urn,
+                    "Failed to match hit chromosomes during alignment for target %s. Expected chromosome: %s, hit chromosomes: %s",
+                    output.id,
                     chromosome,
                     hit_chrs,
                 )
@@ -222,13 +252,13 @@ def _get_best_hit(output: QueryResult, urn: str, chromosome: str | None) -> Hit:
             best_score_hit = hit
 
     if best_score_hit is None:
-        msg = f"Couldn't get BLAT hits from {urn}"
+        msg = f"Couldn't get BLAT hits for target {output.id}."
         raise AlignmentError(msg)
 
     return best_score_hit
 
 
-def _get_best_hsp(hit: Hit, urn: str, gene_location: GeneLocation | None) -> HSP:
+def _get_best_hsp(hit: Hit, gene_location: GeneLocation | None) -> HSP:
     """Retrieve preferred HSP from BLAT Hit object.
 
     If gene location data is available, prefer the HSP with the least distance
@@ -236,7 +266,6 @@ def _get_best_hsp(hit: Hit, urn: str, gene_location: GeneLocation | None) -> HSP
     take the HSP with the highest score value.
 
     :param hit: hit object from BLAT result
-    :param urn: scoreset identifier for use in error messages
     :param gene_location: location data acquired by normalizing scoreset metadata
     :return: Preferred HSP object
     :raise AlignmentError: if hit object appears to be empty (should be impossible)
@@ -252,17 +281,17 @@ def _get_best_hsp(hit: Hit, urn: str, gene_location: GeneLocation | None) -> HSP
     return best_hsp
 
 
-def _get_best_match(output: QueryResult, metadata: ScoresetMetadata) -> AlignmentResult:
+def _get_best_match(output: QueryResult, target_gene: TargetGene) -> AlignmentResult:
     """Obtain best high-scoring pairs (HSP) object for query sequence.
 
     :param metadata: scoreset metadata
     :param output: BLAT result object
     :return: alignment result ??
     """
-    location = get_gene_location(metadata)
+    location = get_gene_location(target_gene)
     chromosome = location.chromosome if location else None
-    best_hit = _get_best_hit(output, metadata.urn, chromosome)
-    best_hsp = _get_best_hsp(best_hit, metadata.urn, location)
+    best_hit = _get_best_hit(output, chromosome)
+    best_hsp = _get_best_hsp(best_hit, location)
 
     strand = Strand.POSITIVE if best_hsp[0].query_strand == 1 else Strand.NEGATIVE
     coverage = 100 * (best_hsp.query_end - best_hsp.query_start) / output.seq_len
@@ -291,12 +320,150 @@ def _get_best_match(output: QueryResult, metadata: ScoresetMetadata) -> Alignmen
     )
 
 
-def align(scoreset_metadata: ScoresetMetadata, silent: bool = True) -> AlignmentResult:
+def align(
+    scoreset_metadata: ScoresetMetadata, silent: bool = True
+) -> dict[str, AlignmentResult]:
     """Align target sequence to a reference genome.
 
     :param scoreset_metadata: object containing scoreset metadata
     :param silent: suppress BLAT process output if true
-    :return: data wrapper containing alignment results
+    :return: dictionary where keys are target gene identifiers and values are alignment result objects
     """
     blat_output = _get_blat_output(scoreset_metadata, silent)
-    return _get_best_match(blat_output, scoreset_metadata)
+    alignment_results = {}
+    for blat_result in blat_output:
+        target_label = blat_result.id
+        # blat names the result id "query" if there is only one query; replace "query" with the target gene name for single-target score sets
+        if target_label == "query" and len(scoreset_metadata.target_genes) == 1:
+            target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
+        # blat automatically reformats query names, so sometimes they don't match our metadata
+        if target_label not in scoreset_metadata.target_genes:
+            # if single-target score set, don't need to match by name
+            if len(scoreset_metadata.target_genes) == 1:
+                target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
+            else:
+                # try to match query name to a target gene in the metadata
+                matches = 0
+                for target_gene_name in scoreset_metadata.target_genes:
+                    blat_target_gene_name = (
+                        target_gene_name.split(" ")[0]
+                        .replace("(", "")
+                        .replace(")", "")
+                        .replace(",", "")
+                    )
+                    if blat_target_gene_name == target_label:
+                        target_label = target_gene_name
+                        matches += 1
+                # we may be missing some blat reformatting rules here - if so, this error will be thrown
+                if matches == 0:
+                    msg = f"BLAT result {target_label} does not match any target gene names in scoreset {scoreset_metadata.urn}."
+                    raise AlignmentError(msg)
+                if matches > 1:
+                    # could happen if multiple target genes have the same first word in their label (unlikely)
+                    msg = f"BLAT result {target_label} matches multiple target gene names in scoreset {scoreset_metadata.urn}"
+        target_gene = scoreset_metadata.target_genes[target_label]
+        alignment_results[target_label] = _get_best_match(blat_result, target_gene)
+    return alignment_results
+
+
+def fetch_alignment(
+    metadata: ScoresetMetadata, silent: bool
+) -> dict[str, AlignmentResult | None]:
+    alignment_results = {}
+    for target_gene in metadata.target_genes:
+        accession_id = metadata.target_genes[target_gene].target_accession_id
+        # protein and contig/chromosome accession ids do not need to be aligned to the genome
+        if accession_id.startswith(("NP", "ENSP", "NC_")):
+            alignment_results[accession_id] = None
+        else:
+            url = f"https://cdot.cc/transcript/{accession_id}"
+            r = requests.get(url, timeout=30)
+
+            try:
+                r.raise_for_status()
+            except requests.HTTPError as e:
+                msg = f"Received HTTPError from {url} for scoreset {metadata.urn}"
+                _logger.error(msg)
+                raise ResourceAcquisitionError(msg) from e
+
+            cdot_mapping = r.json()
+            alignment_results[accession_id] = parse_cdot_mapping(cdot_mapping, silent)
+    return alignment_results
+
+
+def parse_cdot_mapping(cdot_mapping: dict, silent: bool) -> AlignmentResult:
+    # blat psl & AlignmentResult: 0-based, start inclusive, stop exclusive
+    # cdot: 1-based, start inclusive, stop inclusive
+    # so, to "translate" cdot ranges to AlignmentResult-style ranges:
+    # subtract 1 from start and end to go from 1-based to 0-based coord,
+    # and then add 1 to the stop to go from inclusive to exclusive
+    # so just subtract 1 from start and do nothing to end
+
+    grch38 = cdot_mapping.get("genome_builds", {}).get("GRCh38")
+    grch37 = cdot_mapping.get("genome_builds", {}).get("GRCh37")
+    mapping = grch38 if grch38 else grch37
+    if mapping is None:
+        msg = f"Cdot transcript results for transcript {cdot_mapping.get('id')} do not include GRCh37 or GRCh38 mapping"
+        raise AlignmentError(msg)
+
+    chrom = mapping["contig"]
+    strand = Strand.POSITIVE if mapping["strand"] == "+" else Strand.NEGATIVE
+    query_subranges = []
+    hit_subranges = []
+    for exon in mapping["exons"]:
+        query_subranges.append(SequenceRange(start=exon[3] - 1, end=exon[4]))
+        hit_subranges.append(SequenceRange(start=exon[0] - 1, end=exon[1]))
+
+    if strand == Strand.POSITIVE:
+        query_range = SequenceRange(
+            start=query_subranges[0].start, end=query_subranges[-1].end
+        )
+        hit_range = SequenceRange(
+            start=hit_subranges[0].start, end=hit_subranges[-1].end
+        )
+    else:
+        query_range = SequenceRange(
+            start=query_subranges[-1].start, end=query_subranges[0].end
+        )
+        hit_range = SequenceRange(
+            start=hit_subranges[-1].start, end=hit_subranges[0].end
+        )
+
+    return AlignmentResult(
+        chrom=chrom,
+        strand=strand,
+        query_range=query_range,
+        query_subranges=query_subranges,
+        hit_range=hit_range,
+        hit_subranges=hit_subranges,
+    )
+
+
+def build_alignment_result(
+    metadata: ScoresetMetadata, silent: bool
+) -> dict[str, AlignmentResult | None]:
+    # NOTE: Score set must contain all accession-based target genes or all sequence-based target genes
+    # This decision was made because it is most efficient to run BLAT all together, so the alignment function
+    # works on an entire score set rather than per target gene.
+    # However, if the need arises, we can allow both types of target genes in a score set.
+
+    # determine whether score set is accession-based or sequence-based
+    score_set_type = None
+    for target_gene in metadata.target_genes:
+        if metadata.target_genes[target_gene].target_accession_id:
+            if score_set_type == "sequence":
+                msg = "Score set contains both accession-based and sequence-based target genes. This is not currently supported."
+                raise ScoresetNotSupportedError(msg)
+            score_set_type = "accession"
+        else:
+            if score_set_type == "accession":
+                msg = "Score set contains both accession-based and sequence-based target genes. This is not currently supported."
+                raise ScoresetNotSupportedError(msg)
+            score_set_type = "sequence"
+
+    if score_set_type == "sequence":
+        alignment_result = align(metadata, silent)
+    else:
+        alignment_result = fetch_alignment(metadata, silent)
+
+    return alignment_result

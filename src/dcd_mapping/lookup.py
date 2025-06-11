@@ -12,10 +12,12 @@ import logging
 import os
 from pathlib import Path
 
+import hgvs
 import polars as pl
 import requests
 from biocommons.seqrepo import SeqRepo
 from biocommons.seqrepo.seqaliasdb.seqaliasdb import sqlite3
+from cdot.hgvs.dataproviders import ChainedSeqFetcher, FastaSeqFetcher, RESTDataProvider
 from cool_seq_tool.app import (
     LRG_REFSEQGENE_PATH,
     MANE_SUMMARY_PATH,
@@ -42,11 +44,16 @@ from ga4gh.vrs._internal.models import (
 )
 from ga4gh.vrs.dataproxy import SeqRepoDataProxy, coerce_namespace
 from ga4gh.vrs.extras.translator import AlleleTranslator
+from ga4gh.vrs.utils.hgvs_tools import HgvsTools
 from gene.database import create_db
 from gene.query import QueryHandler
 from gene.schemas import MatchType, SourceName
 
-from dcd_mapping.schemas import GeneLocation, ManeDescription, ScoresetMetadata
+from dcd_mapping.schemas import (
+    GeneLocation,
+    ManeDescription,
+    TargetGene,
+)
 
 __all__ = [
     "CoolSeqToolBuilder",
@@ -65,6 +72,23 @@ __all__ = [
     "get_uniprot_sequence",
 ]
 _logger = logging.getLogger(__name__)
+
+# ---------------------------------- Cdot ---------------------------------- #
+
+
+GENOMIC_FASTA_FILES = [
+    "/home/.local/share/dcd_mapping/GCF_000001405.39_GRCh38.p13_genomic.fna.gz",
+    "/home/.local/share/dcd_mapping/GCF_000001405.25_GRCh37.p13_genomic.fna.gz",
+]
+
+
+def seqfetcher() -> ChainedSeqFetcher:
+    return ChainedSeqFetcher(*[FastaSeqFetcher(file) for file in GENOMIC_FASTA_FILES])
+
+
+def cdot_rest() -> RESTDataProvider:
+    return RESTDataProvider(seqfetcher=seqfetcher())
+
 
 # ---------------------------------- Global ---------------------------------- #
 
@@ -176,6 +200,15 @@ class GeneNormalizerBuilder:
         return cls.instance
 
 
+def init_hgvs_tools(self, data_proxy=None):  # noqa: ANN202, ANN001
+    """Initialize HgvsTools with cdot as data provider"""
+    self.parser = hgvs.parser.Parser()
+    self.data_proxy = data_proxy
+    cdot_provider = cdot_rest()
+    self.normalizer = hgvs.normalizer.Normalizer(cdot_provider, validate=True)
+    self.variant_mapper = hgvs.variantmapper.VariantMapper(cdot_provider)
+
+
 class TranslatorBuilder:
     """Singleton constructor for VRS Translator instance."""
 
@@ -186,6 +219,8 @@ class TranslatorBuilder:
         :return: singleton instance of ``AlleleTranslator``
         """
         if not hasattr(cls, "instance"):
+            # monkey patch to use cdot instead of UTA as HgvsTools data provider
+            HgvsTools.__init__ = init_hgvs_tools
             tr = AlleleTranslator(data_proxy)
             cls.instance = tr
         else:
@@ -287,25 +322,25 @@ def _get_hgnc_symbol(term: str) -> str | None:
     return None
 
 
-def get_gene_symbol(metadata: ScoresetMetadata) -> str | None:
-    """Acquire HGNC gene symbol given provided metadata from scoreset.
+def get_gene_symbol(target_gene: TargetGene) -> str | None:
+    """Acquire HGNC gene symbol given provided target gene metadata from MaveDB.
 
     Right now, we use two sources for normalizing:
     1. UniProt ID, if available
     2. Target name: specifically, we try the first word in the name (this could
     cause some problems and we should double-check it)
 
-    :param ScoresetMetadata: data given by MaveDB API
+    :param target_gene: target gene metadata given by MaveDB API
     :return: gene symbol if available
     """
-    if metadata.target_uniprot_ref:
-        result = _get_hgnc_symbol(metadata.target_uniprot_ref.id)
+    if target_gene.target_uniprot_ref:
+        result = _get_hgnc_symbol(target_gene.target_uniprot_ref.id)
         if result:
             return result
 
     # try taking the first word in the target name
-    if metadata.target_gene_name:
-        parsed_name = metadata.target_gene_name.split(" ")[0]
+    if target_gene.target_gene_name:
+        parsed_name = target_gene.target_gene_name.split(" ")[0]
         return _get_hgnc_symbol(parsed_name)
     return None
 
@@ -324,21 +359,21 @@ def _normalize_gene(term: str) -> Gene | None:
 
 
 def _get_normalized_gene_response(
-    metadata: ScoresetMetadata,
+    target_gene: TargetGene,
 ) -> Gene | None:
     """Fetch best normalized concept given available scoreset metadata.
 
     :param metadata: salient scoreset metadata items
     :return: Normalized gene if available
     """
-    if metadata.target_uniprot_ref:
-        gene_descriptor = _normalize_gene(metadata.target_uniprot_ref.id)
+    if target_gene.target_uniprot_ref:
+        gene_descriptor = _normalize_gene(target_gene.target_uniprot_ref.id)
         if gene_descriptor:
             return gene_descriptor
 
     # try taking the first word in the target name
-    if metadata.target_gene_name:
-        parsed_name = metadata.target_gene_name.split(" ")[0]
+    if target_gene.target_gene_name:
+        parsed_name = target_gene.target_gene_name.split(" ")[0]
         gene_descriptor = _normalize_gene(parsed_name)
         if gene_descriptor:
             return gene_descriptor
@@ -371,7 +406,7 @@ def _get_genomic_interval(
     return None
 
 
-def get_gene_location(metadata: ScoresetMetadata) -> GeneLocation | None:
+def get_gene_location(target_gene: TargetGene) -> GeneLocation | None:
     """Acquire gene location data from gene normalizer using metadata provided by
     scoreset.
 
@@ -380,10 +415,10 @@ def get_gene_location(metadata: ScoresetMetadata) -> GeneLocation | None:
     2. Target name: specifically, we try the first word in the name (this could
     cause some problems and we should double-check it)
 
-    :param metadata: data given by MaveDB API
+    :param target_gene: data given by MaveDB API
     :return: gene location data if available
     """
-    gene_descriptor = _get_normalized_gene_response(metadata)
+    gene_descriptor = _get_normalized_gene_response(target_gene)
     if not gene_descriptor or not gene_descriptor.extensions:
         return None
 
@@ -426,6 +461,11 @@ def get_chromosome_identifier(chromosome: str) -> str:
     :return: latest ID if available
     :raise KeyError: if unable to retrieve identifier
     """
+    # target sequence alignment references are chromosome names like ``"8"``, ``"X"``
+    # but accession alignment information from cdot has reference accessions, beginning with "NC_"
+    # for "NC_" identifiers, just return the identifier
+    if chromosome.startswith("NC_"):
+        return chromosome
     if not chromosome.startswith("chr"):
         chromosome = f"chr{chromosome}"
     sr = get_seqrepo()

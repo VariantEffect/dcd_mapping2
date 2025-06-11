@@ -18,8 +18,14 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from cdot.hgvs.dataproviders import ChainedSeqFetcher, FastaSeqFetcher
 
-from dcd_mapping.schemas import AlignmentResult, ScoresetMetadata, TxSelectResult
+from dcd_mapping.schemas import (
+    AlignmentResult,
+    ScoresetMetadata,
+    TargetGene,
+    TxSelectResult,
+)
 
 FIXTURE_DATA_DIR = Path(__file__).parents[0].resolve() / "fixtures"
 
@@ -43,7 +49,11 @@ def scoreset_metadata_fixture(fixture_data_dir: Path):
         data = json.load(f)
     results = {}
     for d in data["scoreset_metadata"]:
-        formatted_data = ScoresetMetadata(**d)
+        target_genes = {}
+        for target_gene in d["target_genes"]:
+            target_gene_metadata = d["target_genes"][target_gene]
+            target_genes[target_gene] = TargetGene(**target_gene_metadata)
+        formatted_data = ScoresetMetadata(urn=d["urn"], target_genes=target_genes)
         results[formatted_data.urn] = formatted_data
     return results
 
@@ -56,8 +66,10 @@ def align_result_fixture(fixture_data_dir: Path):
         data = json.load(f)
     results = {}
     for urn, result in data.items():
-        formatted_result = AlignmentResult(**result)
-        results[urn] = formatted_result
+        formatted_results = {}
+        for target_gene in result:
+            formatted_results[target_gene] = AlignmentResult(**result[target_gene])
+        results[urn] = formatted_results
     return results
 
 
@@ -69,8 +81,10 @@ def transcript_results_fixture(fixture_data_dir: Path):
         data = json.load(f)
     results = {}
     for urn, result in data.items():
-        formatted_result = TxSelectResult(**result)
-        results[urn] = formatted_result
+        formatted_results = {}
+        for target_gene in result:
+            formatted_results[target_gene] = TxSelectResult(**result[target_gene])
+        results[urn] = formatted_results
     return results
 
 
@@ -203,3 +217,18 @@ def mock_seqrepo_access(mocker: MagicMock):
     mocker.patch("dcd_mapping.vrs_map.get_seqrepo", return_value=mock_seqrepo_access)
     mocker.patch("dcd_mapping.lookup.get_seqrepo", return_value=mock_seqrepo_access)
     return mock_seqrepo_access
+
+
+@pytest.fixture()
+def data_provider(fixture_data_dir: Path):
+    """Provide a ChainedSeqFetcher with mocked fasta files for testing.
+    Currently, no tests actually use cdot, but a FileNotFoundError would be raised
+    without this fixture when cdot is imported into dcd_mapping.vrs_map.
+    """
+    # NOTE: This fasta file would not work for test cases that actually use cdot fetching,
+    # it is only meant to avoid a FileNotFoundError.
+    test_fasta_file = fixture_data_dir / "test.fasta"
+
+    seqfetcher = ChainedSeqFetcher(FastaSeqFetcher(test_fasta_file))
+
+    yield seqfetcher  # noqa: PT022

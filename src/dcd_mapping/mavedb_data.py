@@ -17,6 +17,7 @@ import requests
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from dcd_mapping.lookup import DataLookupError
 from dcd_mapping.resource_utils import (
     LOCAL_STORE_PATH,
     MAVEDB_BASE_URL,
@@ -24,7 +25,13 @@ from dcd_mapping.resource_utils import (
     authentication_header,
     http_download,
 )
-from dcd_mapping.schemas import ScoreRow, ScoresetMapping, ScoresetMetadata, UniProtRef
+from dcd_mapping.schemas import (
+    ScoreRow,
+    ScoresetMapping,
+    ScoresetMetadata,
+    TargetGene,
+    UniProtRef,
+)
 
 __all__ = [
     "get_scoreset_urns",
@@ -63,20 +70,24 @@ def get_scoreset_urns() -> set[str]:
 
 
 def _metadata_response_is_human(json_response: dict) -> bool:
-    """Check that response from scoreset metadata API refers to a human genome target.
-
+    """Check that response from scoreset metadata API refers to a score set containing only human genome targets.
     :param json_response: response from scoreset metadata API
     :return: True if contains a target tagged as ``"Homo sapiens"``
     """
     for target_gene in json_response.get("targetGenes", []):
+        # for now, assume that genomic coordinate-based score sets are always human,
+        # since users are not allowed to upload non-human coordinate-based score sets
+        if target_gene.get("targetAccession"):
+            continue
+
         organism = (
             target_gene.get("targetSequence", {})
             .get("taxonomy", {})
             .get("organismName")
         )
-        if organism == "Homo sapiens":
-            return True
-    return False
+        if organism != "Homo sapiens":
+            return False
+    return True
 
 
 def get_human_urns() -> list[str]:
@@ -174,42 +185,63 @@ def get_scoreset_metadata(
     :raise ResourceAcquisitionError: if unable to acquire metadata
     """
     metadata = get_raw_scoreset_metadata(scoreset_urn, dcd_mapping_dir)
+    target_genes = {}
+    multi_target = len(metadata["targetGenes"]) > 1
 
-    if len(metadata["targetGenes"]) > 1:
-        msg = f"Multiple target genes for {scoreset_urn}. Multi-target score sets are not currently supported."
-        raise ScoresetNotSupportedError(msg)
-    gene = metadata["targetGenes"][0]
-    target_sequence_gene = gene.get("targetSequence")
-    if target_sequence_gene is None:
-        msg = f"No target sequence available for {scoreset_urn}. Accession-based score sets are not currently supported."
-        raise ScoresetNotSupportedError(msg)
-    if not _metadata_response_is_human(metadata):
-        msg = f"Experiment for {scoreset_urn} contains no human targets"
-        raise ScoresetNotSupportedError(msg)
-    try:
-        structured_data = ScoresetMetadata(
-            urn=metadata["urn"],
-            target_gene_name=gene["name"],
-            target_gene_category=gene["category"],
-            target_sequence=gene["targetSequence"]["sequence"],
-            target_sequence_type=gene["targetSequence"]["sequenceType"],
-            target_uniprot_ref=_get_uniprot_ref(metadata),
-        )
-    except (KeyError, ValidationError) as e:
-        msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
-        _logger.error(msg)
-        raise ScoresetNotSupportedError(msg) from e
+    for gene in metadata["targetGenes"]:
+        if not _metadata_response_is_human(metadata):
+            msg = f"Experiment for {scoreset_urn} contains non-human targets"
+            raise ScoresetNotSupportedError(msg)
+        try:
+            target_gene_sequence = gene.get("targetSequence")
+            target_gene_accession = gene.get("targetAccession")
 
-    return structured_data
+            if target_gene_sequence:
+                target_sequence_label = target_gene_sequence.get("label")
+                if target_sequence_label is None:
+                    # if there are not multiple targets, label is not required by mavedb,
+                    # so use target gene name as the label.
+                    if not multi_target:
+                        target_sequence_label = gene["name"]
+                    else:
+                        msg = f"No target label provided for target in multi-target score set {scoreset_urn}."
+                        raise DataLookupError(msg)
+                target_genes[target_sequence_label] = TargetGene(
+                    target_gene_name=gene["name"],
+                    target_gene_category=gene["category"],
+                    target_sequence=target_gene_sequence["sequence"],
+                    target_sequence_type=target_gene_sequence["sequenceType"],
+                    target_sequence_label=target_sequence_label,
+                    target_uniprot_ref=_get_uniprot_ref(metadata),
+                )
+            elif target_gene_accession:
+                target_accession_id = target_gene_accession["accession"]
+                target_genes[target_accession_id] = TargetGene(
+                    target_gene_name=gene["name"],
+                    target_gene_category=gene["category"],
+                    target_accession_id=target_accession_id,
+                    target_accession_assembly=target_gene_accession["assembly"],
+                )
+        except (KeyError, ValidationError) as e:
+            msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
+            _logger.error(msg)
+            raise ScoresetNotSupportedError(msg) from e
+
+    return ScoresetMetadata(urn=scoreset_urn, target_genes=target_genes)
 
 
-def _load_scoreset_records(path: Path) -> list[ScoreRow]:
+def _load_scoreset_records(
+    path: Path, metadata: ScoresetMetadata
+) -> dict[str, list[ScoreRow]]:
     """Load scoreset records from CSV file.
+    Organize scoreset records by reference sequence prefix / target gene label.
+    If no reference sequence prefix is provided, the score set should only have one
+    target, so use the one target's label.
 
     This method is intentionally identified as "private", but is refactored out for
     use during testing.
     """
-    scores_data: list[ScoreRow] = []
+    scores_data: dict[str, list[ScoreRow]] = {}
     with path.open() as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
@@ -217,7 +249,27 @@ def _load_scoreset_records(path: Path) -> list[ScoreRow]:
                 row["score"] = None
             else:
                 row["score"] = row["score"]
-            scores_data.append(ScoreRow(**row))
+            if row["hgvs_nt"] != "NA":
+                prefix = row["hgvs_nt"].split(":")[0] if ":" in row["hgvs_nt"] else None
+            elif row["hgvs_pro"] != "NA":
+                prefix = (
+                    row["hgvs_pro"].split(":")[0] if ":" in row["hgvs_pro"] else None
+                )
+            else:
+                msg = f"Each score row in {metadata.urn} must contain hgvs_nt or hgvs_pro variant description "
+                raise ScoresetNotSupportedError(msg)
+            # If no reference sequence prefix is provided, the score set should only have one
+            # target, so use the one target's label.
+            if prefix is None:
+                if len(metadata.target_genes) == 1:
+                    prefix = list(metadata.target_genes.keys())[0]  # noqa: RUF015
+                else:
+                    msg = f"Score set {metadata.urn} contains one or more variant HGVS strings without a reference sequence label. All variant HGVS strings must contain a reference sequence label or accession ID unless the score set contains a single target sequence."
+                    raise ScoresetNotSupportedError(msg)
+            if prefix in scores_data:
+                scores_data[prefix].append(ScoreRow(**row))
+            else:
+                scores_data[prefix] = [ScoreRow(**row)]
     return scores_data
 
 
@@ -238,8 +290,8 @@ def _get_experiment_53_scores(outfile: Path, silent: bool) -> None:
 
 
 def get_scoreset_records(
-    urn: str, silent: bool = True, dcd_mapping_dir: Path | None = None
-) -> list[ScoreRow]:
+    metadata: ScoresetMetadata, silent: bool = True, dcd_mapping_dir: Path | None = None
+) -> dict[str, list[ScoreRow]]:
     """Get scoreset records.
 
     Only hit the MaveDB API if unavailable locally. That means data must be refreshed
@@ -255,13 +307,13 @@ def get_scoreset_records(
     """
     if not dcd_mapping_dir:
         dcd_mapping_dir = LOCAL_STORE_PATH
-    scores_csv = dcd_mapping_dir / f"{urn}_scores.csv"
+    scores_csv = dcd_mapping_dir / f"{metadata.urn}_scores.csv"
     # TODO use smarter/more flexible caching methods
     if not scores_csv.exists():
-        if urn == "urn:mavedb:00000053-a-1":
+        if metadata.urn == "urn:mavedb:00000053-a-1":
             _get_experiment_53_scores(scores_csv, silent)
         else:
-            url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{urn}/scores"
+            url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{metadata.urn}/scores"
             try:
                 http_download(url, scores_csv, silent)
             except requests.HTTPError as e:
@@ -269,7 +321,7 @@ def get_scoreset_records(
                 _logger.error(msg)
                 raise ResourceAcquisitionError(msg) from e
 
-    return _load_scoreset_records(scores_csv)
+    return _load_scoreset_records(scores_csv, metadata)
 
 
 def with_mavedb_score_set(fn: Callable) -> Callable:
@@ -285,8 +337,8 @@ def with_mavedb_score_set(fn: Callable) -> Callable:
             # without the need to download the data again.
             temp_dir_as_path = Path(temp_dir)
             try:
-                get_scoreset_metadata(urn, temp_dir_as_path)
-                get_scoreset_records(urn, silent, temp_dir_as_path)
+                metadata = get_scoreset_metadata(urn, temp_dir_as_path)
+                get_scoreset_records(metadata, silent, temp_dir_as_path)
             except ScoresetNotSupportedError as e:
                 return ScoresetMapping(
                     metadata=None,

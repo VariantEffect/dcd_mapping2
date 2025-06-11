@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 from requests import HTTPError
 
-from dcd_mapping.align import AlignmentError, BlatNotFoundError, align
+from dcd_mapping.align import AlignmentError, BlatNotFoundError, build_alignment_result
 from dcd_mapping.annotate import (
     annotate,
     save_mapped_output_json,
@@ -33,7 +33,7 @@ from dcd_mapping.schemas import (
     ScoresetMetadata,
     VrsVersion,
 )
-from dcd_mapping.transcripts import TxSelectError, select_transcript
+from dcd_mapping.transcripts import select_transcripts
 from dcd_mapping.vrs_map import VrsMapError, vrs_map
 
 _logger = logging.getLogger(__name__)
@@ -138,7 +138,7 @@ async def _check_data_prereqs(silent: bool) -> None:
 
 async def map_scoreset(
     metadata: ScoresetMetadata,
-    records: list[ScoreRow],
+    records: dict[str, list[ScoreRow]],
     output_path: Path | None = None,
     vrs_version: VrsVersion = VrsVersion.V_2,
     prefer_genomic: bool = False,
@@ -156,7 +156,8 @@ async def map_scoreset(
 
     _emit_info(f"Performing alignment for {metadata.urn}...", silent)
     try:
-        alignment_result = align(metadata, silent)
+        # dictionary where keys are target gene labels or accession ids, and values are alignment result objects
+        alignment_results = build_alignment_result(metadata, silent)
     except BlatNotFoundError as e:
         msg = "BLAT command appears missing. Ensure it is available on the $PATH or use the environment variable BLAT_BIN_PATH to point to it. See instructions in the README prerequisites section for more."
         _emit_info(msg, silent, logging.ERROR)
@@ -175,17 +176,8 @@ async def map_scoreset(
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
         return
-    _emit_info("Alignment complete.", silent)
-
-    _emit_info("Selecting reference sequence...", silent)
-    try:
-        transcript = await select_transcript(metadata, records, alignment_result)
-    except (TxSelectError, KeyError, ValueError) as e:
-        _emit_info(
-            f"Transcript selection failed for scoreset {metadata.urn}",
-            silent,
-            logging.ERROR,
-        )
+    except ScoresetNotSupportedError as e:
+        _emit_info(f"Score set not supported: {e}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
             ScoresetMapping(metadata=metadata, error_message=str(e).strip("'")),
@@ -193,6 +185,16 @@ async def map_scoreset(
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
         return
+    _emit_info("Alignment complete.", silent)
+
+    _emit_info("Selecting reference sequence...", silent)
+    try:
+        transcripts = await select_transcripts(metadata, records, alignment_results)
+    # NOTE: transcript selection errors are handled in select_transcripts,
+    # and they do not cause the entire mapping process to exit; instead, an error will be reported
+    # on the target level and on the variant level for variants relative to that target
+    # HTTPErrors and DataLookupErrors cause the mapping process to exit because these indicate
+    # underlying issues with data providers.
     except HTTPError as e:
         _emit_info(
             f"HTTP error occurred during transcript selection: {e}",
@@ -210,8 +212,16 @@ async def map_scoreset(
     _emit_info("Reference selection complete.", silent)
 
     _emit_info("Mapping to VRS...", silent)
+    vrs_results = {}
     try:
-        vrs_results = vrs_map(metadata, alignment_result, records, transcript, silent)
+        for target_gene in metadata.target_genes:
+            vrs_results[target_gene] = vrs_map(
+                metadata=metadata.target_genes[target_gene],
+                align_result=alignment_results[target_gene],
+                records=records[target_gene],
+                transcript=transcripts[target_gene],
+                silent=silent,
+            )
     except VrsMapError as e:
         _emit_info(
             f"VRS mapping failed for scoreset {metadata.urn}", silent, logging.ERROR
@@ -223,7 +233,9 @@ async def map_scoreset(
         )
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
         return
-    if vrs_results is None:
+    if not vrs_results or all(
+        mapping_result is None for mapping_result in vrs_results.values()
+    ):
         _emit_info(f"No mapping available for {metadata.urn}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
@@ -238,20 +250,33 @@ async def map_scoreset(
     _emit_info("VRS mapping complete.", silent)
 
     _emit_info("Annotating metadata and saving to file...", silent)
-    try:
-        vrs_results = annotate(vrs_results, transcript, metadata, vrs_version)
-    except Exception as e:  # TODO create AnnotationError class and replace ValueErrors in annotation steps with AnnotationErrors
-        _emit_info(
-            f"VRS annotation failed for scoreset {metadata.urn}", silent, logging.ERROR
-        )
-        final_output = write_scoreset_mapping_to_json(
-            metadata.urn,
-            ScoresetMapping(metadata=metadata, error_message=str(e).strip("'")),
-            output_path,
-        )
-        _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
-        return
-    if vrs_results is None:
+    # annotate each target's variants separately, since annotation is target specific (e.g. obtaining reference sequence)
+    annotated_vrs_results = {}
+    for target_gene in vrs_results:
+        try:
+            annotated_vrs_results[target_gene] = annotate(
+                vrs_results[target_gene],
+                transcripts[target_gene],
+                metadata.target_genes[target_gene],
+                metadata.urn,
+                vrs_version,
+            )
+        except Exception as e:
+            _emit_info(
+                f"VRS annotation failed for scoreset {metadata.urn}",
+                silent,
+                logging.ERROR,
+            )
+            final_output = write_scoreset_mapping_to_json(
+                metadata.urn,
+                ScoresetMapping(metadata=metadata, error_message=str(e).strip("'")),
+                output_path,
+            )
+            _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
+            return
+    if not annotated_vrs_results or all(
+        mapping_result is None for mapping_result in annotated_vrs_results.values()
+    ):
         _emit_info(f"No annotation available for {metadata.urn}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
@@ -266,9 +291,9 @@ async def map_scoreset(
     try:
         final_output = save_mapped_output_json(
             metadata,
-            vrs_results,
-            alignment_result,
-            transcript,
+            annotated_vrs_results,
+            alignment_results,
+            transcripts,
             prefer_genomic,
             output_path,
         )
@@ -306,7 +331,7 @@ async def map_scoreset_urn(
     """
     try:
         metadata = get_scoreset_metadata(urn, store_path)
-        records = get_scoreset_records(urn, silent, store_path)
+        records = get_scoreset_records(metadata, silent, store_path)
     except ScoresetNotSupportedError as e:
         _emit_info(f"Score set not supported: {e}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
