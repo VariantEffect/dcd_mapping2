@@ -220,7 +220,7 @@ def get_scoreset_metadata(
                     target_gene_name=gene["name"],
                     target_gene_category=gene["category"],
                     target_accession_id=target_accession_id,
-                    target_accession_assembly=target_gene_accession["assembly"],
+                    target_accession_assembly=target_gene_accession.get("assembly"),
                 )
         except (KeyError, ValidationError) as e:
             msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
