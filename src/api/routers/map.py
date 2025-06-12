@@ -194,21 +194,6 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
                     # drop annotation layer from mapping object
                     mapped_scores.append(ScoreAnnotation(**m.model_dump()))
 
-            # drop Nonetype reference sequences
-            for target_gene in reference_sequences:
-                for layer in list(reference_sequences[target_gene].keys()):
-                    if (
-                        reference_sequences[target_gene][layer][
-                            "mapped_reference_sequence"
-                        ]
-                        is None
-                        and reference_sequences[target_gene][layer][
-                            "computed_reference_sequence"
-                        ]
-                        is None
-                    ) or layer is None:
-                        del reference_sequences[target_gene][layer]
-
             # if genomic layer, not accession-based, and target gene type is coding, add cdna entry (just the sequence accession) to reference_sequences dict
             if (
                 AnnotationLayer.GENOMIC in reference_sequences[target_gene_name]
@@ -225,6 +210,21 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
                         "sequence_accessions": [transcripts[target_gene].nm]
                     },
                 }
+
+            # drop Nonetype reference sequences
+            for target_gene in reference_sequences:
+                for layer in list(reference_sequences[target_gene].keys()):
+                    if (
+                        reference_sequences[target_gene][layer][
+                            "mapped_reference_sequence"
+                        ]
+                        is None
+                        and reference_sequences[target_gene][layer][
+                            "computed_reference_sequence"
+                        ]
+                        is None
+                    ) or layer is None:
+                        del reference_sequences[target_gene][layer]
 
     except Exception as e:
         return JSONResponse(
