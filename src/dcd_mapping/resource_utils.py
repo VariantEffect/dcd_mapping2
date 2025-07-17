@@ -39,7 +39,7 @@ def http_download(url: str, out_path: Path, silent: bool = True) -> Path:
     if not silent:
         click.echo(f"Downloading {out_path.name} to {out_path.parents[0].absolute()}")
     with requests.get(
-        url, stream=True, timeout=30, headers=authentication_header()
+        url, stream=True, timeout=60, headers=authentication_header()
     ) as r:
         r.raise_for_status()
         total_size = int(r.headers.get("content-length", 0))
