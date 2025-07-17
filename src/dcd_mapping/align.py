@@ -363,6 +363,11 @@ def align(
                     msg = f"BLAT result {target_label} matches multiple target gene names in scoreset {scoreset_metadata.urn}"
         target_gene = scoreset_metadata.target_genes[target_label]
         alignment_results[target_label] = _get_best_match(blat_result, target_gene)
+    # confirm that there is an alignment result for each target gene
+    for target_gene in scoreset_metadata.target_genes:
+        if target_gene not in alignment_results:
+            msg = f"No BLAT result found for target gene {target_gene} in scoreset {scoreset_metadata.urn}"
+            raise AlignmentError(msg)
     return alignment_results
 
 
