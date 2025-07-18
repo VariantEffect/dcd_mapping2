@@ -22,9 +22,9 @@ from dcd_mapping.lookup import (
 )
 from dcd_mapping.mavedb_data import (
     ScoresetNotSupportedError,
-    correct_target_sequence_type,
     get_scoreset_metadata,
     get_scoreset_records,
+    patch_target_sequence_type,
     with_mavedb_score_set,
 )
 from dcd_mapping.resource_utils import ResourceAcquisitionError
@@ -333,7 +333,7 @@ async def map_scoreset_urn(
     try:
         metadata = get_scoreset_metadata(urn, store_path)
         records = get_scoreset_records(metadata, silent, store_path)
-        metadata = correct_target_sequence_type(metadata, records)
+        metadata = patch_target_sequence_type(metadata, records)
     except ScoresetNotSupportedError as e:
         _emit_info(f"Score set not supported: {e}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
