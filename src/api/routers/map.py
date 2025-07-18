@@ -16,10 +16,10 @@ from dcd_mapping.annotate import (
 from dcd_mapping.lookup import DataLookupError
 from dcd_mapping.mavedb_data import (
     ScoresetNotSupportedError,
-    correct_target_sequence_type,
     get_raw_scoreset_metadata,
     get_scoreset_metadata,
     get_scoreset_records,
+    patch_target_sequence_type,
     with_mavedb_score_set,
 )
 from dcd_mapping.resource_utils import ResourceAcquisitionError
@@ -49,7 +49,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
     try:
         metadata = get_scoreset_metadata(urn, store_path)
         records = get_scoreset_records(metadata, True, store_path)
-        metadata = correct_target_sequence_type(metadata, records)
+        metadata = patch_target_sequence_type(metadata, records)
     except ScoresetNotSupportedError as e:
         return JSONResponse(
             content=ScoresetMapping(

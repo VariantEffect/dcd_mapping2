@@ -326,7 +326,7 @@ def get_scoreset_records(
     return _load_scoreset_records(scores_csv, metadata)
 
 
-def correct_target_sequence_type(
+def patch_target_sequence_type(
     metadata: ScoresetMetadata, records: dict
 ) -> ScoresetMetadata:
     """If target sequence type is DNA but all variants are protein-level, change to protein.
