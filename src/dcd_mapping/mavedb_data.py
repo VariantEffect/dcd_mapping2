@@ -30,8 +30,10 @@ from dcd_mapping.schemas import (
     ScoresetMapping,
     ScoresetMetadata,
     TargetGene,
+    TargetSequenceType,
     UniProtRef,
 )
+from dcd_mapping.transcripts import _get_protein_sequence
 
 __all__ = [
     "get_scoreset_urns",
@@ -322,6 +324,28 @@ def get_scoreset_records(
                 raise ResourceAcquisitionError(msg) from e
 
     return _load_scoreset_records(scores_csv, metadata)
+
+
+def patch_target_sequence_type(
+    metadata: ScoresetMetadata, records: dict
+) -> ScoresetMetadata:
+    """If target sequence type is DNA but all variants are protein-level, change to protein.
+    This avoids BLAT errors in cases where the target sequence was codon-optimized
+    for a non-human organism
+    """
+    for target_label, target in metadata.target_genes.items():
+        if target.target_sequence_type == TargetSequenceType.DNA:
+            all_protein = True
+            for record in records.get(target_label, []):
+                if record.hgvs_pro == "NA" or not record.hgvs_pro:
+                    all_protein = False
+                    break
+            if all_protein:
+                msg = f"Changing target sequence type for {metadata.urn} target {target_label} from DNA to protein because all variants are protein-level"
+                _logger.info(msg)
+                target.target_sequence = _get_protein_sequence(target.target_sequence)
+                target.target_sequence_type = TargetSequenceType.PROTEIN
+    return metadata
 
 
 def with_mavedb_score_set(fn: Callable) -> Callable:
