@@ -453,8 +453,11 @@ def _map_genomic(
             # if the sequence id starts with SQ, it is a target sequence which is in the ga4gh namespace
             namespace = "ga4gh"
         else:
-            msg = f"Namespace could not be inferred from sequence: {sequence_id}"
-            raise ValueError(msg)
+            return MappedScore(
+                accession_id=row.accession,
+                score=row.score,
+                error_message=f"Namespace could not be inferred from sequence: {sequence_id}",
+            )
 
     if (
         row.hgvs_nt in {"_wt", "_sy", "="}
@@ -609,8 +612,11 @@ def _map_genomic(
                 error_message=str(e),
             )
     else:
-        msg = f"Reference sequence namespace not supported: {namespace}"
-        raise ValueError(msg)
+        return MappedScore(
+            accession_id=row.accession,
+            score=row.score,
+            error_message=f"Reference sequence namespace not supported: {namespace}",
+        )
 
     return MappedScore(
         accession_id=row.accession,
@@ -783,7 +789,14 @@ def _map_accession(
     variations: list[MappedScore] = []
     sequence_id = metadata.target_accession_id
     if sequence_id is None:
-        raise ValueError
+        return [
+            MappedScore(
+                accession_id=row.accession,
+                score=row.score,
+                error_message="Could not generate mapped allele objects. No sequence id was provided.",
+            )
+            for row in records
+        ]
 
     store_accession(sequence_id)
 
@@ -802,8 +815,14 @@ def _map_accession(
             hgvs_nt_mappings = _map_genomic(row, sequence_id, align_result)
             variations.append(hgvs_nt_mappings)
     else:
-        msg = f"Unrecognized accession prefix for accession id {metadata.target_accession_id}"
-        raise ValueError(msg)
+        [
+            MappedScore(
+                accession_id=row.accession,
+                score=row.score,
+                error_message=f"Unrecognized accession prefix for accession id {metadata.target_accession_id}",
+            )
+            for row in records
+        ]
 
     return variations
 
@@ -887,7 +906,7 @@ def vrs_map(
     records: list[ScoreRow],
     transcript: TxSelectResult | TxSelectError | None = None,
     silent: bool = True,
-) -> list[MappedScore] | None:
+) -> list[MappedScore]:
     """Given a description of a MAVE scoreset and an aligned transcript, generate
     the corresponding VRS objects.
 

@@ -54,7 +54,10 @@ async def _get_compatible_transcripts(
     chromosome = get_chromosome_identifier(aligned_chrom)
     gene_symbol = get_gene_symbol(target_gene)
     if not gene_symbol:
-        raise TxSelectError
+        msg = (
+            f"Unable to find gene symbol for target gene {target_gene.target_gene_name}"
+        )
+        raise TxSelectError(msg)
     transcript_matches = []
     for hit_range in align_result.hit_subranges:
         matches_list = await get_transcripts(
@@ -179,7 +182,8 @@ async def _select_protein_reference(
         if not best_tx:
             best_tx = await _get_longest_compatible_transcript(common_transcripts)
         if not best_tx:
-            raise TxSelectError
+            msg = f"Unable to find matching MANE transcripts for target gene {target_gene.target_gene_name}"
+            raise TxSelectError(msg)
         ref_sequence = get_sequence(best_tx.refseq_prot)
         nm_accession = best_tx.refseq_nuc
         np_accession = best_tx.refseq_prot
@@ -323,19 +327,6 @@ async def select_transcript(
     :param align_result: alignment results
     :return: Transcript description (accession ID, offset, selected sequence, etc)
     """
-    if scoreset_urn.startswith("urn:mavedb:00000097"):
-        _logger.info(
-            "Score sets in urn:mavedb:00000097 are already expressed in full HGVS strings -- using predefined results because additional hard-coding is unnecessary"
-        )
-        return TxSelectResult(
-            nm="NM_007294.3",
-            np="NP_009225.1",
-            start=0,
-            is_full_match=False,
-            transcript_mode=TranscriptPriority.MANE_SELECT,
-            sequence=_get_protein_sequence(target_gene.target_sequence),
-        )
-
     if target_gene.target_gene_category != TargetType.PROTEIN_CODING:
         _logger.debug(
             "%s is regulatory/noncoding -- skipping transcript selection",
@@ -366,7 +357,9 @@ async def select_transcripts(
         * Dict where keys are target labels and values are alignment result objects
     :return: dict where keys are target labels and values are objects describing selected transcript (accession ID, offset, selected sequence, etc)
     """
-    selected_transcripts = {}
+    selected_transcripts: dict[
+        str, TxSelectResult | TxSelectError | KeyError | None
+    ] = {}
     for target_gene in scoreset_metadata.target_genes:
         if scoreset_metadata.target_genes[target_gene].target_accession_id:
             # for accession-based targets, create tx select objects for protein sequence accessions only
