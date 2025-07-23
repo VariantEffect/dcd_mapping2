@@ -140,7 +140,7 @@ def _get_vrs_ref_allele_seq(
     metadata: TargetGene,
     urn: str,
     tx_select_results: TxSelectResult | None,
-) -> Extension:
+) -> Extension | None:
     """Create `vrs_ref_allele_seq` property."""
     start, end = _offset_allele_ref_seq(urn, allele.location.start, allele.location.end)
     if (
@@ -161,8 +161,12 @@ def _get_vrs_ref_allele_seq(
         seq = f"ga4gh:{allele.location.sequenceReference.refgetAccession}"  # type: ignore
         sr = get_seqrepo()
         ref = sr.get_sequence(seq, start, end)
-        if ref is None:
-            raise ValueError
+
+    if not ref:
+        msg = f"Could not retrieve reference sequence for allele {allele.id} in urn {urn} with start {start} and end {end}"
+        _logger.warning(msg)
+        return None
+
     return Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
 
 
@@ -256,9 +260,11 @@ def _annotate_allele_mapping(
     post_mapped: Allele = mapped_score.post_mapped
 
     # get vrs_ref_allele_seq for pre-mapped variants
-    pre_mapped.extensions = [
-        _get_vrs_ref_allele_seq(pre_mapped, metadata, urn, tx_results)
-    ]
+    ref_allele_seq_extension = _get_vrs_ref_allele_seq(
+        pre_mapped, metadata, urn, tx_results
+    )
+    if ref_allele_seq_extension is not None:
+        pre_mapped.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
         # Determine reference sequence
@@ -313,9 +319,14 @@ def _annotate_haplotype_mapping(
     """Perform annotations and, if necessary, create VRS 1.3 equivalents for haplotype mappings."""
     pre_mapped: Haplotype = mapped_score.pre_mapped  # type: ignore
     post_mapped: Haplotype = mapped_score.post_mapped  # type: ignore
+
     # get vrs_ref_allele_seq for pre-mapped variants
     for allele in pre_mapped.members:
-        allele.extensions = [_get_vrs_ref_allele_seq(allele, metadata, urn, tx_results)]
+        ref_allele_seq_extension = _get_vrs_ref_allele_seq(
+            allele, metadata, urn, tx_results
+        )
+        if ref_allele_seq_extension is not None:
+            allele.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
         # Determine reference sequence
