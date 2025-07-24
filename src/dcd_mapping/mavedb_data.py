@@ -329,22 +329,19 @@ def get_scoreset_records(
 def patch_target_sequence_type(
     metadata: ScoresetMetadata, records: dict
 ) -> ScoresetMetadata:
-    """If target sequence type is DNA but all variants are protein-level, change to protein.
+    """If target sequence type is DNA but no nucleotide variants are defined, treat the target as if
+    it were a protein level target.
     This avoids BLAT errors in cases where the target sequence was codon-optimized
     for a non-human organism
     """
     for target_label, target in metadata.target_genes.items():
-        if target.target_sequence_type == TargetSequenceType.DNA:
-            all_protein = True
-            for record in records.get(target_label, []):
-                if record.hgvs_pro == "NA" or not record.hgvs_pro:
-                    all_protein = False
-                    break
-            if all_protein:
-                msg = f"Changing target sequence type for {metadata.urn} target {target_label} from DNA to protein because all variants are protein-level"
-                _logger.info(msg)
-                target.target_sequence = _get_protein_sequence(target.target_sequence)
-                target.target_sequence_type = TargetSequenceType.PROTEIN
+        if target.target_sequence_type == TargetSequenceType.DNA and not any(
+            record.hgvs_nt for record in records.get(target_label, [])
+        ):
+            msg = f"Changing target sequence type for {metadata.urn} target {target_label} from DNA to protein because target only has protein-level variants"
+            _logger.info(msg)
+            target.target_sequence = _get_protein_sequence(target.target_sequence)
+            target.target_sequence_type = TargetSequenceType.PROTEIN
     return metadata
 
 
