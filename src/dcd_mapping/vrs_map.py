@@ -20,6 +20,11 @@ from ga4gh.vrs.normalize import normalize
 from mavehgvs.util import parse_variant_strings
 from mavehgvs.variant import Variant
 
+from dcd_mapping.exceptions import (
+    MissingSequenceIdError,
+    UnsupportedReferenceSequenceNameSpaceError,
+    UnsupportedReferenceSequencePrefixError,
+)
 from dcd_mapping.lookup import (
     cdot_rest,
     get_chromosome_identifier,
@@ -37,14 +42,10 @@ from dcd_mapping.schemas import (
 )
 from dcd_mapping.transcripts import TxSelectError
 
-__all__ = ["vrs_map", "VrsMapError"]
+__all__ = ["vrs_map"]
 
 
 _logger = logging.getLogger(__name__)
-
-
-class VrsMapError(Exception):
-    """Raise in case of VRS mapping errors."""
 
 
 def _hgvs_variant_is_valid(hgvs_string: str) -> bool:
@@ -612,11 +613,8 @@ def _map_genomic(
                 error_message=str(e),
             )
     else:
-        return MappedScore(
-            accession_id=row.accession,
-            score=row.score,
-            error_message=f"Reference sequence namespace not supported: {namespace}",
-        )
+        msg = f"Unsupported reference sequence namespace: {namespace}"
+        raise UnsupportedReferenceSequenceNameSpaceError(msg)
 
     return MappedScore(
         accession_id=row.accession,
@@ -789,14 +787,8 @@ def _map_accession(
     variations: list[MappedScore] = []
     sequence_id = metadata.target_accession_id
     if sequence_id is None:
-        return [
-            MappedScore(
-                accession_id=row.accession,
-                score=row.score,
-                error_message="Could not generate mapped allele objects. No sequence id was provided.",
-            )
-            for row in records
-        ]
+        msg = " No target_accession_id was provided by target gene metadata. Target gene metadata must have a target_accession_id to map to VRS."
+        raise MissingSequenceIdError(msg)
 
     store_accession(sequence_id)
 
@@ -815,14 +807,8 @@ def _map_accession(
             hgvs_nt_mappings = _map_genomic(row, sequence_id, align_result)
             variations.append(hgvs_nt_mappings)
     else:
-        [
-            MappedScore(
-                accession_id=row.accession,
-                score=row.score,
-                error_message=f"Unrecognized accession prefix for accession id {metadata.target_accession_id}",
-            )
-            for row in records
-        ]
+        msg = f"Unrecognized accession prefix for accession id: {metadata.target_accession_id}"
+        raise UnsupportedReferenceSequencePrefixError(msg)
 
     return variations
 

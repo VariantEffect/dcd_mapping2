@@ -7,11 +7,11 @@ from pathlib import Path
 import click
 
 from dcd_mapping.align import AlignmentError
+from dcd_mapping.exceptions import VrsMapError
 from dcd_mapping.main import map_scoreset_urn
 from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import VrsVersion
 from dcd_mapping.transcripts import TxSelectError
-from dcd_mapping.vrs_map import VrsMapError
 
 _logger = logging.getLogger(__name__)
 

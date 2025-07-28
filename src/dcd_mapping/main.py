@@ -14,6 +14,12 @@ from dcd_mapping.annotate import (
     save_mapped_output_json,
     write_scoreset_mapping_to_json,
 )
+from dcd_mapping.exceptions import (
+    MissingSequenceIdError,
+    UnsupportedReferenceSequenceNameSpaceError,
+    UnsupportedReferenceSequencePrefixError,
+    VrsMapError,
+)
 from dcd_mapping.lookup import (
     DataLookupError,
     check_gene_normalizer,
@@ -35,7 +41,7 @@ from dcd_mapping.schemas import (
     VrsVersion,
 )
 from dcd_mapping.transcripts import select_transcripts
-from dcd_mapping.vrs_map import VrsMapError, vrs_map
+from dcd_mapping.vrs_map import vrs_map
 
 _logger = logging.getLogger(__name__)
 
@@ -223,7 +229,12 @@ async def map_scoreset(
                 transcript=transcripts[target_gene],
                 silent=silent,
             )
-    except VrsMapError as e:
+    except (
+        MissingSequenceIdError,
+        UnsupportedReferenceSequencePrefixError,
+        UnsupportedReferenceSequenceNameSpaceError,
+        VrsMapError,
+    ) as e:
         _emit_info(
             f"VRS mapping failed for scoreset {metadata.urn}", silent, logging.ERROR
         )

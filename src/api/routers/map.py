@@ -13,6 +13,12 @@ from dcd_mapping.annotate import (
     _set_scoreset_layer,
     annotate,
 )
+from dcd_mapping.exceptions import (
+    MissingSequenceIdError,
+    UnsupportedReferenceSequenceNameSpaceError,
+    UnsupportedReferenceSequencePrefixError,
+    VrsMapError,
+)
 from dcd_mapping.lookup import DataLookupError
 from dcd_mapping.mavedb_data import (
     ScoresetNotSupportedError,
@@ -31,7 +37,7 @@ from dcd_mapping.schemas import (
     VrsVersion,
 )
 from dcd_mapping.transcripts import select_transcripts
-from dcd_mapping.vrs_map import VrsMapError, vrs_map
+from dcd_mapping.vrs_map import vrs_map
 
 router = APIRouter(
     prefix="/api/v1", tags=["mappings"], responses={404: {"description": "Not found"}}
@@ -115,7 +121,12 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
                 transcript=transcripts[target_gene],
                 silent=True,
             )
-    except VrsMapError as e:
+    except (
+        UnsupportedReferenceSequenceNameSpaceError,
+        VrsMapError,
+        UnsupportedReferenceSequencePrefixError,
+        MissingSequenceIdError,
+    ) as e:
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata, error_message=str(e).strip("'")
