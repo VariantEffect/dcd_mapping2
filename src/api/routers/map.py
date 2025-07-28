@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from requests import HTTPError
 
-from dcd_mapping.align import AlignmentError, BlatNotFoundError, build_alignment_result
+from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import (
     _get_computed_reference_sequence,
     _get_mapped_reference_sequence,
@@ -14,21 +14,23 @@ from dcd_mapping.annotate import (
     annotate,
 )
 from dcd_mapping.exceptions import (
+    AlignmentError,
+    BlatNotFoundError,
+    DataLookupError,
     MissingSequenceIdError,
+    ResourceAcquisitionError,
+    ScoresetNotSupportedError,
     UnsupportedReferenceSequenceNameSpaceError,
     UnsupportedReferenceSequencePrefixError,
     VrsMapError,
 )
-from dcd_mapping.lookup import DataLookupError
 from dcd_mapping.mavedb_data import (
-    ScoresetNotSupportedError,
     get_raw_scoreset_metadata,
     get_scoreset_metadata,
     get_scoreset_records,
     patch_target_sequence_type,
     with_mavedb_score_set,
 )
-from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import (
     ScoreAnnotation,
     ScoresetMapping,

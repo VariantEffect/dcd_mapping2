@@ -17,11 +17,14 @@ import requests
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from dcd_mapping.lookup import DataLookupError
+from dcd_mapping.exceptions import (
+    DataLookupError,
+    ResourceAcquisitionError,
+    ScoresetNotSupportedError,
+)
 from dcd_mapping.resource_utils import (
     LOCAL_STORE_PATH,
     MAVEDB_BASE_URL,
-    ResourceAcquisitionError,
     authentication_header,
     http_download,
 )
@@ -45,10 +48,6 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
-
-
-class ScoresetNotSupportedError(Exception):
-    """Raise when a score set cannot be mapped because it has characteristics that are not currently supported."""
 
 
 def get_scoreset_urns() -> set[str]:

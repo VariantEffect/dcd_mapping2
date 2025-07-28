@@ -18,10 +18,6 @@ if not LOCAL_STORE_PATH.exists():
     LOCAL_STORE_PATH.mkdir(exist_ok=True, parents=True)
 
 
-class ResourceAcquisitionError(Exception):
-    """Raise when resource acquisition fails."""
-
-
 def authentication_header() -> dict | None:
     """Fetch with api key envvar, if available."""
     return {"X-API-key": MAVEDB_API_KEY} if MAVEDB_API_KEY is not None else None

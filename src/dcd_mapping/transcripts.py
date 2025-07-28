@@ -7,6 +7,7 @@ from Bio.Seq import Seq
 from Bio.SeqUtils import seq1
 from cool_seq_tool.schemas import TranscriptPriority
 
+from dcd_mapping.exceptions import TxSelectError
 from dcd_mapping.lookup import (
     get_chromosome_identifier,
     get_gene_symbol,
@@ -29,13 +30,9 @@ from dcd_mapping.schemas import (
     TxSelectResult,
 )
 
-__all__ = ["select_transcript", "TxSelectError"]
+__all__ = ["select_transcript"]
 
 _logger = logging.getLogger(__name__)
-
-
-class TxSelectError(Exception):
-    """Raise for transcript selection failure."""
 
 
 async def _get_compatible_transcripts(

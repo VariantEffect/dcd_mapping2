@@ -8,32 +8,34 @@ from pathlib import Path
 import click
 from requests import HTTPError
 
-from dcd_mapping.align import AlignmentError, BlatNotFoundError, build_alignment_result
+from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import (
     annotate,
     save_mapped_output_json,
     write_scoreset_mapping_to_json,
 )
 from dcd_mapping.exceptions import (
+    AlignmentError,
+    BlatNotFoundError,
+    DataLookupError,
     MissingSequenceIdError,
+    ResourceAcquisitionError,
+    ScoresetNotSupportedError,
     UnsupportedReferenceSequenceNameSpaceError,
     UnsupportedReferenceSequencePrefixError,
     VrsMapError,
 )
 from dcd_mapping.lookup import (
-    DataLookupError,
     check_gene_normalizer,
     check_seqrepo,
     check_uta,
 )
 from dcd_mapping.mavedb_data import (
-    ScoresetNotSupportedError,
     get_scoreset_metadata,
     get_scoreset_records,
     patch_target_sequence_type,
     with_mavedb_score_set,
 )
-from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import (
     ScoreRow,
     ScoresetMapping,
