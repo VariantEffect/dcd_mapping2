@@ -6,23 +6,31 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from requests import HTTPError
 
-from dcd_mapping.align import AlignmentError, BlatNotFoundError, build_alignment_result
+from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import (
     _get_computed_reference_sequence,
     _get_mapped_reference_sequence,
     _set_scoreset_layer,
     annotate,
 )
-from dcd_mapping.lookup import DataLookupError
-from dcd_mapping.mavedb_data import (
+from dcd_mapping.exceptions import (
+    AlignmentError,
+    BlatNotFoundError,
+    DataLookupError,
+    MissingSequenceIdError,
+    ResourceAcquisitionError,
     ScoresetNotSupportedError,
+    UnsupportedReferenceSequenceNameSpaceError,
+    UnsupportedReferenceSequencePrefixError,
+    VrsMapError,
+)
+from dcd_mapping.mavedb_data import (
     get_raw_scoreset_metadata,
     get_scoreset_metadata,
     get_scoreset_records,
     patch_target_sequence_type,
     with_mavedb_score_set,
 )
-from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import (
     ScoreAnnotation,
     ScoresetMapping,
@@ -31,7 +39,7 @@ from dcd_mapping.schemas import (
     VrsVersion,
 )
 from dcd_mapping.transcripts import select_transcripts
-from dcd_mapping.vrs_map import VrsMapError, vrs_map
+from dcd_mapping.vrs_map import vrs_map
 
 router = APIRouter(
     prefix="/api/v1", tags=["mappings"], responses={404: {"description": "Not found"}}
@@ -68,6 +76,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
                 error_message="Score set contains no variants to map",
             ).model_dump(exclude_none=True)
         )
+    total_score_records = sum(len(v) for v in records.values())
 
     try:
         alignment_results = build_alignment_result(metadata, True)
@@ -114,19 +123,36 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
                 transcript=transcripts[target_gene],
                 silent=True,
             )
-    except VrsMapError as e:
+    except (
+        UnsupportedReferenceSequenceNameSpaceError,
+        VrsMapError,
+        UnsupportedReferenceSequencePrefixError,
+        MissingSequenceIdError,
+    ) as e:
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata, error_message=str(e).strip("'")
             ).model_dump(exclude_none=True)
         )
-    if not vrs_results or all(
-        mapping_result is None for mapping_result in vrs_results.values()
-    ):
+
+    nonetype_vrs_results = [
+        result is None
+        for target_gene in vrs_results
+        for result in vrs_results[target_gene]
+    ]
+
+    if not vrs_results or all(nonetype_vrs_results):
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata,
                 error_message="No variant mappings available for this score set",
+            ).model_dump(exclude_none=True)
+        )
+    if any(nonetype_vrs_results):
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata,
+                error_message="Some variants generated vrs results, but not all. If any variants were mapped, all should have been.",
             ).model_dump(exclude_none=True)
         )
 
@@ -146,13 +172,25 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
                 metadata=metadata, error_message=str(e).strip("'")
             ).model_dump(exclude_none=True)
         )
-    if not annotated_vrs_results or all(
-        mapping_result is None for mapping_result in annotated_vrs_results.values()
-    ):
+
+    nonetype_annotated_vrs_results = [
+        result is None
+        for target_gene in annotated_vrs_results
+        for result in annotated_vrs_results[target_gene]
+    ]
+
+    if not annotated_vrs_results or all(nonetype_annotated_vrs_results):
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata,
                 error_message="No annotated variant mappings available for this score set",
+            ).model_dump(exclude_none=True)
+        )
+    if any(nonetype_annotated_vrs_results):
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata,
+                error_message="Some variants generated annotated vrs results, but not all. If any variants were annotated, all should have been.",
             ).model_dump(exclude_none=True)
         )
 
@@ -232,6 +270,14 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata, error_message=str(e).strip("'")
+            ).model_dump(exclude_none=True)
+        )
+
+    if len(mapped_scores) != total_score_records:
+        return JSONResponse(
+            content=ScoresetMapping(
+                metadata=metadata,
+                error_message=f"Mismatch between number of mapped scores ({len(mapped_scores)}) and total score records ({total_score_records}). This is unexpected and indicates an issue with the mapping process.",
             ).model_dump(exclude_none=True)
         )
 

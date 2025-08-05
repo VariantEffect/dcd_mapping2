@@ -49,6 +49,7 @@ from gene.database import create_db
 from gene.query import QueryHandler
 from gene.schemas import MatchType, SourceName
 
+from dcd_mapping.exceptions import DataLookupError
 from dcd_mapping.schemas import (
     GeneLocation,
     ManeDescription,
@@ -91,10 +92,6 @@ def cdot_rest() -> RESTDataProvider:
 
 
 # ---------------------------------- Global ---------------------------------- #
-
-
-class DataLookupError(Exception):
-    """Raise for misc. issues related to resource acquisition/lookup."""
 
 
 class CoolSeqToolBuilder:
@@ -241,7 +238,9 @@ async def check_uta() -> None:
     query = f"select * from {uta.schema}.meta"  # noqa: S608
     result = await uta.execute_query(query)
     if not result:
-        raise DataLookupError
+        msg = "UTA schema check failed. No results returned."
+        _logger.error(msg)
+        raise DataLookupError(msg)
 
 
 async def get_protein_accession(transcript: str) -> str | None:
@@ -302,9 +301,13 @@ async def get_transcripts(
 def check_gene_normalizer() -> None:
     q = GeneNormalizerBuilder()
     if (not q.db.check_schema_initialized()) or not (q.db.check_tables_populated()):
-        raise DataLookupError
+        msg = "Gene Normalizer database schema check failed. No results returned."
+        _logger.error(msg)
+        raise DataLookupError(msg)
     if q.normalize("BRAF").match_type == MatchType.NO_MATCH:
-        raise DataLookupError
+        msg = "Gene Normalizer returned no normalization results for BRAF. This indicates an underlying issue with the database that should be investigated."
+        _logger.error(msg)
+        raise DataLookupError(msg)
 
 
 def _get_hgnc_symbol(term: str) -> str | None:
@@ -436,7 +439,9 @@ def get_gene_location(target_gene: TargetGene) -> GeneLocation | None:
 def check_seqrepo() -> None:
     sr = get_seqrepo()
     if not sr.sr["NC_000001.11"][780000:780020]:
-        raise DataLookupError
+        msg = "SeqRepo returned no sequence for NC_000001.11 at 780000:780020. This indicates an underlying issue with SeqRepo that should be investigated."
+        _logger.error(msg)
+        raise DataLookupError(msg)
     conn = sr.sr.aliases._db
     try:
         # conn = sr.sr.aliases._db

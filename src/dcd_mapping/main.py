@@ -8,26 +8,34 @@ from pathlib import Path
 import click
 from requests import HTTPError
 
-from dcd_mapping.align import AlignmentError, BlatNotFoundError, build_alignment_result
+from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import (
     annotate,
     save_mapped_output_json,
     write_scoreset_mapping_to_json,
 )
-from dcd_mapping.lookup import (
+from dcd_mapping.exceptions import (
+    AlignmentError,
+    BlatNotFoundError,
     DataLookupError,
+    MissingSequenceIdError,
+    ResourceAcquisitionError,
+    ScoresetNotSupportedError,
+    UnsupportedReferenceSequenceNameSpaceError,
+    UnsupportedReferenceSequencePrefixError,
+    VrsMapError,
+)
+from dcd_mapping.lookup import (
     check_gene_normalizer,
     check_seqrepo,
     check_uta,
 )
 from dcd_mapping.mavedb_data import (
-    ScoresetNotSupportedError,
     get_scoreset_metadata,
     get_scoreset_records,
     patch_target_sequence_type,
     with_mavedb_score_set,
 )
-from dcd_mapping.resource_utils import ResourceAcquisitionError
 from dcd_mapping.schemas import (
     ScoreRow,
     ScoresetMapping,
@@ -35,7 +43,7 @@ from dcd_mapping.schemas import (
     VrsVersion,
 )
 from dcd_mapping.transcripts import select_transcripts
-from dcd_mapping.vrs_map import VrsMapError, vrs_map
+from dcd_mapping.vrs_map import vrs_map
 
 _logger = logging.getLogger(__name__)
 
@@ -223,7 +231,12 @@ async def map_scoreset(
                 transcript=transcripts[target_gene],
                 silent=silent,
             )
-    except VrsMapError as e:
+    except (
+        MissingSequenceIdError,
+        UnsupportedReferenceSequencePrefixError,
+        UnsupportedReferenceSequenceNameSpaceError,
+        VrsMapError,
+    ) as e:
         _emit_info(
             f"VRS mapping failed for scoreset {metadata.urn}", silent, logging.ERROR
         )

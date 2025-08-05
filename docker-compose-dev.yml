@@ -30,7 +30,7 @@ services:
       - vrs-mapping-data-dev:/var/lib/postgresql/data
 
   seqrepo:
-    image: biocommons/seqrepo:2021-01-29
+    image: biocommons/seqrepo:2024-12-20
     volumes:
       - vrs-mapping-seqrepo-dev:/usr/local/share/seqrepo
 
