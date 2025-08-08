@@ -17,11 +17,14 @@ import requests
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from dcd_mapping.lookup import DataLookupError
+from dcd_mapping.exceptions import (
+    DataLookupError,
+    ResourceAcquisitionError,
+    ScoresetNotSupportedError,
+)
 from dcd_mapping.resource_utils import (
     LOCAL_STORE_PATH,
     MAVEDB_BASE_URL,
-    ResourceAcquisitionError,
     authentication_header,
     http_download,
 )
@@ -30,8 +33,10 @@ from dcd_mapping.schemas import (
     ScoresetMapping,
     ScoresetMetadata,
     TargetGene,
+    TargetSequenceType,
     UniProtRef,
 )
+from dcd_mapping.transcripts import _get_protein_sequence
 
 __all__ = [
     "get_scoreset_urns",
@@ -43,10 +48,6 @@ __all__ = [
 ]
 
 _logger = logging.getLogger(__name__)
-
-
-class ScoresetNotSupportedError(Exception):
-    """Raise when a score set cannot be mapped because it has characteristics that are not currently supported."""
 
 
 def get_scoreset_urns() -> set[str]:
@@ -322,6 +323,25 @@ def get_scoreset_records(
                 raise ResourceAcquisitionError(msg) from e
 
     return _load_scoreset_records(scores_csv, metadata)
+
+
+def patch_target_sequence_type(
+    metadata: ScoresetMetadata, records: dict
+) -> ScoresetMetadata:
+    """If target sequence type is DNA but no nucleotide variants are defined, treat the target as if
+    it were a protein level target.
+    This avoids BLAT errors in cases where the target sequence was codon-optimized
+    for a non-human organism
+    """
+    for target_label, target in metadata.target_genes.items():
+        if target.target_sequence_type == TargetSequenceType.DNA and not any(
+            record.hgvs_nt for record in records.get(target_label, [])
+        ):
+            msg = f"Changing target sequence type for {metadata.urn} target {target_label} from DNA to protein because target only has protein-level variants"
+            _logger.info(msg)
+            target.target_sequence = _get_protein_sequence(target.target_sequence)
+            target.target_sequence_type = TargetSequenceType.PROTEIN
+    return metadata
 
 
 def with_mavedb_score_set(fn: Callable) -> Callable:

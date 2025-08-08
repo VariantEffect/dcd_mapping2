@@ -20,6 +20,11 @@ from ga4gh.vrs.normalize import normalize
 from mavehgvs.util import parse_variant_strings
 from mavehgvs.variant import Variant
 
+from dcd_mapping.exceptions import (
+    MissingSequenceIdError,
+    UnsupportedReferenceSequenceNameSpaceError,
+    UnsupportedReferenceSequencePrefixError,
+)
 from dcd_mapping.lookup import (
     cdot_rest,
     get_chromosome_identifier,
@@ -37,14 +42,10 @@ from dcd_mapping.schemas import (
 )
 from dcd_mapping.transcripts import TxSelectError
 
-__all__ = ["vrs_map", "VrsMapError"]
+__all__ = ["vrs_map"]
 
 
 _logger = logging.getLogger(__name__)
-
-
-class VrsMapError(Exception):
-    """Raise in case of VRS mapping errors."""
 
 
 def _hgvs_variant_is_valid(hgvs_string: str) -> bool:
@@ -453,8 +454,11 @@ def _map_genomic(
             # if the sequence id starts with SQ, it is a target sequence which is in the ga4gh namespace
             namespace = "ga4gh"
         else:
-            msg = f"Namespace could not be inferred from sequence: {sequence_id}"
-            raise ValueError(msg)
+            return MappedScore(
+                accession_id=row.accession,
+                score=row.score,
+                error_message=f"Namespace could not be inferred from sequence: {sequence_id}",
+            )
 
     if (
         row.hgvs_nt in {"_wt", "_sy", "="}
@@ -609,8 +613,8 @@ def _map_genomic(
                 error_message=str(e),
             )
     else:
-        msg = f"Reference sequence namespace not supported: {namespace}"
-        raise ValueError(msg)
+        msg = f"Unsupported reference sequence namespace: {namespace}"
+        raise UnsupportedReferenceSequenceNameSpaceError(msg)
 
     return MappedScore(
         accession_id=row.accession,
@@ -783,7 +787,8 @@ def _map_accession(
     variations: list[MappedScore] = []
     sequence_id = metadata.target_accession_id
     if sequence_id is None:
-        raise ValueError
+        msg = " No target_accession_id was provided by target gene metadata. Target gene metadata must have a target_accession_id to map to VRS."
+        raise MissingSequenceIdError(msg)
 
     store_accession(sequence_id)
 
@@ -802,8 +807,8 @@ def _map_accession(
             hgvs_nt_mappings = _map_genomic(row, sequence_id, align_result)
             variations.append(hgvs_nt_mappings)
     else:
-        msg = f"Unrecognized accession prefix for accession id {metadata.target_accession_id}"
-        raise ValueError(msg)
+        msg = f"Unrecognized accession prefix for accession id: {metadata.target_accession_id}"
+        raise UnsupportedReferenceSequencePrefixError(msg)
 
     return variations
 
@@ -887,7 +892,7 @@ def vrs_map(
     records: list[ScoreRow],
     transcript: TxSelectResult | TxSelectError | None = None,
     silent: bool = True,
-) -> list[MappedScore] | None:
+) -> list[MappedScore]:
     """Given a description of a MAVE scoreset and an aligned transcript, generate
     the corresponding VRS objects.
 

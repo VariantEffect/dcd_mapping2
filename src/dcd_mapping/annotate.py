@@ -140,7 +140,7 @@ def _get_vrs_ref_allele_seq(
     metadata: TargetGene,
     urn: str,
     tx_select_results: TxSelectResult | None,
-) -> Extension:
+) -> Extension | None:
     """Create `vrs_ref_allele_seq` property."""
     start, end = _offset_allele_ref_seq(urn, allele.location.start, allele.location.end)
     if (
@@ -161,8 +161,12 @@ def _get_vrs_ref_allele_seq(
         seq = f"ga4gh:{allele.location.sequenceReference.refgetAccession}"  # type: ignore
         sr = get_seqrepo()
         ref = sr.get_sequence(seq, start, end)
-        if ref is None:
-            raise ValueError
+
+    if not ref:
+        msg = f"Could not retrieve reference sequence for allele {allele.id} in urn {urn} with start {start} and end {end}"
+        _logger.warning(msg)
+        return None
+
     return Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
 
 
@@ -256,9 +260,11 @@ def _annotate_allele_mapping(
     post_mapped: Allele = mapped_score.post_mapped
 
     # get vrs_ref_allele_seq for pre-mapped variants
-    pre_mapped.extensions = [
-        _get_vrs_ref_allele_seq(pre_mapped, metadata, urn, tx_results)
-    ]
+    ref_allele_seq_extension = _get_vrs_ref_allele_seq(
+        pre_mapped, metadata, urn, tx_results
+    )
+    if ref_allele_seq_extension is not None:
+        pre_mapped.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
         # Determine reference sequence
@@ -266,13 +272,16 @@ def _annotate_allele_mapping(
             sequence_id = f"ga4gh:{mapped_score.post_mapped.location.sequenceReference.refgetAccession}"
             accession = get_chromosome_identifier_from_vrs_id(sequence_id)
             if accession is None:
-                raise ValueError
-            if accession.startswith("refseq:"):
+                accession = None
+                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
+            elif accession.startswith("refseq:"):
                 accession = accession[7:]
         else:
             if tx_results is None or isinstance(tx_results, TxSelectError):
-                raise ValueError  # impossible by definition
-            accession = tx_results.np
+                accession = None
+                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
+            else:
+                accession = tx_results.np
 
         sr = get_seqrepo()
         loc = mapped_score.post_mapped.location
@@ -281,8 +290,9 @@ def _annotate_allele_mapping(
         post_mapped.extensions = [
             Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
         ]
-        hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
-        post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
+        if accession:
+            hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
+            post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
 
     if vrs_version == VrsVersion.V_1_3:
         pre_mapped = _allele_to_vod(pre_mapped)
@@ -295,9 +305,7 @@ def _annotate_allele_mapping(
         mavedb_id=mapped_score.accession_id,
         score=float(mapped_score.score) if mapped_score.score else None,
         annotation_layer=mapped_score.annotation_layer,
-        error_message=mapped_score.error_message
-        if mapped_score.error_message
-        else None,  # TODO might not need if statement here
+        error_message=mapped_score.error_message,
     )
 
 
@@ -311,9 +319,14 @@ def _annotate_haplotype_mapping(
     """Perform annotations and, if necessary, create VRS 1.3 equivalents for haplotype mappings."""
     pre_mapped: Haplotype = mapped_score.pre_mapped  # type: ignore
     post_mapped: Haplotype = mapped_score.post_mapped  # type: ignore
+
     # get vrs_ref_allele_seq for pre-mapped variants
     for allele in pre_mapped.members:
-        allele.extensions = [_get_vrs_ref_allele_seq(allele, metadata, urn, tx_results)]
+        ref_allele_seq_extension = _get_vrs_ref_allele_seq(
+            allele, metadata, urn, tx_results
+        )
+        if ref_allele_seq_extension is not None:
+            allele.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
         # Determine reference sequence
@@ -321,13 +334,17 @@ def _annotate_haplotype_mapping(
             sequence_id = f"ga4gh:{post_mapped.members[0].location.sequenceReference.refgetAccession}"
             accession = get_chromosome_identifier_from_vrs_id(sequence_id)
             if accession is None:
-                raise ValueError
-            if accession.startswith("refseq:"):
+                accession = None
+                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
+            elif accession.startswith("refseq:"):
                 accession = accession[7:]
         else:
             if tx_results is None or isinstance(tx_results, TxSelectError):
-                raise ValueError  # impossible by definition
-            accession = tx_results.np
+                # impossible by definition
+                accession = None
+                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
+            else:
+                accession = tx_results.np
 
         sr = get_seqrepo()
         for allele in post_mapped.members:
@@ -337,8 +354,9 @@ def _annotate_haplotype_mapping(
             allele.extensions = [
                 Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
             ]
-            hgvs, syntax = _get_hgvs_string(allele, accession)
-            allele.expressions = [Expression(syntax=syntax, value=hgvs)]
+            if accession:
+                hgvs, syntax = _get_hgvs_string(allele, accession)
+                allele.expressions = [Expression(syntax=syntax, value=hgvs)]
 
     if vrs_version == VrsVersion.V_1_3:
         pre_mapped = _haplotype_to_haplotype_1_3(pre_mapped)
@@ -351,9 +369,7 @@ def _annotate_haplotype_mapping(
         mavedb_id=mapped_score.accession_id,
         score=float(mapped_score.score) if mapped_score.score is not None else None,
         annotation_layer=mapped_score.annotation_layer,
-        error_message=mapped_score.error_message
-        if mapped_score.error_message
-        else None,  # TODO might not need if statement here
+        error_message=mapped_score.error_message,
     )
 
 
@@ -388,6 +404,7 @@ def annotate(
                 ScoreAnnotationWithLayer(
                     mavedb_id=mapped_score.accession_id,
                     score=float(mapped_score.score) if mapped_score.score else None,
+                    vrs_version=vrs_version,
                     error_message=mapped_score.error_message,
                 )
             )
@@ -410,8 +427,16 @@ def annotate(
                 )
             )
         else:
-            # TODO how to combine this error message with other potential error messages?
-            ValueError("inconsistent variant structure")
+            score_annotations.append(
+                ScoreAnnotationWithLayer(
+                    pre_mapped=mapped_score.pre_mapped,
+                    post_mapped=mapped_score.post_mapped,
+                    vrs_version=vrs_version,
+                    mavedb_id=mapped_score.accession_id,
+                    score=float(mapped_score.score) if mapped_score.score else None,
+                    error_message=f"Multiple issues with annotation: Inconsistent variant structure (Allele and Haplotype mix).{' ' + mapped_score.error_message if mapped_score.error_message else ''}",
+                )
+            )
 
     return score_annotations
 
@@ -519,11 +544,6 @@ def _set_scoreset_layer(
     expressions. If genomic expressions are available, that's what we'd like to use.
     This function tells us how to filter the final annotation objects.
     """
-    if urn.startswith("urn:mavedb:00000097"):
-        _logger.debug(
-            "Manually selecting protein annotation for scores from urn:mavedb:00000097"
-        )
-        return AnnotationLayer.PROTEIN
     for mapping in mappings:
         if mapping.annotation_layer == AnnotationLayer.GENOMIC:
             return AnnotationLayer.GENOMIC

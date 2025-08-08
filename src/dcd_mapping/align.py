@@ -12,12 +12,15 @@ from Bio.SearchIO import parse as parse_blat
 from Bio.SearchIO._model import Hit, QueryResult
 from cool_seq_tool.schemas import Strand
 
-from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
-from dcd_mapping.mavedb_data import LOCAL_STORE_PATH, ScoresetNotSupportedError
-from dcd_mapping.resource_utils import (
+from dcd_mapping.exceptions import (
+    AlignmentError,
+    BlatNotFoundError,
     ResourceAcquisitionError,
-    http_download,
+    ScoresetNotSupportedError,
 )
+from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
+from dcd_mapping.mavedb_data import LOCAL_STORE_PATH
+from dcd_mapping.resource_utils import http_download
 from dcd_mapping.schemas import (
     AlignmentResult,
     GeneLocation,
@@ -30,14 +33,6 @@ from dcd_mapping.schemas import (
 __all__ = ["align"]
 
 _logger = logging.getLogger(__name__)
-
-
-class AlignmentError(Exception):
-    """Raise when errors encountered during alignment."""
-
-
-class BlatNotFoundError(AlignmentError):
-    """Raise when BLAT binary appears to be missing."""
 
 
 def _write_query_file(file: Path, lines: list[str]) -> None:
@@ -363,6 +358,11 @@ def align(
                     msg = f"BLAT result {target_label} matches multiple target gene names in scoreset {scoreset_metadata.urn}"
         target_gene = scoreset_metadata.target_genes[target_label]
         alignment_results[target_label] = _get_best_match(blat_result, target_gene)
+    # confirm that there is an alignment result for each target gene
+    for target_gene in scoreset_metadata.target_genes:
+        if target_gene not in alignment_results:
+            msg = f"No BLAT result found for target gene {target_gene} in scoreset {scoreset_metadata.urn}"
+            raise AlignmentError(msg)
     return alignment_results
 
 
