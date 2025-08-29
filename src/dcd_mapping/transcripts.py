@@ -1,6 +1,7 @@
 """Select best reference sequence."""
 import logging
 import re
+from collections.abc import Mapping
 
 from Bio.Data.CodonTable import IUPACData
 from Bio.Seq import Seq
@@ -345,7 +346,7 @@ async def select_transcript(
 async def select_transcripts(
     scoreset_metadata: ScoresetMetadata,
     records: dict[str, list[ScoreRow]],
-    align_results: dict[str, AlignmentResult | None],
+    align_results: Mapping[str, AlignmentResult | None],
 ) -> dict[str, TxSelectResult | Exception | None]:
     """Select appropriate human reference sequence for each target in a score set.
     :param scoreset_metadata: Metadata for score set from MaveDB API

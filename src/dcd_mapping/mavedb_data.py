@@ -326,21 +326,36 @@ def get_scoreset_records(
 
 
 def patch_target_sequence_type(
-    metadata: ScoresetMetadata, records: dict
+    metadata: ScoresetMetadata, records: dict, force: bool = False
 ) -> ScoresetMetadata:
     """If target sequence type is DNA but no nucleotide variants are defined, treat the target as if
     it were a protein level target.
     This avoids BLAT errors in cases where the target sequence was codon-optimized
     for a non-human organism
     """
+    patch_sequence_type = force or any(
+        target.target_sequence_type == TargetSequenceType.DNA
+        and not any(record.hgvs_nt for record in records.get(target_label, []))
+        for target_label, target in metadata.target_genes.items()
+    )
+
+    if not patch_sequence_type:
+        msg = f"Not patching target sequence type for {metadata.urn}. Either force=True (was {force}), or at least one target has nucleotide-level variants."
+        _logger.debug(msg)
+        return metadata
+
     for target_label, target in metadata.target_genes.items():
-        if target.target_sequence_type == TargetSequenceType.DNA and not any(
-            record.hgvs_nt for record in records.get(target_label, [])
-        ):
-            msg = f"Changing target sequence type for {metadata.urn} target {target_label} from DNA to protein because target only has protein-level variants"
-            _logger.info(msg)
-            target.target_sequence = _get_protein_sequence(target.target_sequence)
-            target.target_sequence_type = TargetSequenceType.PROTEIN
+        if not target.target_sequence:
+            msg = f"Cannot patch target sequence type for {metadata.urn} target {target_label} because no target sequence is available."
+            _logger.debug(msg)
+            continue
+
+        msg = f"Changing target sequence type for {metadata.urn} target {target_label} from DNA to protein. (force was {force})."
+        _logger.info(msg)
+
+        target.target_sequence = _get_protein_sequence(target.target_sequence)
+        target.target_sequence_type = TargetSequenceType.PROTEIN
+
     return metadata
 
 
