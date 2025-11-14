@@ -1,4 +1,4 @@
-FROM --platform=x86_64 python:3.11
+FROM python:3.11
 
 RUN apt update
 # Install tools necessary used to install samtools and htslib so we can configure fasta files for genomic assembly.

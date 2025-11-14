@@ -32,6 +32,7 @@ requires-python = ">=3.11"
 # and clean up deps once a new release is made.
 
 dependencies = [
+    "agct~=0.1.0",
     "requests",
     "biopython",
     "tqdm",
