@@ -350,6 +350,11 @@ def patch_target_sequence_type(
             _logger.debug(msg)
             continue
 
+        if target.target_gene_category != "protein_coding":
+            msg = f"Cannot patch target sequence type for {metadata.urn} target {target_label} because target gene category is {target.target_gene_category}, not protein_coding."
+            _logger.debug(msg)
+            continue
+
         msg = f"Changing target sequence type for {metadata.urn} target {target_label} from DNA to protein. (force was {force})."
         _logger.info(msg)
 

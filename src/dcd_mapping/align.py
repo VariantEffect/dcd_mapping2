@@ -478,9 +478,14 @@ def build_alignment_result(
                 raise AlignmentError from e
 
             # So long as force=True, the content of the records dict is irrelevant.
-            alignment_result = align(
-                patch_target_sequence_type(metadata, {}, force=True), silent
-            )
+            try:
+                alignment_result = align(
+                    patch_target_sequence_type(metadata, {}, force=True), silent
+                )
+            except AlignmentError as e2:
+                msg = f"BLAT alignment failed for {metadata.urn} at the protein level after failing at the nucleotide level."
+                _logger.error(msg)
+                raise AlignmentError(msg) from e2
 
     else:
         alignment_result = fetch_alignment(metadata, silent)
