@@ -37,12 +37,13 @@ _logger = logging.getLogger(__name__)
 
 async def _get_compatible_transcripts(
     target_gene: TargetGene, align_result: AlignmentResult
-) -> list[list[str]]:
-    """Acquire matching transcripts
+) -> set[str]:
+    """Acquire transcripts which overlap with all hit subranges
+    of an alignment result.
 
     :param metadata: metadata for scoreset
     :param align_result: output of ``align()`` method
-    :return: List of list of compatible transcripts
+    :return: Set of compatible transcripts
     """
     if align_result.chrom.startswith("chr"):
         aligned_chrom = align_result.chrom[3:]
@@ -55,27 +56,13 @@ async def _get_compatible_transcripts(
             f"Unable to find gene symbol for target gene {target_gene.target_gene_name}"
         )
         raise TxSelectError(msg)
-    transcript_matches = []
+    transcript_matches: set[str] = set()
     for hit_range in align_result.hit_subranges:
         matches_list = await get_transcripts(
             gene_symbol, chromosome, hit_range.start, hit_range.end
         )
-        if matches_list:
-            transcript_matches.append(matches_list)
+        transcript_matches.intersection_update(matches_list)
     return transcript_matches
-
-
-def _reduce_compatible_transcripts(matching_transcripts: list[list[str]]) -> list[str]:
-    """Reduce list of list of transcripts to a list containing only entries present
-    in each sublist
-
-    :param matching_transcripts: list of list of transcript accession IDs
-    :return: list of transcripts shared by all sublists
-    """
-    common_transcripts_set = set(matching_transcripts[0])
-    for sublist in matching_transcripts[1:]:
-        common_transcripts_set.intersection_update(sublist)
-    return list(common_transcripts_set)
 
 
 def _choose_best_mane_transcript(
@@ -157,11 +144,8 @@ async def _select_protein_reference(
     reference sequence
     """
     matching_transcripts = await _get_compatible_transcripts(target_gene, align_result)
+
     if not matching_transcripts:
-        common_transcripts = None
-    else:
-        common_transcripts = _reduce_compatible_transcripts(matching_transcripts)
-    if not common_transcripts:
         if not target_gene.target_uniprot_ref:
             msg = f"Unable to find matching transcripts for target gene {target_gene.target_gene_name}"
             raise TxSelectError(msg)
@@ -174,10 +158,12 @@ async def _select_protein_reference(
         nm_accession = None
         tx_mode = None
     else:
-        mane_transcripts = get_mane_transcripts(common_transcripts)
+        mane_transcripts = get_mane_transcripts(matching_transcripts)
         best_tx = _choose_best_mane_transcript(mane_transcripts)
         if not best_tx:
-            best_tx = await _get_longest_compatible_transcript(common_transcripts)
+            best_tx = await _get_longest_compatible_transcript(
+                list(matching_transcripts)
+            )
         if not best_tx:
             msg = f"Unable to find matching MANE transcripts for target gene {target_gene.target_gene_name}"
             raise TxSelectError(msg)

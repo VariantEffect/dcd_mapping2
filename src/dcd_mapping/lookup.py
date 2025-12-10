@@ -596,7 +596,7 @@ def translate_hgvs_to_vrs(hgvs: str) -> Allele:
 # ----------------------------------- MANE ----------------------------------- #
 
 
-def get_mane_transcripts(transcripts: list[str]) -> list[ManeDescription]:
+def get_mane_transcripts(transcripts: set[str]) -> list[ManeDescription]:
     """Get corresponding MANE data for transcripts. Results given in order of
     transcript preference.
 
