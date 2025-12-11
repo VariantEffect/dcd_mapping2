@@ -1,8 +1,16 @@
 """FastAPI server file"""
+import logging
+
 import uvicorn
 from fastapi import FastAPI
 
 from api.routers import map
+from application_logging import init_logging
+from dcd_mapping.version import dcd_mapping_version
+
+init_logging()
+_logger = logging.getLogger(__name__)
+_logger.info("dcd-mapping API: %s", dcd_mapping_version)
 
 app = FastAPI()
 
