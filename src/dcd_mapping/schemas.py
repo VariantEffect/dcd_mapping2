@@ -152,6 +152,7 @@ class TxSelectResult(BaseModel):
     is_full_match: StrictBool
     transcript_mode: TranscriptPriority | None = None
     sequence: str
+    hgnc_symbol: str | None = None
 
 
 class MappedScore(BaseModel):

@@ -173,6 +173,7 @@ async def _select_protein_reference(
             raise TxSelectError(msg)
         nm_accession = None
         tx_mode = None
+        hgnc_symbol = None
     else:
         mane_transcripts = get_mane_transcripts(common_transcripts)
         best_tx = _choose_best_mane_transcript(mane_transcripts)
@@ -185,6 +186,7 @@ async def _select_protein_reference(
         nm_accession = best_tx.refseq_nuc
         np_accession = best_tx.refseq_prot
         tx_mode = best_tx.transcript_priority
+        hgnc_symbol = best_tx.symbol
 
     protein_sequence = _get_protein_sequence(target_gene.target_sequence)
     is_full_match = ref_sequence.find(protein_sequence) != -1
@@ -197,6 +199,7 @@ async def _select_protein_reference(
         is_full_match=is_full_match,
         sequence=protein_sequence,
         transcript_mode=tx_mode,
+        hgnc_symbol=hgnc_symbol,
     )
 
 
