@@ -188,6 +188,49 @@ class ScoreAnnotation(BaseModel):
     error_message: str | None = None
 
 
+class GeneInfo(BaseModel):
+    """Basic gene metadata for a target, including symbol and selection method."""
+
+    hgnc_symbol: str | None = None
+    selection_method: str | None = None
+
+
+class TargetAnnotation(BaseModel):
+    """Represents annotations associated with a biological target, including optional gene metadata
+    and structured annotation layers.
+
+    Attributes
+    ----------
+    gene_info : GeneInfo | None
+        Optional metadata describing the gene associated with the target,
+        including identifiers and descriptive information where available.
+
+    layers : dict[AnnotationLayer, dict[str, ComputedReferenceSequence | MappedReferenceSequence | dict | None]]
+        A mapping of annotation layers to keyed layer data. Each layer is identified by an
+        AnnotationLayer key and contains a dictionary where:
+          - keys are string identifiers for items within the layer (e.g., feature names),
+          - values are one of:
+              - ComputedReferenceSequence: a computed sequence representation for the item,
+              - MappedReferenceSequence: a sequence mapped to a reference coordinate system,
+              - dict: a generic dictionary for custom layer-specific payloads,
+              - None: indicating missing or intentionally omitted data.
+
+    Notes
+    -----
+    - The default value for 'layers' is an empty dictionary.
+    - This model is intended to standardize layer-based annotations for downstream processing
+      and validation, allowing both computed and mapped sequence data to coexist within the same
+      structure.
+
+    """
+
+    gene_info: GeneInfo | None = None
+    layers: dict[
+        AnnotationLayer,
+        dict[str, ComputedReferenceSequence | MappedReferenceSequence | dict | None],
+    ] = {}
+
+
 class ScoreAnnotationWithLayer(ScoreAnnotation):
     """Couple annotations with an easily-computable definition of the annotation layer
     from which they originate.
@@ -206,14 +249,6 @@ class ScoresetMapping(BaseModel):
     mapped_date_utc: str = Field(
         default=datetime.datetime.now(tz=datetime.UTC).isoformat()
     )
-    reference_sequences: dict[
-        str,
-        dict[
-            AnnotationLayer,
-            dict[
-                str, ComputedReferenceSequence | MappedReferenceSequence | dict | None
-            ],
-        ],
-    ] | None = None
+    reference_sequences: dict[str, TargetAnnotation] | None = None
     mapped_scores: list[ScoreAnnotation] | None = None
     error_message: str | None = None

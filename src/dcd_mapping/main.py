@@ -11,6 +11,7 @@ from requests import HTTPError
 from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import (
     annotate,
+    compute_target_gene_info,
     save_mapped_output_json,
     write_scoreset_mapping_to_json,
 )
@@ -222,6 +223,7 @@ async def map_scoreset(
 
     _emit_info("Mapping to VRS...", silent)
     vrs_results = {}
+    gene_info = {}
     try:
         for target_gene in metadata.target_genes:
             vrs_results[target_gene] = vrs_map(
@@ -230,6 +232,14 @@ async def map_scoreset(
                 records=records[target_gene],
                 transcript=transcripts[target_gene],
                 silent=silent,
+            )
+
+            gene_info[target_gene] = await compute_target_gene_info(
+                target_gene,
+                transcripts,
+                alignment_results,
+                metadata,
+                vrs_results[target_gene],
             )
     except (
         MissingSequenceIdError,
@@ -308,6 +318,7 @@ async def map_scoreset(
             annotated_vrs_results,
             alignment_results,
             transcripts,
+            gene_info,
             prefer_genomic,
             output_path,
         )
