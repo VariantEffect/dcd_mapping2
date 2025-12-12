@@ -303,7 +303,7 @@ def _annotate_allele_mapping(
         post_mapped=post_mapped,
         vrs_version=vrs_version,
         mavedb_id=mapped_score.accession_id,
-        score=float(mapped_score.score) if mapped_score.score else None,
+        score=float(mapped_score.score) if mapped_score.score is not None else None,
         annotation_layer=mapped_score.annotation_layer,
         error_message=mapped_score.error_message,
     )
@@ -403,7 +403,9 @@ def annotate(
             score_annotations.append(
                 ScoreAnnotationWithLayer(
                     mavedb_id=mapped_score.accession_id,
-                    score=float(mapped_score.score) if mapped_score.score else None,
+                    score=float(mapped_score.score)
+                    if mapped_score.score is not None
+                    else None,
                     vrs_version=vrs_version,
                     error_message=mapped_score.error_message,
                 )
@@ -433,7 +435,9 @@ def annotate(
                     post_mapped=mapped_score.post_mapped,
                     vrs_version=vrs_version,
                     mavedb_id=mapped_score.accession_id,
-                    score=float(mapped_score.score) if mapped_score.score else None,
+                    score=float(mapped_score.score)
+                    if mapped_score.score is not None
+                    else None,
                     error_message=f"Multiple issues with annotation: Inconsistent variant structure (Allele and Haplotype mix).{' ' + mapped_score.error_message if mapped_score.error_message else ''}",
                 )
             )
