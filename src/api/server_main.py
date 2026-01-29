@@ -5,8 +5,8 @@ import uvicorn
 from fastapi import FastAPI
 
 from api.routers import map
-from dcd_mapping import dcd_mapping_version
 from application_logging import init_logging
+from dcd_mapping import dcd_mapping_version
 
 init_logging()
 _logger = logging.getLogger(__name__)
