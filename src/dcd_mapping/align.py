@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,7 +20,7 @@ from dcd_mapping.exceptions import (
     ScoresetNotSupportedError,
 )
 from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
-from dcd_mapping.mavedb_data import LOCAL_STORE_PATH
+from dcd_mapping.mavedb_data import LOCAL_STORE_PATH, patch_target_sequence_type
 from dcd_mapping.resource_utils import http_download
 from dcd_mapping.schemas import (
     AlignmentResult,
@@ -441,7 +442,7 @@ def parse_cdot_mapping(cdot_mapping: dict, silent: bool) -> AlignmentResult:
 
 def build_alignment_result(
     metadata: ScoresetMetadata, silent: bool
-) -> dict[str, AlignmentResult | None]:
+) -> Mapping[str, AlignmentResult | None]:
     # NOTE: Score set must contain all accession-based target genes or all sequence-based target genes
     # This decision was made because it is most efficient to run BLAT all together, so the alignment function
     # works on an entire score set rather than per target gene.
@@ -462,7 +463,30 @@ def build_alignment_result(
             score_set_type = "sequence"
 
     if score_set_type == "sequence":
-        alignment_result = align(metadata, silent)
+        try:
+            alignment_result = align(metadata, silent)
+        except AlignmentError as e:
+            failed_at_nucleotide_level = any(
+                target_gene.target_sequence_type == TargetSequenceType.DNA
+                for target_gene in metadata.target_genes.values()
+            )
+
+            if failed_at_nucleotide_level:
+                msg = f"BLAT alignment failed for {metadata.urn} at the nucleotide level. This alignment will be retried at the protein level."
+                _logger.warning(msg)
+            else:
+                raise AlignmentError from e
+
+            # So long as force=True, the content of the records dict is irrelevant.
+            try:
+                alignment_result = align(
+                    patch_target_sequence_type(metadata, {}, force=True), silent
+                )
+            except AlignmentError as e2:
+                msg = f"BLAT alignment failed for {metadata.urn} at the protein level after failing at the nucleotide level."
+                _logger.error(msg)
+                raise AlignmentError(msg) from e2
+
     else:
         alignment_result = fetch_alignment(metadata, silent)
 
