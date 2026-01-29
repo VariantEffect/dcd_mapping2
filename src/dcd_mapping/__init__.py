@@ -5,7 +5,11 @@ Dissemination (DCD) workstream of the Atlas of Variant Effects (AVE) Alliance.
 See the mapping manuscript for more information:
 https://www.biorxiv.org/content/10.1101/2023.06.20.545702v1
 """
+import logging
+
 from dotenv import load_dotenv
+
+from application_logging import init_logging
 
 from .main import map_scoreset, map_scoreset_urn
 from .version import dcd_mapping_version
@@ -14,3 +18,7 @@ __all__ = ["map_scoreset", "map_scoreset_urn"]
 __version__ = dcd_mapping_version
 
 load_dotenv()
+
+init_logging()
+_logger = logging.getLogger(__name__)
+_logger.info("dcd-mapping: %s", dcd_mapping_version)

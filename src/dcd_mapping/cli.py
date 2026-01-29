@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from application_logging import init_logging
 from dcd_mapping.exceptions import (
     AlignmentError,
     ResourceAcquisitionError,
@@ -14,8 +15,6 @@ from dcd_mapping.exceptions import (
 )
 from dcd_mapping.main import map_scoreset_urn
 from dcd_mapping.schemas import VrsVersion
-
-_logger = logging.getLogger(__name__)
 
 
 @click.command(no_args_is_help=True)
@@ -66,14 +65,13 @@ def cli(
     :param urn: scoreset URN
     :param debug: if True, enable debug logging
     """  # noqa: D301
-    log_level = logging.DEBUG if debug else logging.INFO
-    logging.basicConfig(
-        filename="dcd-mapping.log",
-        format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
-        level=log_level,
-        force=True,
-    )
-    _logger.debug("debug logging enabled")
+    init_logging()
+    _logger = logging.getLogger(__name__)
+
+    if debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        _logger.debug("debug logging enabled")
+
     try:
         asyncio.run(
             map_scoreset_urn(urn, output, vrs_version, prefer_genomic, silent=False)

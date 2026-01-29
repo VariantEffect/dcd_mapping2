@@ -6,13 +6,11 @@ from fastapi import FastAPI
 
 from api.routers import map
 from dcd_mapping import dcd_mapping_version
+from application_logging import init_logging
 
-logging.basicConfig(
-    format="%(levelname)s:%(name)s:%(message)s",
-    level=logging.INFO,
-    force=True,
-)
+init_logging()
 _logger = logging.getLogger(__name__)
+_logger.info("dcd-mapping API: %s", dcd_mapping_version)
 
 app = FastAPI()
 
