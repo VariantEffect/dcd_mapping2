@@ -245,6 +245,8 @@ async def _select_protein_reference(
             is_full_match=is_full_match,
             sequence=get_sequence(best_tx.refseq_prot),
             transcript_mode=best_tx.transcript_priority,
+            # Only MANE transcripts have symbols
+            hgnc_symbol=best_tx.symbol if hasattr(best_tx, "symbol") else None,
         )
 
     # If we didn't find any suitable transcript, attempt to use a provided UniProt reference
@@ -267,6 +269,7 @@ async def _select_protein_reference(
         is_full_match=is_full_match,
         sequence=protein_sequence,
         transcript_mode=None,
+        hgnc_symbol=None,
     )
 
 

@@ -11,6 +11,7 @@ Data sources/handlers include:
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 import hgvs
 import polars as pl
@@ -50,6 +51,7 @@ from gene.query import QueryHandler
 from gene.schemas import MatchType, SourceName
 
 from dcd_mapping.exceptions import DataLookupError
+from dcd_mapping.resource_utils import ENSEMBL_API_URL, request_with_backoff
 from dcd_mapping.schemas import (
     GeneLocation,
     ManeDescription,
@@ -638,6 +640,68 @@ def get_mane_transcripts(transcripts: list[str]) -> list[ManeDescription]:
         )
     mane_data.sort(key=_sort_mane_result)
     return mane_data
+
+
+# --------------------------------- Ensembl --------------------------------- #
+
+
+def get_overlapping_features_for_region(
+    chromosome: str, start: int, end: int, features: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Get genes overlapping a specific genomic region.
+
+    :param chromosome: Chromosome identifier
+    :param start: Start position of the region
+    :param end: End position of the region
+    :param features: List of features to retrieve (default is ["gene"])
+    :return: List of overlapping gene symbols
+    """
+    if not features:
+        features = ["gene"]
+        _logger.debug("No features specified, defaulting to %s", features)
+
+    chrom = get_chromosome_identifier(chromosome)
+
+    query = f"/{chrom}:{start}-{end}"
+    if features:
+        query += "?"
+    for feature in features:
+        query += f"feature={feature};"
+
+    try:
+        _logger.debug(
+            "Fetching overlapping features for region %s:%d-%d with features %s",
+            chromosome,
+            start,
+            end,
+            features,
+        )
+
+        url = f"{ENSEMBL_API_URL}/overlap/region/human{query}"
+        response = request_with_backoff(
+            url, headers={"Content-Type": "application/json"}
+        )
+        response.raise_for_status()
+    except requests.RequestException as e:
+        _logger.error(
+            "Failed to fetch overlapping features for region %s-%s on chromosome %s: %s",
+            start,
+            end,
+            chromosome,
+            e,
+        )
+        return []
+
+    overlapping_features = response.json()
+    _logger.debug(
+        "Successfully fetched %d overlapping features for region %s:%d-%d with features %s",
+        len(overlapping_features),
+        chromosome,
+        start,
+        end,
+        features,
+    )
+    return overlapping_features
 
 
 # ---------------------------------- Misc. ---------------------------------- #
