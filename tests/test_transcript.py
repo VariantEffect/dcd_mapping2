@@ -13,10 +13,25 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from cool_seq_tool.schemas import TranscriptPriority
 
 from dcd_mapping.mavedb_data import _load_scoreset_records, get_scoreset_records
-from dcd_mapping.schemas import AlignmentResult, ScoresetMetadata, TxSelectResult
-from dcd_mapping.transcripts import select_transcript
+from dcd_mapping.schemas import (
+    AlignmentResult,
+    ScoresetMetadata,
+    SequenceRange,
+    TargetGene,
+    TargetSequenceType,
+    TargetType,
+    TxSelectResult,
+)
+from dcd_mapping.transcripts import (
+    TranscriptDescription,
+    _choose_most_similar_transcript,
+    _percent_similarity,
+    _select_protein_reference,
+    select_transcript,
+)
 
 
 @pytest.fixture()
@@ -161,6 +176,148 @@ async def test_1_b_2(
     actual = await select_transcript(metadata, records, align_result)
     assert actual, "`select_transcript()` should return a transcript selection result"
     check_transcript_results_equality(actual, expected)
+
+
+# --- Similarity helper tests ---
+
+
+def make_mane(nm: str, np: str, priority: TranscriptPriority):
+    # Use generic TranscriptDescription for testing similarity logic
+    return TranscriptDescription(
+        refseq_nuc=nm, refseq_prot=np, transcript_priority=priority
+    )
+
+
+def test_percent_similarity_basic():
+    assert _percent_similarity("AAAA", "AAAA") == 1.0
+    assert _percent_similarity("AAAA", "BAAAA") == 1.0  # substring fast path
+    assert 0.0 <= _percent_similarity("ABCD", "WXYZ") <= 1.0
+
+
+def test_choose_most_similar_transcript_simple(monkeypatch):
+    # Query is most similar to NP_2
+    query = "MKTFFV"
+    seqs = {
+        "NP_1": "MKAAAA",
+        "NP_2": "MKTFFV",
+        "NP_3": "MKTYFV",
+    }
+
+    def fake_get_sequence(ac):
+        return seqs[ac]
+
+    monkeypatch.setattr("dcd_mapping.transcripts.get_sequence", fake_get_sequence)
+
+    mane_list = [
+        make_mane("NM_1", "NP_1", TranscriptPriority.MANE_PLUS_CLINICAL),
+        make_mane("NM_2", "NP_2", TranscriptPriority.MANE_SELECT),
+        make_mane("NM_3", "NP_3", TranscriptPriority.MANE_PLUS_CLINICAL),
+    ]
+
+    best = _choose_most_similar_transcript(query, mane_list)
+    assert best.refseq_prot == "NP_2"
+
+
+def test_choose_most_similar_transcript_tie_keeps_first(monkeypatch):
+    # NP_1 and NP_2 have identical sequences vs query; NP_1 should win (stable tie)
+    query = "ABCDE"
+    seqs = {
+        "NP_1": "ABCDE",
+        "NP_2": "ABCDE",
+        "NP_3": "ABCXX",
+    }
+
+    def fake_get_sequence(ac):
+        return seqs[ac]
+
+    monkeypatch.setattr("dcd_mapping.transcripts.get_sequence", fake_get_sequence)
+
+    mane_list = [
+        make_mane("NM_1", "NP_1", TranscriptPriority.MANE_PLUS_CLINICAL),
+        make_mane("NM_2", "NP_2", TranscriptPriority.MANE_SELECT),
+        make_mane("NM_3", "NP_3", TranscriptPriority.MANE_PLUS_CLINICAL),
+    ]
+
+    best = _choose_most_similar_transcript(query, mane_list)
+    assert best.refseq_prot == "NP_1"
+
+
+@pytest.mark.asyncio(scope="module")
+async def test_end_to_end_per_gene_then_similarity(monkeypatch):
+    """E2E: per-gene best via MANE priority, then global similarity among winners."""
+    # Mock compatible transcripts grouped by HGNC symbol
+    compatible = {
+        ("NM_G1_A", "G1"),
+        ("NM_G1_B", "G1"),
+        ("NM_G2_A", "G2"),
+        ("NM_G2_B", "G2"),
+    }
+
+    async def fake_get_compatible(_align_result):
+        return compatible
+
+    monkeypatch.setattr(
+        "dcd_mapping.transcripts._get_compatible_transcripts", fake_get_compatible
+    )
+
+    # MANE per gene: G1 has a MANE_SELECT; G2 no select -> plus clinical wins
+    def fake_get_mane_transcripts(tx_list):
+        s = set(tx_list)
+        if s == {"NM_G1_A", "NM_G1_B"}:
+            return [
+                make_mane("NM_G1_A", "NP_G1_A", TranscriptPriority.MANE_PLUS_CLINICAL),
+                make_mane("NM_G1_B", "NP_G1_B", TranscriptPriority.MANE_SELECT),
+            ]
+        if s == {"NM_G2_A", "NM_G2_B"}:
+            return [
+                make_mane("NM_G2_A", "NP_G2_A", TranscriptPriority.MANE_PLUS_CLINICAL),
+                make_mane(
+                    "NM_G2_B",
+                    "NP_G2_B",
+                    TranscriptPriority.LONGEST_COMPATIBLE_REMAINING,
+                ),
+            ]
+        return []
+
+    monkeypatch.setattr(
+        "dcd_mapping.transcripts.get_mane_transcripts", fake_get_mane_transcripts
+    )
+
+    # Sequence database: make query closest to NP_G2_A (G2 winner)
+    seqs = {
+        "NP_G1_A": "MKAAAA",
+        "NP_G1_B": "MKBBBB",
+        "NP_G2_A": "MKTFFV",
+        "NP_G2_B": "MKTYFV",
+    }
+
+    def fake_get_sequence(ac):
+        return seqs[ac]
+
+    monkeypatch.setattr("dcd_mapping.transcripts.get_sequence", fake_get_sequence)
+
+    # Build target gene and minimal align result
+    query = "MKTFFV"
+    target_gene = TargetGene(
+        target_gene_name="Dummy",
+        target_gene_category=TargetType.PROTEIN_CODING,
+        target_sequence=query,
+        target_sequence_type=TargetSequenceType.PROTEIN,
+    )
+
+    align_result = AlignmentResult(
+        chrom="chr1",
+        strand=1,
+        coverage=None,
+        ident_pct=None,
+        query_range=SequenceRange(start=1, end=6),
+        query_subranges=[SequenceRange(start=1, end=6)],
+        hit_range=SequenceRange(start=1, end=6),
+        hit_subranges=[SequenceRange(start=1, end=6)],
+    )
+
+    tx = await _select_protein_reference(target_gene, align_result)
+    assert tx.np == "NP_G2_A"
 
 
 @pytest.mark.asyncio(scope="module")

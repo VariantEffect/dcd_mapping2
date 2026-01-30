@@ -1,4 +1,5 @@
 """"Provide mapping router"""
+import logging
 from pathlib import Path
 
 from cool_seq_tool.schemas import AnnotationLayer
@@ -47,6 +48,8 @@ router = APIRouter(
     prefix="/api/v1", tags=["mappings"], responses={404: {"description": "Not found"}}
 )
 
+_logger = logging.getLogger(__name__)
+
 
 @router.post(path="/map/{urn}", status_code=200, response_model=ScoresetMapping)
 @with_mavedb_score_set
@@ -59,7 +62,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
     try:
         metadata = get_scoreset_metadata(urn, store_path)
         records = get_scoreset_records(metadata, True, store_path)
-        metadata = patch_target_sequence_type(metadata, records)
+        metadata = patch_target_sequence_type(metadata, records, force=False)
     except ScoresetNotSupportedError as e:
         return JSONResponse(
             content=ScoresetMapping(

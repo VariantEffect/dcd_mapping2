@@ -842,6 +842,7 @@ def _construct_vrs_allele(
 ) -> Allele | Haplotype:
     alleles: list[Allele] = []
     for hgvs_string in hgvs_strings:
+        _logger.info("Processing HGVS string: %s", hgvs_string)
         allele = translate_hgvs_to_vrs(hgvs_string)
 
         if pre_map:

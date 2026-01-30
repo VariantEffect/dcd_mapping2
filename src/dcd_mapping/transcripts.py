@@ -1,7 +1,9 @@
 """Select best reference sequence."""
 import logging
 import re
+from collections.abc import Mapping
 
+from Bio import Align
 from Bio.Data.CodonTable import IUPACData
 from Bio.Seq import Seq
 from Bio.SeqUtils import seq1
@@ -10,7 +12,6 @@ from cool_seq_tool.schemas import TranscriptPriority
 from dcd_mapping.exceptions import TxSelectError
 from dcd_mapping.lookup import (
     get_chromosome_identifier,
-    get_gene_symbol,
     get_mane_transcripts,
     get_protein_accession,
     get_seqrepo,
@@ -36,46 +37,85 @@ _logger = logging.getLogger(__name__)
 
 
 async def _get_compatible_transcripts(
-    target_gene: TargetGene, align_result: AlignmentResult
-) -> list[list[str]]:
-    """Acquire matching transcripts
+    align_result: AlignmentResult,
+) -> set[tuple[str, str]]:
+    """Acquire transcripts and their HGNC symbols which overlap with all hit subranges
+    of an alignment result.
 
     :param metadata: metadata for scoreset
     :param align_result: output of ``align()`` method
-    :return: List of list of compatible transcripts
+    :return: Set of compatible transcripts
     """
-    if align_result.chrom.startswith("chr"):
-        aligned_chrom = align_result.chrom[3:]
-    else:
-        aligned_chrom = align_result.chrom
+    aligned_chrom = (
+        align_result.chrom[3:]
+        if align_result.chrom.startswith("chr")
+        else align_result.chrom
+    )
     chromosome = get_chromosome_identifier(aligned_chrom)
-    gene_symbol = get_gene_symbol(target_gene)
-    if not gene_symbol:
-        msg = (
-            f"Unable to find gene symbol for target gene {target_gene.target_gene_name}"
-        )
-        raise TxSelectError(msg)
-    transcript_matches = []
+
+    transcript_matches: set[tuple[str, str]] = set()
     for hit_range in align_result.hit_subranges:
-        matches_list = await get_transcripts(
-            gene_symbol, chromosome, hit_range.start, hit_range.end
-        )
-        if matches_list:
-            transcript_matches.append(matches_list)
+        matches_list = await get_transcripts(chromosome, hit_range.start, hit_range.end)
+        if not transcript_matches:
+            transcript_matches = set(matches_list)
+
+        transcript_matches.intersection_update(matches_list)
+
     return transcript_matches
 
 
-def _reduce_compatible_transcripts(matching_transcripts: list[list[str]]) -> list[str]:
-    """Reduce list of list of transcripts to a list containing only entries present
-    in each sublist
+def _local_alignment_identity(query: str, ref: str) -> float:
+    """Compute local alignment percent identity between two protein sequences.
 
-    :param matching_transcripts: list of list of transcript accession IDs
-    :return: list of transcripts shared by all sublists
+    Uses Smith-Waterman local alignment with BLOSUM62; gap open -10, gap extend -0.5.
+    Returns alignment score, or -1000 if either sequence is empty.
     """
-    common_transcripts_set = set(matching_transcripts[0])
-    for sublist in matching_transcripts[1:]:
-        common_transcripts_set.intersection_update(sublist)
-    return list(common_transcripts_set)
+    if not query or not ref:
+        return -1000
+
+    aligner = Align.PairwiseAligner(
+        mode="local",
+        substitution_matrix=Align.substitution_matrices.load("BLOSUM62"),
+        open_gap_score=-10,
+        extend_gap_score=-0.5,
+    )
+
+    try:
+        alignments = aligner.align(query, ref)
+    except Exception as e:
+        # Do not fallback to approximate similarity; propagate failure
+        msg = f"Local alignment failed: {e}"
+        raise TxSelectError(msg) from e
+
+    if not alignments:
+        return -1000
+
+    return alignments[0].score
+
+
+def _choose_most_similar_transcript(
+    protein_sequence: str, mane_transcripts: list[TranscriptDescription]
+) -> TranscriptDescription | None:
+    """Choose the transcript whose protein reference is most similar to the
+    provided sequence.
+
+    Selects the highest similarity; ties keep first encountered (stable).
+    """
+    if not mane_transcripts:
+        return None
+    if len(mane_transcripts) == 1:
+        return mane_transcripts[0]
+
+    best: TranscriptDescription | None = None
+    best_score = -1.0
+    for tx in mane_transcripts:
+        ref_seq = get_sequence(tx.refseq_prot)
+        score = _local_alignment_identity(protein_sequence, ref_seq)
+        if score > best_score:
+            best_score = score
+            best = tx
+
+    return best
 
 
 def _choose_best_mane_transcript(
@@ -156,50 +196,80 @@ async def _select_protein_reference(
     :raise TxSelectError: if no matching MANE transcripts and unable to get UniProt ID/
     reference sequence
     """
-    matching_transcripts = await _get_compatible_transcripts(target_gene, align_result)
-    if not matching_transcripts:
-        common_transcripts = None
-    else:
-        common_transcripts = _reduce_compatible_transcripts(matching_transcripts)
-    if not common_transcripts:
-        if not target_gene.target_uniprot_ref:
-            msg = f"Unable to find matching transcripts for target gene {target_gene.target_gene_name}"
-            raise TxSelectError(msg)
-        protein_sequence = get_uniprot_sequence(target_gene.target_uniprot_ref.id)
-        np_accession = target_gene.target_uniprot_ref.id
-        ref_sequence = get_uniprot_sequence(target_gene.target_uniprot_ref.id)
-        if not ref_sequence:
-            msg = f"Unable to grab reference sequence from uniprot.org for target gene {target_gene.target_gene_name}"
-            raise TxSelectError(msg)
-        nm_accession = None
-        tx_mode = None
-        hgnc_symbol = None
-    else:
-        mane_transcripts = get_mane_transcripts(common_transcripts)
-        best_tx = _choose_best_mane_transcript(mane_transcripts)
-        if not best_tx:
-            best_tx = await _get_longest_compatible_transcript(common_transcripts)
-        if not best_tx:
-            msg = f"Unable to find matching MANE transcripts for target gene {target_gene.target_gene_name}"
-            raise TxSelectError(msg)
-        ref_sequence = get_sequence(best_tx.refseq_prot)
-        nm_accession = best_tx.refseq_nuc
-        np_accession = best_tx.refseq_prot
-        tx_mode = best_tx.transcript_priority
-        hgnc_symbol = best_tx.symbol
+    matching_transcripts = await _get_compatible_transcripts(align_result)
 
-    protein_sequence = _get_protein_sequence(target_gene.target_sequence)
-    is_full_match = ref_sequence.find(protein_sequence) != -1
-    start = ref_sequence.find(protein_sequence[:10])
+    # Map HGNC symbols to their compatible transcripts
+    hgnc_to_transcripts: dict[str, list[str]] = {}
+    for tx, hgnc in matching_transcripts:
+        hgnc_to_transcripts.setdefault(hgnc, []).append(tx)
+
+    per_gene_best: list[ManeDescription | TranscriptDescription] = []
+    best_tx: ManeDescription | TranscriptDescription | None = None
+
+    # Choose one best transcript per gene (based on MANE priority, falling back to longest)
+    for _, transcripts in hgnc_to_transcripts.items():
+        if not transcripts:
+            continue
+
+        mane_transcripts = get_mane_transcripts(transcripts)
+        best_tx = _choose_best_mane_transcript(mane_transcripts)
+
+        if not best_tx:
+            best_tx = await _get_longest_compatible_transcript(transcripts)
+
+        if best_tx:
+            per_gene_best.append(best_tx)
+
+    # If we found any per-gene best candidates, Step 2: choose the most similar among them and
+    # select it.
+    if per_gene_best:
+        if not target_gene.target_sequence:
+            msg = f"Unable to find target sequence for target gene {target_gene.target_gene_name}"
+            raise TxSelectError(msg)
+
+        protein_sequence = _get_protein_sequence(target_gene.target_sequence)
+        best_tx = _choose_most_similar_transcript(protein_sequence, per_gene_best)
+
+        # As a fallback, pick the first candidate
+        if not best_tx:
+            best_tx = per_gene_best[0]
+
+        ref_sequence = get_sequence(best_tx.refseq_prot)
+        is_full_match = ref_sequence.find(protein_sequence) != -1
+        start = ref_sequence.find(protein_sequence[:10])
+
+        return TxSelectResult(
+            nm=best_tx.refseq_nuc,
+            np=best_tx.refseq_prot,
+            start=start,
+            is_full_match=is_full_match,
+            sequence=get_sequence(best_tx.refseq_prot),
+            transcript_mode=best_tx.transcript_priority,
+            # Only MANE transcripts have symbols
+            hgnc_symbol=best_tx.symbol if hasattr(best_tx, "symbol") else None,
+        )
+
+    # If we didn't find any suitable transcript, attempt to use a provided UniProt reference
+    if not target_gene.target_uniprot_ref:
+        msg = f"Unable to find matching transcripts for target gene {target_gene.target_gene_name}"
+        raise TxSelectError(msg)
+
+    uniprot_sequence = get_uniprot_sequence(target_gene.target_uniprot_ref.id)
+    if not uniprot_sequence:
+        msg = f"Unable to grab reference sequence from uniprot.org for target gene {target_gene.target_gene_name}"
+        raise TxSelectError(msg)
+
+    is_full_match = uniprot_sequence.find(protein_sequence) != -1
+    start = uniprot_sequence.find(protein_sequence[:10])
 
     return TxSelectResult(
-        nm=nm_accession,
-        np=np_accession,
+        nm=None,
+        np=target_gene.target_uniprot_ref.id,
         start=start,
         is_full_match=is_full_match,
         sequence=protein_sequence,
-        transcript_mode=tx_mode,
-        hgnc_symbol=hgnc_symbol,
+        transcript_mode=None,
+        hgnc_symbol=None,
     )
 
 
@@ -348,7 +418,7 @@ async def select_transcript(
 async def select_transcripts(
     scoreset_metadata: ScoresetMetadata,
     records: dict[str, list[ScoreRow]],
-    align_results: dict[str, AlignmentResult | None],
+    align_results: Mapping[str, AlignmentResult | None],
 ) -> dict[str, TxSelectResult | Exception | None]:
     """Select appropriate human reference sequence for each target in a score set.
     :param scoreset_metadata: Metadata for score set from MaveDB API
