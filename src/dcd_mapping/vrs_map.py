@@ -1,6 +1,7 @@
 """Map transcripts to VRS objects."""
 
 import logging
+import os
 from collections.abc import Iterable
 from itertools import cycle
 
@@ -49,7 +50,7 @@ __all__ = ["vrs_map"]
 
 _logger = logging.getLogger(__name__)
 
-CLINGEN_API_URL = "https://reg.genome.network/allele"
+CLINGEN_API_URL = os.environ.get("CLINGEN_API_URL", "https://reg.genome.network/allele")
 
 
 def _hgvs_variant_is_valid(hgvs_string: str) -> bool:
@@ -95,6 +96,10 @@ def fetch_clingen_genomic_hgvs(hgvs: str) -> str | None:
     :param hgvs: The HGVS string to fetch
     :return: The genomic HGVS string on GRCh38, or None if not found
     """
+    if CLINGEN_API_URL is None:
+        msg = "CLINGEN_API_URL environment variable is not set and default is unavailable."
+        _logger.error(msg)
+        raise ValueError(msg)
     response = requests.get(f"{CLINGEN_API_URL}?hgvs={hgvs}", timeout=30)
     try:
         response.raise_for_status()
