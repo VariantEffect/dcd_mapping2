@@ -51,7 +51,7 @@ from gene.query import QueryHandler
 from gene.schemas import MatchType, SourceName
 
 from dcd_mapping.exceptions import DataLookupError
-from dcd_mapping.resource_utils import ENSEMBL_API_URL, request_with_backoff
+from dcd_mapping.resource_utils import CDOT_URL, ENSEMBL_API_URL, request_with_backoff
 from dcd_mapping.schemas import (
     GeneLocation,
     ManeDescription,
@@ -90,7 +90,7 @@ def seqfetcher() -> ChainedSeqFetcher:
 
 
 def cdot_rest() -> RESTDataProvider:
-    return RESTDataProvider(seqfetcher=seqfetcher())
+    return RESTDataProvider(url=CDOT_URL, seqfetcher=seqfetcher())
 
 
 # ---------------------------------- Global ---------------------------------- #
