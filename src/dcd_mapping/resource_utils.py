@@ -1,10 +1,14 @@
 """Provide basic utilities for fetching and storing external data."""
+import logging
 import os
+import time
 from pathlib import Path
 
 import click
 import requests
 from tqdm import tqdm
+
+_logger = logging.getLogger(__name__)
 
 MAVEDB_API_KEY = os.environ.get("MAVEDB_API_KEY")
 MAVEDB_BASE_URL = os.environ.get("MAVEDB_BASE_URL")
@@ -57,3 +61,36 @@ def http_download(url: str, out_path: Path, silent: bool = True) -> Path:
                     if chunk:
                         h.write(chunk)
     return out_path
+
+
+def request_with_backoff(
+    method: str, url: str, backoff_limit: int = 5, backoff_wait: int = 10, **kwargs
+) -> requests.Response:
+    """Make HTTP request with exponential backoff on failure.
+    This is a duplicate of the function with same name in MaveDB API codebase.
+
+    :param method: HTTP method (e.g., 'GET', 'POST')
+    :param url: URL to make request to
+    :param backoff_limit: number of retry attempts
+    :param backoff_wait: initial wait time between retries (in seconds)
+    :param kwargs: additional keyword arguments to pass to the request
+    :return: Response object from the successful request
+    """
+    attempt = 0
+    while attempt <= backoff_limit:
+        msg = f"Attempt {attempt+1} of {backoff_limit} for {method} {url}"
+        _logger.debug(msg)
+        try:
+            response = requests.request(method=method, url=url, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as exc:
+            msg = f"Request to {url} failed on attempt {attempt+1}."
+            _logger.warning(msg, exc_info=exc)
+            backoff_time = backoff_wait * (2**attempt)
+            attempt += 1
+            msg = f"Waiting {backoff_time} seconds before retrying."
+            _logger.info(msg)
+            time.sleep(backoff_time)
+    msg = f"Request to {url} failed after {backoff_limit} attempts."
+    raise requests.exceptions.RequestException(msg)

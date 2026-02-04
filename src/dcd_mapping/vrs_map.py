@@ -5,7 +5,6 @@ import os
 from collections.abc import Iterable
 from itertools import cycle
 
-import requests
 from Bio.Seq import Seq
 from bioutils.accessions import infer_namespace
 from cool_seq_tool.schemas import AnnotationLayer, Strand
@@ -24,7 +23,6 @@ from mavehgvs.variant import Variant
 
 from dcd_mapping.exceptions import (
     MissingSequenceIdError,
-    ResourceAcquisitionError,
     UnsupportedReferenceSequenceNameSpaceError,
     UnsupportedReferenceSequencePrefixError,
 )
@@ -34,6 +32,7 @@ from dcd_mapping.lookup import (
     get_seqrepo,
     translate_hgvs_to_vrs,
 )
+from dcd_mapping.resource_utils import request_with_backoff
 from dcd_mapping.schemas import (
     AlignmentResult,
     MappedScore,
@@ -100,13 +99,7 @@ def fetch_clingen_genomic_hgvs(hgvs: str) -> str | None:
         msg = "CLINGEN_API_URL environment variable is not set and default is unavailable."
         _logger.error(msg)
         raise ValueError(msg)
-    response = requests.get(f"{CLINGEN_API_URL}?hgvs={hgvs}", timeout=30)
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        msg = f"Received HTTPError from {CLINGEN_API_URL} for HGVS {hgvs}"
-        _logger.error(msg)
-        raise ResourceAcquisitionError(msg) from e
+    response = request_with_backoff("GET", f"{CLINGEN_API_URL}?hgvs={hgvs}", timeout=30)
     if response.status_code == 200:
         data = response.json()
         for allele in data.get("genomicAlleles", []):
