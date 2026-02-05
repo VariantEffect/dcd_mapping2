@@ -32,7 +32,7 @@ from dcd_mapping.lookup import (
     get_seqrepo,
     translate_hgvs_to_vrs,
 )
-from dcd_mapping.resource_utils import request_with_backoff
+from dcd_mapping.resource_utils import CDOT_URL, request_with_backoff
 from dcd_mapping.schemas import (
     AlignmentResult,
     MappedScore,
@@ -808,7 +808,7 @@ def store_accession(
 ) -> None:
     namespace = infer_namespace(accession_id)
     alias_dict_list = [{"namespace": namespace, "alias": accession_id}]
-    cd = cdot_rest()
+    cd = cdot_rest(url=CDOT_URL)
     sequence = cd.get_seq(accession_id)
     sr = get_seqrepo()
     sr.sr.store(sequence, alias_dict_list)
@@ -879,6 +879,7 @@ def _construct_vrs_allele(
 ) -> Allele | Haplotype:
     alleles: list[Allele] = []
     for hgvs_string in hgvs_strings:
+        _logger.info("Processing HGVS string: %s", hgvs_string)
         allele = translate_hgvs_to_vrs(hgvs_string)
 
         if pre_map:

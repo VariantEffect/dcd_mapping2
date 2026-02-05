@@ -12,6 +12,8 @@ _logger = logging.getLogger(__name__)
 
 MAVEDB_API_KEY = os.environ.get("MAVEDB_API_KEY")
 MAVEDB_BASE_URL = os.environ.get("MAVEDB_BASE_URL")
+ENSEMBL_API_URL = os.environ.get("ENSEMBL_API_URL", "https://rest.ensembl.org")  # TODO
+CDOT_URL = os.environ.get("CDOT_URL", "cdot-rest:8000")
 
 LOCAL_STORE_PATH = Path(
     os.environ.get(
@@ -64,33 +66,64 @@ def http_download(url: str, out_path: Path, silent: bool = True) -> Path:
 
 
 def request_with_backoff(
-    method: str, url: str, backoff_limit: int = 5, backoff_wait: int = 10, **kwargs
+    url: str, max_retries: int = 5, backoff_factor: float = 0.3, **kwargs
 ) -> requests.Response:
-    """Make HTTP request with exponential backoff on failure.
-    This is a duplicate of the function with same name in MaveDB API codebase.
+    """HTTP GET with exponential backoff only for retryable errors.
 
-    :param method: HTTP method (e.g., 'GET', 'POST')
-    :param url: URL to make request to
-    :param backoff_limit: number of retry attempts
-    :param backoff_wait: initial wait time between retries (in seconds)
-    :param kwargs: additional keyword arguments to pass to the request
-    :return: Response object from the successful request
+    Retries on:
+    - Connection timeout or connection errors
+    - HTTP 5xx server errors
+    - HTTP 429 rate limiting (respecting Retry-After when present)
+
+    Immediately raises on other HTTP errors (e.g., 4xx client errors).
     """
     attempt = 0
-    while attempt <= backoff_limit:
-        msg = f"Attempt {attempt+1} of {backoff_limit} for {method} {url}"
-        _logger.debug(msg)
+    while attempt < max_retries:
         try:
-            response = requests.request(method=method, url=url, **kwargs)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.RequestException as exc:
-            msg = f"Request to {url} failed on attempt {attempt+1}."
-            _logger.warning(msg, exc_info=exc)
-            backoff_time = backoff_wait * (2**attempt)
+            response = requests.get(url, timeout=60, **kwargs)
+        except (requests.Timeout, requests.ConnectionError):
+            # Retry on transient network failures
+            if attempt == max_retries - 1:
+                raise
+            sleep_time = backoff_factor * (2**attempt)
+            time.sleep(sleep_time)
             attempt += 1
-            msg = f"Waiting {backoff_time} seconds before retrying."
-            _logger.info(msg)
-            time.sleep(backoff_time)
-    msg = f"Request to {url} failed after {backoff_limit} attempts."
-    raise requests.exceptions.RequestException(msg)
+            continue
+
+        # If we have a response, decide retry based on status code
+        status = response.status_code
+        if 200 <= status < 300:
+            return response
+
+        # 429: Too Many Requests — optionally use Retry-After
+        if status == 429:
+            if attempt == max_retries - 1:
+                response.raise_for_status()
+            retry_after = response.headers.get("Retry-After")
+            try:
+                sleep_time = (
+                    float(retry_after)
+                    if retry_after is not None
+                    else backoff_factor * (2**attempt)
+                )
+            except ValueError:
+                sleep_time = backoff_factor * (2**attempt)
+            time.sleep(sleep_time)
+            attempt += 1
+            continue
+
+        # 5xx: server errors — retry
+        if 500 <= status < 600:
+            if attempt == max_retries - 1:
+                response.raise_for_status()
+            sleep_time = backoff_factor * (2**attempt)
+            time.sleep(sleep_time)
+            attempt += 1
+            continue
+
+        # Non-retryable (e.g., 4xx other than 429): raise immediately
+        response.raise_for_status()
+
+    # Exhausted retries without success
+    msg = f"Failed to fetch {url} after {max_retries} attempts"
+    raise Exception(msg)
