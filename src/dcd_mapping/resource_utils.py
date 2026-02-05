@@ -10,6 +10,7 @@ from tqdm import tqdm
 MAVEDB_API_KEY = os.environ.get("MAVEDB_API_KEY")
 MAVEDB_BASE_URL = os.environ.get("MAVEDB_BASE_URL")
 ENSEMBL_API_URL = os.environ.get("ENSEMBL_API_URL", "https://rest.ensembl.org")  # TODO
+CDOT_URL = os.environ.get("CDOT_URL", "cdot-rest:8000")
 
 LOCAL_STORE_PATH = Path(
     os.environ.get(

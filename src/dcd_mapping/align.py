@@ -21,7 +21,7 @@ from dcd_mapping.exceptions import (
 )
 from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
 from dcd_mapping.mavedb_data import LOCAL_STORE_PATH, patch_target_sequence_type
-from dcd_mapping.resource_utils import http_download
+from dcd_mapping.resource_utils import CDOT_URL, http_download
 from dcd_mapping.schemas import (
     AlignmentResult,
     GeneLocation,
@@ -377,7 +377,7 @@ def fetch_alignment(
         if accession_id.startswith(("NP", "ENSP", "NC_")):
             alignment_results[accession_id] = None
         else:
-            url = f"https://cdot.cc/transcript/{accession_id}"
+            url = f"{CDOT_URL}/transcript/{accession_id}"
             r = requests.get(url, timeout=30)
 
             try:
