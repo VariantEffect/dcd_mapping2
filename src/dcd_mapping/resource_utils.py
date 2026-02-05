@@ -1,4 +1,5 @@
 """Provide basic utilities for fetching and storing external data."""
+import logging
 import os
 import time
 from pathlib import Path
@@ -6,6 +7,8 @@ from pathlib import Path
 import click
 import requests
 from tqdm import tqdm
+
+_logger = logging.getLogger(__name__)
 
 MAVEDB_API_KEY = os.environ.get("MAVEDB_API_KEY")
 MAVEDB_BASE_URL = os.environ.get("MAVEDB_BASE_URL")

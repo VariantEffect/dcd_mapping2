@@ -1,6 +1,7 @@
 """Map transcripts to VRS objects."""
 
 import logging
+import os
 from collections.abc import Iterable
 from itertools import cycle
 
@@ -31,7 +32,7 @@ from dcd_mapping.lookup import (
     get_seqrepo,
     translate_hgvs_to_vrs,
 )
-from dcd_mapping.resource_utils import CDOT_URL
+from dcd_mapping.resource_utils import CDOT_URL, request_with_backoff
 from dcd_mapping.schemas import (
     AlignmentResult,
     MappedScore,
@@ -47,6 +48,8 @@ __all__ = ["vrs_map"]
 
 
 _logger = logging.getLogger(__name__)
+
+CLINGEN_API_URL = os.environ.get("CLINGEN_API_URL", "https://reg.genome.network/allele")
 
 
 def _hgvs_variant_is_valid(hgvs_string: str) -> bool:
@@ -84,6 +87,27 @@ def is_intronic_variant(variant: Variant) -> bool:
             return True
 
     return False
+
+
+def fetch_clingen_genomic_hgvs(hgvs: str) -> str | None:
+    """Fetch the genomic HGVS string from ClinGen.
+
+    :param hgvs: The HGVS string to fetch
+    :return: The genomic HGVS string on GRCh38, or None if not found
+    """
+    if CLINGEN_API_URL is None:
+        msg = "CLINGEN_API_URL environment variable is not set and default is unavailable."
+        _logger.error(msg)
+        raise ValueError(msg)
+    response = request_with_backoff("GET", f"{CLINGEN_API_URL}?hgvs={hgvs}", timeout=30)
+    if response.status_code == 200:
+        data = response.json()
+        for allele in data.get("genomicAlleles", []):
+            if allele.get("referenceGenome") == "GRCh38":
+                for coordinates in allele.get("hgvs", []):
+                    if coordinates.startswith("NC_"):
+                        return coordinates
+    return None
 
 
 def _create_pre_mapped_hgvs_strings(
@@ -156,6 +180,7 @@ def _create_post_mapped_hgvs_strings(
     layer: AnnotationLayer,
     tx: TxSelectResult | None = None,
     alignment: AlignmentResult | None = None,
+    accession_id: str | None = None,
 ) -> list[str]:
     """Generate a list of (post-mapped) HGVS strings from one long string containing many valid HGVS substrings.
 
@@ -167,13 +192,14 @@ def _create_post_mapped_hgvs_strings(
     :param layer: An enum denoting the targeted annotation layer of these HGVS strings
     :param tx: A TxSelectResult object defining the transcript we are mapping to (or None)
     :param alignment: An AlignmentResult object defining the alignment we are mapping to (or None)
+    :param accession_id: An accession id describing the reference sequence (or None). Only used for accession-based variants.
     :return: A list of HGVS strings relative to the `tx` or `alignment`
     """
     if layer is AnnotationLayer.PROTEIN and tx is None:
         msg = f"Transcript result must be provided for {layer} annotations (Transcript was `{tx}`)."
         raise ValueError(msg)
-    if layer is AnnotationLayer.GENOMIC and alignment is None:
-        msg = f"Alignment result must be provided for {layer} annotations (Alignment was `{alignment}`)."
+    if layer is AnnotationLayer.GENOMIC and alignment is None and accession_id is None:
+        msg = f"Alignment result or accession ID must be provided for {layer} annotations (Alignment was `{alignment}` and Accession ID was `{accession_id}`)."
         raise ValueError(msg)
 
     raw_variants = _parse_raw_variant_str(raw_description)
@@ -197,12 +223,22 @@ def _create_post_mapped_hgvs_strings(
             variant = _adjust_protein_variant_to_ref(variant, tx)
             hgvs_strings.append(tx.np + ":" + str(variant))
         elif layer is AnnotationLayer.GENOMIC:
-            assert alignment  # noqa: S101. mypy help
+            if accession_id:
+                pre_mapped_hgvs = accession_id + ":" + str(variant)
+                # use ClinGen to align accession-based variants to genomic reference
+                genomic_hgvs = fetch_clingen_genomic_hgvs(pre_mapped_hgvs)
+                if genomic_hgvs:
+                    hgvs_strings.append(genomic_hgvs)
+                else:
+                    msg = f"Could not fetch genomic HGVS on GRCh38 for accession-based variant: {pre_mapped_hgvs}"
+                    raise ValueError(msg)
+            else:
+                assert alignment  # noqa: S101. mypy help
 
-            variant = _adjust_genomic_variant_to_ref(variant, alignment)
-            hgvs_strings.append(
-                get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
-            )
+                variant = _adjust_genomic_variant_to_ref(variant, alignment)
+                hgvs_strings.append(
+                    get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
+                )
         else:
             msg = (
                 f"Could not generate HGVS strings for invalid AnnotationLayer: {layer}"
@@ -540,7 +576,7 @@ def _map_genomic(
             post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
                 row.hgvs_nt,
                 AnnotationLayer.GENOMIC,
-                alignment=align_result,
+                accession_id=sequence_id,
             )
             post_mapped_genomic = _construct_vrs_allele(
                 post_mapped_hgvs_strings,
