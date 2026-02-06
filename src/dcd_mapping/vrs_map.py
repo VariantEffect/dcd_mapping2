@@ -99,7 +99,7 @@ def fetch_clingen_genomic_hgvs(hgvs: str) -> str | None:
         msg = "CLINGEN_API_URL environment variable is not set and default is unavailable."
         _logger.error(msg)
         raise ValueError(msg)
-    response = request_with_backoff("GET", f"{CLINGEN_API_URL}?hgvs={hgvs}", timeout=30)
+    response = request_with_backoff(url=f"{CLINGEN_API_URL}?hgvs={hgvs}", timeout=30)
     if response.status_code == 200:
         data = response.json()
         for allele in data.get("genomicAlleles", []):

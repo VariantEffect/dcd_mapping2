@@ -80,7 +80,8 @@ def request_with_backoff(
     attempt = 0
     while attempt < max_retries:
         try:
-            response = requests.get(url, timeout=60, **kwargs)
+            kwargs.setdefault("timeout", 60)  # Default timeout of 10 seconds
+            response = requests.get(url, **kwargs)  # noqa: S113
         except (requests.Timeout, requests.ConnectionError):
             # Retry on transient network failures
             if attempt == max_retries - 1:
