@@ -47,7 +47,8 @@ dependencies = [
     "mavehgvs==0.6.1",
     "fastapi",
     "starlette",
-    "uvicorn"
+    "uvicorn",
+    "polars<1.38.0"
 ]
 dynamic = ["version"]
 
