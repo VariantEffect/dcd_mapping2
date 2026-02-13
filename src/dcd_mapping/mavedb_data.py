@@ -27,6 +27,7 @@ from dcd_mapping.resource_utils import (
     MAVEDB_BASE_URL,
     authentication_header,
     http_download,
+    is_missing_value,
 )
 from dcd_mapping.schemas import (
     ScoreRow,
@@ -246,13 +247,13 @@ def _load_scoreset_records(
     with path.open() as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            if row["score"] == "NA":
+            if is_missing_value(row["score"]):
                 row["score"] = None
             else:
                 row["score"] = row["score"]
-            if row["hgvs_nt"] != "NA":
+            if not is_missing_value(row["hgvs_nt"]):
                 prefix = row["hgvs_nt"].split(":")[0] if ":" in row["hgvs_nt"] else None
-            elif row["hgvs_pro"] != "NA":
+            elif not is_missing_value(row["hgvs_pro"]):
                 prefix = (
                     row["hgvs_pro"].split(":")[0] if ":" in row["hgvs_pro"] else None
                 )
