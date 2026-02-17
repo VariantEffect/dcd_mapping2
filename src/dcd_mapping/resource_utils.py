@@ -10,6 +10,25 @@ from tqdm import tqdm
 
 _logger = logging.getLogger(__name__)
 
+# Common representations of missing/null data in CSV files
+MISSING_VALUE_REPRESENTATIONS = frozenset(
+    {
+        "NA",
+        "N/A",
+        "na",
+        "n/a",
+        "NaN",
+        "nan",
+        "null",
+        "NULL",
+        "None",
+        "none",
+        "",
+        "-",
+        ".",
+    }
+)
+
 MAVEDB_API_KEY = os.environ.get("MAVEDB_API_KEY")
 MAVEDB_BASE_URL = os.environ.get("MAVEDB_BASE_URL")
 ENSEMBL_API_URL = os.environ.get("ENSEMBL_API_URL", "https://rest.ensembl.org")  # TODO
@@ -22,6 +41,22 @@ LOCAL_STORE_PATH = Path(
 )
 if not LOCAL_STORE_PATH.exists():
     LOCAL_STORE_PATH.mkdir(exist_ok=True, parents=True)
+
+
+def is_missing_value(value: str | None) -> bool:
+    """Check if a value represents missing/null data.
+
+    This function recognizes multiple common representations of missing data
+    that may appear in CSV files from external sources, making the codebase
+    more resilient to upstream changes in NA representation.
+
+    :param value: The value to check
+    :return: True if the value represents missing data, False otherwise
+    """
+    if value is None:
+        return True
+    # Strip whitespace and check against known missing value representations
+    return value.strip() in MISSING_VALUE_REPRESENTATIONS
 
 
 def authentication_header() -> dict | None:
