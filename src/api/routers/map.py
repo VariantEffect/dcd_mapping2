@@ -5,7 +5,7 @@ from pathlib import Path
 from cool_seq_tool.schemas import AnnotationLayer
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from requests import HTTPError
+from httpx import HTTPStatusError
 
 from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import (
@@ -117,7 +117,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
     # on the target level and on the variant level for variants relative to that target
     # HTTPErrors and DataLookupErrors cause the mapping process to exit because these indicate
     # underlying issues with data providers.
-    except HTTPError as e:
+    except HTTPStatusError as e:
         msg = f"HTTP error occurred during transcript selection: {e}"
         _logger.error(msg)
         raise HTTPException(status_code=500, detail=msg) from e

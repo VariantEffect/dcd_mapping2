@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import click
-from requests import HTTPError
+from httpx import HTTPStatusError
 
 from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import (
@@ -205,7 +205,7 @@ async def map_scoreset(
     # on the target level and on the variant level for variants relative to that target
     # HTTPErrors and DataLookupErrors cause the mapping process to exit because these indicate
     # underlying issues with data providers.
-    except HTTPError as e:
+    except HTTPStatusError as e:
         _emit_info(
             f"HTTP error occurred during transcript selection: {e}",
             silent,

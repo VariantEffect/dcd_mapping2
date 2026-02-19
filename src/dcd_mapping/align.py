@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
+import httpx
 from Bio.SearchIO import HSP
 from Bio.SearchIO import parse as parse_blat
 from Bio.SearchIO._model import Hit, QueryResult
@@ -84,7 +84,7 @@ def get_ref_genome_file(
     if not genome_file.exists():
         try:
             http_download(url, genome_file, silent)
-        except requests.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             msg = f"HTTPError when fetching reference genome file from {url}"
             _logger.error(msg)
             raise ResourceAcquisitionError(msg) from e
@@ -378,11 +378,11 @@ def fetch_alignment(
             alignment_results[accession_id] = None
         else:
             url = f"{CDOT_URL}/transcript/{accession_id}"
-            r = requests.get(url, timeout=30)
+            r = httpx.get(url, timeout=30)
 
             try:
                 r.raise_for_status()
-            except requests.HTTPError as e:
+            except httpx.HTTPStatusError as e:
                 msg = f"Received HTTPError from {url} for scoreset {metadata.urn}"
                 _logger.error(msg)
                 raise ResourceAcquisitionError(msg) from e
