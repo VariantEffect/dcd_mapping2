@@ -33,7 +33,6 @@ requires-python = ">=3.11"
 
 dependencies = [
     "agct~=0.1.0",
-    "requests",
     "biopython",
     "tqdm",
     "cdot",
@@ -41,6 +40,7 @@ dependencies = [
     "cool-seq-tool==0.4.0.dev3",
     "ga4gh.vrs==2.0.0-a6",
     "gene_normalizer[etl,pg]==0.3.0-dev2",
+    "httpx~=0.28",
     "pydantic>=2",
     "python-dotenv",
     "setuptools>=68.0",  # tmp -- ensure 3.12 compatibility
@@ -61,7 +61,7 @@ tests = [
     "pytest-mock",
     "pytest-cov",
     "pytest-asyncio",
-    "requests-mock"
+    "respx"
 ]
 dev = [
     "ruff==0.2.0",

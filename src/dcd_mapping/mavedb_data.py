@@ -13,7 +13,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
-import requests
+import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
 
@@ -27,6 +27,7 @@ from dcd_mapping.resource_utils import (
     MAVEDB_BASE_URL,
     authentication_header,
     http_download,
+    is_missing_value,
 )
 from dcd_mapping.schemas import (
     ScoreRow,
@@ -56,7 +57,7 @@ def get_scoreset_urns() -> set[str]:
 
     :return: set of URN strings
     """
-    r = requests.get(
+    r = httpx.get(
         f"{MAVEDB_BASE_URL}/api/v1/experiments/",
         timeout=30,
         headers=authentication_header(),
@@ -100,14 +101,14 @@ def get_human_urns() -> list[str]:
     scoreset_urns = get_scoreset_urns()
     human_scoresets: list[str] = []
     for urn in scoreset_urns:
-        r = requests.get(
+        r = httpx.get(
             f"{MAVEDB_BASE_URL}/api/v1/score-sets/{urn}",
             timeout=30,
             headers=authentication_header(),
         )
         try:
             r.raise_for_status()
-        except requests.exceptions.HTTPError:
+        except httpx.HTTPStatusError:
             _logger.info("Unable to retrieve scoreset data for URN %s", urn)
             continue
         data = r.json()
@@ -155,10 +156,10 @@ def get_raw_scoreset_metadata(
     metadata_file = dcd_mapping_dir / f"{scoreset_urn}_metadata.json"
     if not metadata_file.exists():
         url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{scoreset_urn}"
-        r = requests.get(url, timeout=30, headers=authentication_header())
+        r = httpx.get(url, timeout=30, headers=authentication_header())
         try:
             r.raise_for_status()
-        except requests.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             msg = f"Received HTTPError from {url} for scoreset {scoreset_urn}"
             _logger.error(msg)
             raise ResourceAcquisitionError(msg) from e
@@ -246,13 +247,13 @@ def _load_scoreset_records(
     with path.open() as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            if row["score"] == "NA":
+            if is_missing_value(row["score"]):
                 row["score"] = None
             else:
                 row["score"] = row["score"]
-            if row["hgvs_nt"] != "NA":
+            if not is_missing_value(row["hgvs_nt"]):
                 prefix = row["hgvs_nt"].split(":")[0] if ":" in row["hgvs_nt"] else None
-            elif row["hgvs_pro"] != "NA":
+            elif not is_missing_value(row["hgvs_pro"]):
                 prefix = (
                     row["hgvs_pro"].split(":")[0] if ":" in row["hgvs_pro"] else None
                 )
@@ -317,7 +318,7 @@ def get_scoreset_records(
             url = f"{MAVEDB_BASE_URL}/api/v1/score-sets/{metadata.urn}/scores"
             try:
                 http_download(url, scores_csv, silent)
-            except requests.HTTPError as e:
+            except httpx.HTTPStatusError as e:
                 msg = f"HTTPError when fetching scores CSV from {url}"
                 _logger.error(msg)
                 raise ResourceAcquisitionError(msg) from e

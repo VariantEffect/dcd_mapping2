@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-import requests
+import httpx
 
 from dcd_mapping.lookup import get_overlapping_features_for_region
 
@@ -95,7 +95,7 @@ def test_get_overlapping_features_for_region_error():
 
         def raise_for_status(self):
             msg = f"HTTP {self.status_code} Error"
-            raise requests.RequestException(msg)
+            raise httpx.HTTPError(msg)
 
     with (
         patch("dcd_mapping.lookup.request_with_backoff", return_value=ErrorResponse()),

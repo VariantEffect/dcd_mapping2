@@ -32,7 +32,7 @@ from dcd_mapping.lookup import (
     get_seqrepo,
     translate_hgvs_to_vrs,
 )
-from dcd_mapping.resource_utils import request_with_backoff
+from dcd_mapping.resource_utils import is_missing_value, request_with_backoff
 from dcd_mapping.schemas import (
     AlignmentResult,
     MappedScore,
@@ -378,7 +378,11 @@ def _map_protein_coding_pro(
     :param transcript: The transcript selection information for a score set
     :return: VRS mapping object if mapping succeeds
     """
-    if row.hgvs_pro in {"_wt", "_sy", "NA"} or len(row.hgvs_pro) == 3:
+    if (
+        row.hgvs_pro in {"_wt", "_sy"}
+        or is_missing_value(row.hgvs_pro)
+        or len(row.hgvs_pro) == 3
+    ):
         _logger.warning(
             "Can't process variant syntax %s for %s", row.hgvs_pro, row.accession
         )
@@ -700,7 +704,7 @@ def _hgvs_nt_is_valid(hgvs_nt: str) -> bool:
     :return: True if expression appears populated and valid
     """
     return (
-        (hgvs_nt != "NA")
+        (not is_missing_value(hgvs_nt))
         and (hgvs_nt not in {"_wt", "_sy", "="})
         and (len(hgvs_nt) != 3)
     )
@@ -713,7 +717,8 @@ def _hgvs_pro_is_valid(hgvs_pro: str) -> bool:
     :return: True if expression appears populated and valid
     """
     return (
-        (hgvs_pro not in {"_wt", "_sy", "NA"})
+        (hgvs_pro not in {"_wt", "_sy"})
+        and (not is_missing_value(hgvs_pro))
         and (len(hgvs_pro) != 3)
         and ("fs" not in hgvs_pro)
     )

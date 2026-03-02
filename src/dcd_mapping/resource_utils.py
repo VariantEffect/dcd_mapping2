@@ -5,10 +5,29 @@ import time
 from pathlib import Path
 
 import click
-import requests
+import httpx
 from tqdm import tqdm
 
 _logger = logging.getLogger(__name__)
+
+# Common representations of missing/null data in CSV files
+MISSING_VALUE_REPRESENTATIONS = frozenset(
+    {
+        "NA",
+        "N/A",
+        "na",
+        "n/a",
+        "NaN",
+        "nan",
+        "null",
+        "NULL",
+        "None",
+        "none",
+        "",
+        "-",
+        ".",
+    }
+)
 
 MAVEDB_API_KEY = os.environ.get("MAVEDB_API_KEY")
 MAVEDB_BASE_URL = os.environ.get("MAVEDB_BASE_URL")
@@ -24,6 +43,22 @@ if not LOCAL_STORE_PATH.exists():
     LOCAL_STORE_PATH.mkdir(exist_ok=True, parents=True)
 
 
+def is_missing_value(value: str | None) -> bool:
+    """Check if a value represents missing/null data.
+
+    This function recognizes multiple common representations of missing data
+    that may appear in CSV files from external sources, making the codebase
+    more resilient to upstream changes in NA representation.
+
+    :param value: The value to check
+    :return: True if the value represents missing data, False otherwise
+    """
+    if value is None:
+        return True
+    # Strip whitespace and check against known missing value representations
+    return value.strip() in MISSING_VALUE_REPRESENTATIONS
+
+
 def authentication_header() -> dict | None:
     """Fetch with api key envvar, if available."""
     return {"X-API-key": MAVEDB_API_KEY} if MAVEDB_API_KEY is not None else None
@@ -36,13 +71,11 @@ def http_download(url: str, out_path: Path, silent: bool = True) -> Path:
     :param out_path: location to save file to
     :param silent: show TQDM progress bar if true
     :return: Path if download successful
-    :raise requests.HTTPError: if request is unsuccessful
+    :raise httpx.HTTPStatusError: if request is unsuccessful
     """
     if not silent:
         click.echo(f"Downloading {out_path.name} to {out_path.parents[0].absolute()}")
-    with requests.get(
-        url, stream=True, timeout=60, headers=authentication_header()
-    ) as r:
+    with httpx.stream("GET", url, timeout=60, headers=authentication_header()) as r:
         r.raise_for_status()
         total_size = int(r.headers.get("content-length", 0))
         with out_path.open("wb") as h:
@@ -54,12 +87,12 @@ def http_download(url: str, out_path: Path, silent: bool = True) -> Path:
                     desc=out_path.name,
                     ncols=80,
                 ) as progress_bar:
-                    for chunk in r.iter_content(chunk_size=8192):
+                    for chunk in r.iter_bytes(chunk_size=8192):
                         if chunk:
                             h.write(chunk)
                             progress_bar.update(len(chunk))
             else:
-                for chunk in r.iter_content(chunk_size=8192):
+                for chunk in r.iter_bytes(chunk_size=8192):
                     if chunk:
                         h.write(chunk)
     return out_path
@@ -67,7 +100,7 @@ def http_download(url: str, out_path: Path, silent: bool = True) -> Path:
 
 def request_with_backoff(
     url: str, max_retries: int = 5, backoff_factor: float = 0.3, **kwargs
-) -> requests.Response:
+) -> httpx.Response:
     """HTTP GET with exponential backoff only for retryable errors.
 
     Retries on:
@@ -80,9 +113,9 @@ def request_with_backoff(
     attempt = 0
     while attempt < max_retries:
         try:
-            kwargs.setdefault("timeout", 60)  # Default timeout of 10 seconds
-            response = requests.get(url, **kwargs)  # noqa: S113
-        except (requests.Timeout, requests.ConnectionError):
+            kwargs.setdefault("timeout", 60)
+            response = httpx.get(url, **kwargs)
+        except (httpx.TimeoutException, httpx.ConnectError):
             # Retry on transient network failures
             if attempt == max_retries - 1:
                 raise
