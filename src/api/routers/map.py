@@ -5,7 +5,7 @@ from pathlib import Path
 from cool_seq_tool.schemas import AnnotationLayer
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from requests import HTTPError
+from httpx import HTTPStatusError
 
 from dcd_mapping.align import build_alignment_result
 from dcd_mapping.annotate import (
@@ -64,6 +64,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
         records = get_scoreset_records(metadata, True, store_path)
         metadata = patch_target_sequence_type(metadata, records, force=False)
     except ScoresetNotSupportedError as e:
+        _logger.error("Scoreset not supported for %s: %s", urn, e)
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=None,
@@ -72,6 +73,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
         )
     except ResourceAcquisitionError as e:
         msg = f"Unable to acquire resource from MaveDB: {e}"
+        _logger.error(msg)
         raise HTTPException(status_code=500, detail=msg) from e
 
     if not records:
@@ -87,17 +89,21 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
         alignment_results = build_alignment_result(metadata, True)
     except BlatNotFoundError as e:
         msg = "BLAT command appears missing. Ensure it is available on the $PATH or use the environment variable BLAT_BIN_PATH to point to it. See instructions in the README prerequisites section for more."
+        _logger.error("BLAT not found for %s: %s", urn, e)
         raise HTTPException(status_code=500, detail=msg) from e
     except ResourceAcquisitionError as e:
         msg = f"BLAT resource could not be acquired: {e}"
+        _logger.error(msg)
         raise HTTPException(status_code=500, detail=msg) from e
     except AlignmentError as e:
+        _logger.error("Alignment error for %s: %s", urn, e)
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata, error_message=str(e).strip("'")
             ).model_dump(exclude_none=True)
         )
     except ScoresetNotSupportedError as e:
+        _logger.error("Scoreset not supported during alignment for %s: %s", urn, e)
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata, error_message=str(e).strip("'")
@@ -111,11 +117,13 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
     # on the target level and on the variant level for variants relative to that target
     # HTTPErrors and DataLookupErrors cause the mapping process to exit because these indicate
     # underlying issues with data providers.
-    except HTTPError as e:
+    except HTTPStatusError as e:
         msg = f"HTTP error occurred during transcript selection: {e}"
+        _logger.error(msg)
         raise HTTPException(status_code=500, detail=msg) from e
     except DataLookupError as e:
         msg = f"Data lookup error occurred during transcript selection: {e}"
+        _logger.error(msg)
         raise HTTPException(status_code=500, detail=msg) from e
 
     vrs_results = {}
@@ -134,6 +142,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
         UnsupportedReferenceSequencePrefixError,
         MissingSequenceIdError,
     ) as e:
+        _logger.error("VRS mapping error for %s: %s", urn, e)
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata, error_message=str(e).strip("'")
@@ -172,6 +181,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
                 VrsVersion.V_2,
             )
     except Exception as e:
+        _logger.error("Unexpected error during annotation for %s: %s", urn, e)
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata, error_message=str(e).strip("'")
@@ -287,6 +297,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
                         del reference_sequences[target_gene].layers[layer]
 
     except Exception as e:
+        _logger.error("Unexpected error during result assembly for %s: %s", urn, e)
         return JSONResponse(
             content=ScoresetMapping(
                 metadata=metadata, error_message=str(e).strip("'")

@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import hgvs
+import httpx
 import polars as pl
-import requests
 from biocommons.seqrepo import SeqRepo
 from biocommons.seqrepo.seqaliasdb.seqaliasdb import sqlite3
 from cdot.hgvs.dataproviders import ChainedSeqFetcher, FastaSeqFetcher, RESTDataProvider
@@ -682,7 +682,7 @@ def get_overlapping_features_for_region(
             url, headers={"Content-Type": "application/json"}
         )
         response.raise_for_status()
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         _logger.error(
             "Failed to fetch overlapping features for region %s-%s on chromosome %s: %s",
             start,
@@ -715,7 +715,7 @@ def get_uniprot_sequence(uniprot_id: str) -> str | None:
     :raise HTTPError: if response comes with an HTTP error code
     """
     url = f"https://www.ebi.ac.uk/proteins/api/proteins?accession={uniprot_id.split(':')[1]}&format=json"
-    response = requests.get(url, timeout=30)
+    response = httpx.get(url, timeout=30)
     response.raise_for_status()
     json = response.json()
     return json[0]["sequence"]["sequence"]

@@ -3,8 +3,9 @@ import json
 import shutil
 from pathlib import Path
 
+import httpx
 import pytest
-import requests_mock
+import respx
 
 from dcd_mapping.mavedb_data import get_scoreset_metadata, get_scoreset_records
 
@@ -32,10 +33,9 @@ def test_get_scoreset_metadata(
     resources_data_dir: Path, scoreset_metadata_response: dict
 ):
     urn = "urn:mavedb:00000093-a-1"
-    with requests_mock.Mocker() as m:
-        m.get(
-            f"https://api.mavedb.org/api/v1/score-sets/{urn}",
-            json=scoreset_metadata_response[urn],
+    with respx.mock:
+        respx.get(f"https://api.mavedb.org/api/v1/score-sets/{urn}").mock(
+            return_value=httpx.Response(200, json=scoreset_metadata_response[urn])
         )
         scoreset_metadata = get_scoreset_metadata(
             urn, dcd_mapping_dir=resources_data_dir
@@ -62,17 +62,15 @@ def test_get_scoreset_records(
     urn = "urn:mavedb:00000093-a-1"
     with (fixture_data_dir / f"{urn}_scores.csv").open() as f:
         scores_csv_text = f.read()
-    with requests_mock.Mocker() as m:
-        m.get(
-            f"https://api.mavedb.org/api/v1/score-sets/{urn}",
-            json=scoreset_metadata_response[urn],
+    with respx.mock:
+        respx.get(f"https://api.mavedb.org/api/v1/score-sets/{urn}").mock(
+            return_value=httpx.Response(200, json=scoreset_metadata_response[urn])
         )
         scoreset_metadata = get_scoreset_metadata(
             urn, dcd_mapping_dir=resources_data_dir
         )
-        m.get(
-            f"https://api.mavedb.org/api/v1/score-sets/{urn}/scores",
-            text=scores_csv_text,
+        respx.get(f"https://api.mavedb.org/api/v1/score-sets/{urn}/scores").mock(
+            return_value=httpx.Response(200, text=scores_csv_text)
         )
         scoreset_records = get_scoreset_records(
             scoreset_metadata, dcd_mapping_dir=resources_data_dir
