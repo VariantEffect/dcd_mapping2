@@ -48,7 +48,8 @@ dependencies = [
     "fastapi",
     "starlette",
     "uvicorn",
-    "polars<1.38.0"
+    "polars<1.38.0",
+    "pandas==2.2.1"
 ]
 dynamic = ["version"]
 
