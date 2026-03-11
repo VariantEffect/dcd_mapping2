@@ -21,6 +21,7 @@ from ga4gh.vrs.normalize import normalize
 from mavehgvs.util import parse_variant_strings
 from mavehgvs.variant import Variant
 
+from dcd_mapping.align import align_target_to_protein
 from dcd_mapping.exceptions import (
     MissingSequenceIdError,
     UnsupportedReferenceSequenceNameSpaceError,
@@ -181,6 +182,7 @@ def _create_post_mapped_hgvs_strings(
     tx: TxSelectResult | None = None,
     alignment: AlignmentResult | None = None,
     accession_id: str | None = None,
+    protein_alignment: AlignmentResult | None = None,
 ) -> list[str]:
     """Generate a list of (post-mapped) HGVS strings from one long string containing many valid HGVS substrings.
 
@@ -220,7 +222,7 @@ def _create_post_mapped_hgvs_strings(
         if layer is AnnotationLayer.PROTEIN:
             assert tx  # noqa: S101. mypy help
 
-            variant = _adjust_protein_variant_to_ref(variant, tx)
+            variant = _adjust_protein_variant_to_ref(variant, protein_alignment)
             hgvs_strings.append(tx.np + ":" + str(variant))
         elif layer is AnnotationLayer.GENOMIC:
             if accession_id:
@@ -250,14 +252,50 @@ def _create_post_mapped_hgvs_strings(
 
 def _adjust_protein_variant_to_ref(
     variant: Variant,
-    tx: TxSelectResult,
+    alignment: AlignmentResult,
 ) -> Variant:
+    # adjust starts - hgvs uses 1-based numbering for c. sequences, while blat hits are 0-based
+    starts = []
     if isinstance(variant.positions, Iterable):
+        is_multi_position = True
         for position in variant.positions:
-            position.position = position.position + tx.start
-        return variant
+            starts.append(position.position - 1)
+    else:
+        is_multi_position = False
+        starts.append(variant.positions.position - 1)
 
-    variant.positions.position = variant.positions.position + tx.start
+    # get hit
+    query_subrange_containing_hit = None
+    target_subrange_containing_hit = None
+    for query_subrange, target_subrange in zip(
+        alignment.query_subranges, alignment.hit_subranges, strict=True
+    ):
+        if all(
+            start >= query_subrange.start and start < query_subrange.end
+            for start in starts
+        ):
+            query_subrange_containing_hit = query_subrange
+            target_subrange_containing_hit = target_subrange
+            break
+
+    if query_subrange_containing_hit is None or target_subrange_containing_hit is None:
+        msg = f"Cannot process variant {variant} because it is not fully contained within the aligned portion of the query sequence compared to the selected reference sequence"
+        raise ValueError(msg)
+
+    for idx, start in enumerate(starts):
+        # get variant start relative to the reference (the "hit")
+        # distance from beginning of query to variant start position:
+        query_to_start = start - query_subrange_containing_hit.start
+
+        # distance from beginning of ref to the variant start position:
+        ref_to_start = target_subrange_containing_hit.start + query_to_start
+
+        # add distance from ref to variant start; hgvs is 1-based, so convert back to 1-based
+        if is_multi_position:
+            variant.positions[idx].position = ref_to_start + 1
+        else:
+            variant.positions.position = ref_to_start + 1
+
     return variant
 
 
@@ -368,6 +406,7 @@ def _map_protein_coding_pro(
     row: ScoreRow,
     sequence_id: str,
     transcript: TxSelectResult,
+    protein_align_result: AlignmentResult,
 ) -> MappedScore:
     """Construct VRS object mapping for ``hgvs_pro`` variant column entry
 
@@ -375,7 +414,8 @@ def _map_protein_coding_pro(
 
     :param row: A row of output from a MaveDB score set
     :param sequence_id: The GA4GH accession for the provided sequence
-    :param transcript: The transcript selection information for a score set
+    :param transcript: The transcript selection information for a target
+    :param protein_align_result: The protein-protein alignment result for a target against its selected protein reference
     :return: VRS mapping object if mapping succeeds
     """
     if (
@@ -444,6 +484,7 @@ def _map_protein_coding_pro(
             row.hgvs_pro,
             AnnotationLayer.PROTEIN,
             tx=transcript,
+            protein_alignment=protein_align_result,
         )
         post_mapped_protein = _construct_vrs_allele(
             post_mapped_hgvs_strings,
@@ -729,6 +770,7 @@ def _map_protein_coding(
     records: list[ScoreRow],
     transcript: TxSelectResult | TxSelectError,
     align_result: AlignmentResult,
+    silent: bool,
 ) -> list[MappedScore]:
     """Perform mapping on protein coding experiment results
 
@@ -747,6 +789,11 @@ def _map_protein_coding(
     else:
         sequence = metadata.target_sequence
         psequence_id = gsequence_id = store_sequence(sequence)
+
+    # align protein sequence to selected reference protein sequence to get offsets and gaps
+    protein_align_result = align_target_to_protein(
+        sequence, transcript.sequence, silent
+    )
 
     variations: list[MappedScore] = []
     for row in records:
@@ -767,7 +814,7 @@ def _map_protein_coding(
         else:
             if _hgvs_pro_is_valid(row.hgvs_pro):
                 hgvs_pro_mappings = _map_protein_coding_pro(
-                    row, psequence_id, transcript
+                    row, psequence_id, transcript, protein_align_result
                 )
             elif (
                 not hgvs_nt_mappings
@@ -954,6 +1001,7 @@ def vrs_map(
             records,
             transcript,
             align_result,
+            silent,
         )
     return _map_regulatory_noncoding(
         metadata,
