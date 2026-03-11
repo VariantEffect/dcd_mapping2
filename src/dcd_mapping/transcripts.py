@@ -84,8 +84,9 @@ def _local_alignment_identity(query: str, ref: str) -> float:
         alignments = aligner.align(query, ref)
     except Exception as e:
         # Do not fallback to approximate similarity; propagate failure
-        msg = f"Local alignment failed: {e}"
-        raise TxSelectError(msg) from e
+        msg = "Local alignment failed"
+        error_message = f"{msg}: {e!s}"
+        raise TxSelectError(error_message) from e
 
     if not alignments:
         return -1000
@@ -457,6 +458,12 @@ async def select_transcripts(
                     align_result=align_results[target_gene],
                 )
             except (TxSelectError, KeyError) as e:
+                _logger.exception(
+                    "Transcript selection failed for %s in %s: %s",
+                    target_gene,
+                    scoreset_metadata.urn,
+                    e,
+                )
                 selected_transcripts[target_gene] = e
 
     return selected_transcripts

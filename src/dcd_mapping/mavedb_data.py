@@ -109,7 +109,7 @@ def get_human_urns() -> list[str]:
         try:
             r.raise_for_status()
         except httpx.HTTPStatusError:
-            _logger.info("Unable to retrieve scoreset data for URN %s", urn)
+            _logger.exception("Unable to retrieve scoreset data for URN %s", urn)
             continue
         data = r.json()
 
@@ -162,7 +162,8 @@ def get_raw_scoreset_metadata(
         except httpx.HTTPStatusError as e:
             msg = f"Received HTTPError from {url} for scoreset {scoreset_urn}"
             _logger.error(msg)
-            raise ResourceAcquisitionError(msg) from e
+            error_message = f"{msg}: {e}"
+            raise ResourceAcquisitionError(error_message) from e
         metadata = r.json()
         with metadata_file.open("w") as f:
             json.dump(metadata, f)
@@ -225,9 +226,10 @@ def get_scoreset_metadata(
                     target_accession_assembly=target_gene_accession.get("assembly"),
                 )
         except (KeyError, ValidationError) as e:
-            msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}: {e}"
+            msg = f"Unable to extract metadata from API response for scoreset {scoreset_urn}"
             _logger.error(msg)
-            raise ScoresetNotSupportedError(msg) from e
+            error_message = f"{msg}: {e}"
+            raise ScoresetNotSupportedError(error_message) from e
 
     return ScoresetMetadata(urn=scoreset_urn, target_genes=target_genes)
 
@@ -321,7 +323,8 @@ def get_scoreset_records(
             except httpx.HTTPStatusError as e:
                 msg = f"HTTPError when fetching scores CSV from {url}"
                 _logger.error(msg)
-                raise ResourceAcquisitionError(msg) from e
+                error_message = f"{msg}: {e}"
+                raise ResourceAcquisitionError(error_message) from e
 
     return _load_scoreset_records(scores_csv, metadata)
 
@@ -381,13 +384,19 @@ def with_mavedb_score_set(fn: Callable) -> Callable:
                 metadata = get_scoreset_metadata(urn, temp_dir_as_path)
                 get_scoreset_records(metadata, silent, temp_dir_as_path)
             except ScoresetNotSupportedError as e:
+                _logger.exception("Score set not supported for %s: %s", urn, e)
                 return ScoresetMapping(
                     metadata=None,
                     error_message=str(e).strip("'"),
                 )
             except ResourceAcquisitionError as e:
-                msg = f"Unable to acquire resource from MaveDB: {e}"
-                raise HTTPException(status_code=500, detail=msg) from e
+                msg = "Unable to acquire resource from MaveDB"
+                error_message = str(e)
+                _logger.error("%s for %s: %s", msg, urn, error_message)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"{msg}: {error_message}",
+                ) from e
 
             # Pass the storage path of the temp directory to the wrapped function as a kwarg.
             kwargs["store_path"] = temp_dir_as_path

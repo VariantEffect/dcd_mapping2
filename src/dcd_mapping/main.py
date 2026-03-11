@@ -69,6 +69,7 @@ async def _check_data_prereqs(silent: bool) -> None:
         await check_uta()
     except Exception:
         success = False
+        _logger.exception("UTA availability check failed")
         _emit_info(
             "* UTA appears to be unavailable. Check the logs for more information. For troubleshooting, we recommend checking the UTA readme (https://github.com/biocommons/uta?tab=readme-ov-file#installing-uta-locally) and the Cool-Seq-Tool installation instructions (https://coolseqtool.readthedocs.io/0.4.0-dev3/install.html#set-up-uta). Remember that the UTA connection is configurable via a libpq URI provided under the environment variable UTA_DB_URL (see Cool-Seq-Tool docs: https://coolseqtool.readthedocs.io/0.4.0-dev3/usage.html#environment-configuration) -- otherwise, by default it attempts a connection to `postgresql://uta_admin:uta@localhost:5433/uta/uta_20210129b`.",
             silent,
@@ -78,6 +79,7 @@ async def _check_data_prereqs(silent: bool) -> None:
         check_seqrepo()
     except Exception:
         success = False
+        _logger.exception("SeqRepo availability check failed")
         _emit_info(
             "* SeqRepo appears inaccessible or unusable. Check the logs for more information. Ensure that a local SeqRepo snapshot has been downloaded (it should've taken a while -- see https://github.com/biocommons/biocommons.seqrepo?tab=readme-ov-file#requirements), that it's located either at `/usr/local/share/seqrepo/latest` or at the location designated by the `SEQREPO_ROOT_DIR` environment variable, and that it's writeable (see https://github.com/biocommons/biocommons.seqrepo/blob/main/docs/store.rst).",
             silent,
@@ -87,6 +89,7 @@ async def _check_data_prereqs(silent: bool) -> None:
         check_gene_normalizer()
     except Exception:
         success = False
+        _logger.exception("Gene Normalizer availability check failed")
         _emit_info(
             "* Gene Normalizer appears to be unavailable. Check the logs for more information. Note that a data snapshot needs to be acquired, or the data update routine must be routine (this should've taken at least a few seconds, if not several minutes). For troubleshooting, review the Gene Normalizer installation instructions and documentation: https://gene-normalizer.readthedocs.io/0.3.0-dev1/install.html",
             silent,
@@ -136,6 +139,7 @@ async def _check_data_prereqs(silent: bool) -> None:
                 )
     except Exception:
         success = False
+        _logger.exception("Unexpected error while testing BLAT availability")
         _emit_info(
             "Encountered unexpected error while testing availability of BLAT. Check logs for more information. See README for more information about BLAT setup.",
             silent,
@@ -168,14 +172,15 @@ async def map_scoreset(
     try:
         # dictionary where keys are target gene labels or accession ids, and values are alignment result objects
         alignment_results = build_alignment_result(metadata, silent)
-    except BlatNotFoundError as e:
+    except BlatNotFoundError:
         msg = "BLAT command appears missing. Ensure it is available on the $PATH or use the environment variable BLAT_BIN_PATH to point to it. See instructions in the README prerequisites section for more."
         _emit_info(msg, silent, logging.ERROR)
-        raise e
+        raise
     except ResourceAcquisitionError as e:
         _emit_info(f"BLAT resource could not be acquired: {e}", silent, logging.ERROR)
-        raise e
+        raise
     except AlignmentError as e:
+        _logger.exception("Alignment failed for scoreset %s: %s", metadata.urn, e)
         _emit_info(
             f"Alignment failed for scoreset  {metadata.urn} {e}", silent, logging.ERROR
         )
@@ -187,6 +192,7 @@ async def map_scoreset(
         _emit_info(f"Score set mapping output saved to: {final_output}.", silent)
         return
     except ScoresetNotSupportedError as e:
+        _logger.exception("Score set not supported for %s: %s", metadata.urn, e)
         _emit_info(f"Score set not supported: {e}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             metadata.urn,
@@ -211,14 +217,14 @@ async def map_scoreset(
             silent,
             logging.ERROR,
         )
-        raise e
+        raise
     except DataLookupError as e:
         _emit_info(
             f"Data lookup error occurred during transcript selection: {e}",
             silent,
             logging.ERROR,
         )
-        raise e
+        raise
     _emit_info("Reference selection complete.", silent)
 
     _emit_info("Mapping to VRS...", silent)
@@ -247,6 +253,7 @@ async def map_scoreset(
         UnsupportedReferenceSequenceNameSpaceError,
         VrsMapError,
     ) as e:
+        _logger.exception("VRS mapping failed for scoreset %s: %s", metadata.urn, e)
         _emit_info(
             f"VRS mapping failed for scoreset {metadata.urn}", silent, logging.ERROR
         )
@@ -286,6 +293,9 @@ async def map_scoreset(
                 vrs_version,
             )
         except Exception as e:
+            _logger.exception(
+                "VRS annotation failed for scoreset %s: %s", metadata.urn, e
+            )
             _emit_info(
                 f"VRS annotation failed for scoreset {metadata.urn}",
                 silent,
@@ -323,6 +333,11 @@ async def map_scoreset(
             output_path,
         )
     except Exception as e:
+        _logger.exception(
+            "Error creating or saving final score set mapping for %s: %s",
+            metadata.urn,
+            e,
+        )
         _emit_info(
             f"Error in creating or saving final score set mapping for {metadata.urn} {e}",
             silent,
@@ -359,6 +374,7 @@ async def map_scoreset_urn(
         records = get_scoreset_records(metadata, silent, store_path)
         metadata = patch_target_sequence_type(metadata, records, force=False)
     except ScoresetNotSupportedError as e:
+        _logger.exception("Score set not supported for %s: %s", urn, e)
         _emit_info(f"Score set not supported: {e}", silent, logging.ERROR)
         final_output = write_scoreset_mapping_to_json(
             urn,
@@ -374,7 +390,7 @@ async def map_scoreset_urn(
         msg = f"Unable to acquire resource from MaveDB: {e}"
         _logger.critical(msg)
         click.echo(f"Error: {msg}")
-        raise e
+        raise
 
     if not records:
         _emit_info("Score set contains no variants to map", silent, logging.ERROR)

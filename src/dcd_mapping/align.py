@@ -87,7 +87,8 @@ def get_ref_genome_file(
         except httpx.HTTPStatusError as e:
             msg = f"HTTPError when fetching reference genome file from {url}"
             _logger.error(msg)
-            raise ResourceAcquisitionError(msg) from e
+            error_message = f"{msg}: {e!s}"
+            raise ResourceAcquisitionError(error_message) from e
     return genome_file
 
 
@@ -200,7 +201,8 @@ def _get_blat_output(
                 output = parse_blat(out_file, "blat-psl")
             except ValueError as e:
                 msg = f"Unable to run successful BLAT on {metadata.urn}"
-                raise AlignmentError(msg) from e
+                error_message = f"{msg}: {e!s}"
+                raise AlignmentError(error_message) from e
 
     return output
 
@@ -385,7 +387,8 @@ def fetch_alignment(
             except httpx.HTTPStatusError as e:
                 msg = f"Received HTTPError from {url} for scoreset {metadata.urn}"
                 _logger.error(msg)
-                raise ResourceAcquisitionError(msg) from e
+                error_message = f"{msg}: {e!s}"
+                raise ResourceAcquisitionError(error_message) from e
 
             cdot_mapping = r.json()
             alignment_results[accession_id] = parse_cdot_mapping(cdot_mapping, silent)
@@ -475,7 +478,7 @@ def build_alignment_result(
                 msg = f"BLAT alignment failed for {metadata.urn} at the nucleotide level. This alignment will be retried at the protein level."
                 _logger.warning(msg)
             else:
-                raise AlignmentError from e
+                raise AlignmentError(str(e)) from e
 
             # So long as force=True, the content of the records dict is irrelevant.
             try:

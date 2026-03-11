@@ -259,7 +259,7 @@ async def get_protein_accession(transcript: str) -> str | None:
         """  # noqa: S608
         result = await uta.execute_query(query)
     except Exception as e:
-        raise DataLookupError from e
+        raise DataLookupError(str(e)) from e
     if result:
         return result[0]["pro_ac"]
     return None
@@ -287,7 +287,7 @@ async def get_transcripts(
         """  # noqa: S608
         result = await uta.execute_query(query)
     except Exception as e:
-        raise DataLookupError from e
+        raise DataLookupError(str(e)) from e
 
     return [(row["tx_ac"], row["hgnc"]) for row in result]
 
@@ -453,7 +453,7 @@ def check_seqrepo() -> None:
     except sqlite3.Error as e:
         conn.close()
         _logger.error("SeqRepo sequences DB isn't writeable.")
-        raise DataLookupError from e
+        raise DataLookupError(str(e)) from e
 
 
 def get_chromosome_identifier(chromosome: str) -> str:
@@ -507,7 +507,7 @@ def get_ucsc_chromosome_name(chromosome: str) -> str:
     try:
         return sorted_results[-1].split(":")[1]
     except IndexError as e:
-        raise KeyError from e
+        raise KeyError(str(e)) from e
 
 
 def get_chromosome_identifier_from_vrs_id(sequence_id: str) -> str | None:
@@ -557,7 +557,7 @@ def get_sequence(
         sequence = sr.get_sequence(sequence_id, start, end)
     except (KeyError, ValueError) as e:
         _logger.error("Unable to acquire sequence for ID: %s", sequence_id)
-        raise KeyError from e
+        raise KeyError(str(e)) from e
     if sequence is None:
         _logger.error("Unable to acquire sequence for ID: %s", sequence_id)
         raise KeyError
@@ -683,7 +683,7 @@ def get_overlapping_features_for_region(
         )
         response.raise_for_status()
     except httpx.HTTPError as e:
-        _logger.error(
+        _logger.exception(
             "Failed to fetch overlapping features for region %s-%s on chromosome %s: %s",
             start,
             end,

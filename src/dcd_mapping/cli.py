@@ -83,6 +83,7 @@ def cli(
         VrsMapError,
         ResourceAcquisitionError,
     ):
+        _logger.exception("Mapping command failed for %s", urn)
         click.get_current_context().exit(1)
 
 

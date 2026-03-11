@@ -434,6 +434,7 @@ def _map_protein_coding_pro(
             row.hgvs_pro,
             row.accession,
             str(e),
+            exc_info=e,
         )
         return MappedScore(
             accession_id=row.accession, score=row.score, error_message=str(e)
@@ -457,6 +458,7 @@ def _map_protein_coding_pro(
             row.hgvs_pro,
             row.accession,
             str(e),
+            exc_info=e,
         )
         return MappedScore(
             accession_id=row.accession,
@@ -546,6 +548,7 @@ def _map_genomic(
                 row.hgvs_nt,
                 row.accession,
                 str(e),
+                exc_info=e,
             )
             return MappedScore(
                 accession_id=row.accession, score=row.score, error_message=str(e)
@@ -572,6 +575,7 @@ def _map_genomic(
                 row.hgvs_nt,
                 row.accession,
                 str(e),
+                exc_info=e,
             )
             return MappedScore(
                 accession_id=row.accession, score=row.score, error_message=str(e)
@@ -594,6 +598,7 @@ def _map_genomic(
                 row.hgvs_nt,
                 row.accession,
                 str(e),
+                exc_info=e,
             )
             return MappedScore(
                 accession_id=row.accession,
@@ -622,6 +627,7 @@ def _map_genomic(
                 row.hgvs_nt,
                 row.accession,
                 str(e),
+                exc_info=e,
             )
             return MappedScore(
                 accession_id=row.accession, score=row.score, error_message=str(e)
@@ -645,6 +651,7 @@ def _map_genomic(
                 row.hgvs_nt,
                 row.accession,
                 str(e),
+                exc_info=e,
             )
             return MappedScore(
                 accession_id=row.accession,
