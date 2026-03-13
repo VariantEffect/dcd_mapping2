@@ -186,9 +186,8 @@ def _create_post_mapped_hgvs_strings(
 ) -> list[str]:
     """Generate a list of (post-mapped) HGVS strings from one long string containing many valid HGVS substrings.
 
-    For protein annotations, these strings must be adjusted to match the offset defined by the start of the
-    transcript sequence. For genomic annotations, these strings must be adjusted to match the coordinates of
-    the reference alignment.
+    For protein annotations, these strings must be adjusted to match the alignment of the target to the selected reference protein sequence.
+    For genomic annotations, these strings must be adjusted to match the coordinates of the reference alignment.
 
     :param raw_description: A string containing valid HGVS sub-strings
     :param layer: An enum denoting the targeted annotation layer of these HGVS strings
@@ -791,9 +790,11 @@ def _map_protein_coding(
         psequence_id = gsequence_id = store_sequence(sequence)
 
     # align protein sequence to selected reference protein sequence to get offsets and gaps
-    protein_align_result = align_target_to_protein(
-        sequence, transcript.sequence, silent
-    )
+    protein_align_result = None
+    if isinstance(transcript, TxSelectResult):
+        protein_align_result = align_target_to_protein(
+            sequence, transcript.sequence, silent
+        )
 
     variations: list[MappedScore] = []
     for row in records:
@@ -812,9 +813,16 @@ def _map_protein_coding(
                 error_message=str(transcript).strip("'"),
             )
         else:
-            if _hgvs_pro_is_valid(row.hgvs_pro):
+            if _hgvs_pro_is_valid(row.hgvs_pro) and protein_align_result is not None:
                 hgvs_pro_mappings = _map_protein_coding_pro(
                     row, psequence_id, transcript, protein_align_result
+                )
+            # This should not occur because protein align result is only None if transcript selection failed, which should be caught by the TxSelectError check above.
+            elif protein_align_result is None:
+                hgvs_pro_mappings = MappedScore(
+                    accession_id=row.accession,
+                    score=row.score,
+                    error_message="Could not perform mapping for protein variant because transcript sequence is missing or could not be aligned to reference sequence",
                 )
             elif (
                 not hgvs_nt_mappings
