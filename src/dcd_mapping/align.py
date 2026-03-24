@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 import httpx
 from Bio.SearchIO import HSP
 from Bio.SearchIO import parse as parse_blat
+from Bio.SearchIO import read as read_blat
 from Bio.SearchIO._model import Hit, QueryResult
 from cool_seq_tool.schemas import Strand
 
@@ -92,7 +93,11 @@ def get_ref_genome_file(
 
 
 def _run_blat(
-    target_args: str, query_file: Path, out_file: str, silent: bool
+    target_args: str,
+    query_file: Path,
+    reference_file: Path,
+    out_file: str,
+    silent: bool,
 ) -> subprocess.CompletedProcess:
     """Execute BLAT binary with relevant params.
 
@@ -109,9 +114,8 @@ def _run_blat(
     :param silent: if True, suppress all console output
     :return: process result
     """
-    reference_genome_file = get_ref_genome_file(silent=silent)
     bin_name = os.environ["BLAT_BIN_PATH"] if "BLAT_BIN_PATH" in os.environ else "blat"  # noqa: SIM401
-    command = f"{bin_name} {reference_genome_file} {target_args} -minScore=20 {query_file} {out_file}"
+    command = f"{bin_name} {reference_file} {target_args} -minScore=20 {query_file} {out_file}"
     _logger.debug("Running BLAT command: %s", command)
     result = subprocess.run(  # noqa: UP022
         command,
@@ -186,7 +190,10 @@ def _get_blat_output(
             # TODO consider implementing support for mixed types, not hard to do - just split blat into two files and run command with each set of arguments.
             msg = "Mapping for score sets with a mix of nucleotide and protein target sequences is not currently supported."
             raise NotImplementedError(msg)
-        process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
+        reference_genome_file = get_ref_genome_file(silent=silent)
+        process_result = _run_blat(
+            target_args, query_file, reference_genome_file, "/dev/stdout", silent
+        )
         out_file = _write_blat_output_tempfile(process_result)
 
         try:
@@ -194,7 +201,9 @@ def _get_blat_output(
 
         except ValueError:
             target_args = "-q=dnax -t=dnax"
-            process_result = _run_blat(target_args, query_file, "/dev/stdout", silent)
+            process_result = _run_blat(
+                target_args, query_file, reference_genome_file, "/dev/stdout", silent
+            )
             out_file = _write_blat_output_tempfile(process_result)
             try:
                 output = parse_blat(out_file, "blat-psl")
@@ -254,7 +263,7 @@ def _get_best_hit(output: QueryResult, chromosome: str | None) -> Hit:
     return best_score_hit
 
 
-def _get_best_hsp(hit: Hit, gene_location: GeneLocation | None) -> HSP:
+def _get_best_hsp(hit: Hit, gene_location: GeneLocation | None = None) -> HSP:
     """Retrieve preferred HSP from BLAT Hit object.
 
     If gene location data is available, prefer the HSP with the least distance
@@ -491,3 +500,50 @@ def build_alignment_result(
         alignment_result = fetch_alignment(metadata, silent)
 
     return alignment_result
+
+
+def align_target_to_protein(
+    target_sequence: str, reference_sequence: str, silent: bool
+) -> AlignmentResult:
+    with tempfile.NamedTemporaryFile() as query_tmp_file, tempfile.NamedTemporaryFile() as reference_tmp_file:
+        _write_query_file(Path(query_tmp_file.name), [">query", target_sequence])
+        _write_query_file(
+            Path(reference_tmp_file.name), [">reference", reference_sequence]
+        )
+        target_args = "-q=prot -t=prot"
+
+        process_result = _run_blat(
+            target_args,
+            query_tmp_file.name,
+            reference_tmp_file.name,
+            "/dev/stdout",
+            silent,
+        )
+        out_file = _write_blat_output_tempfile(process_result)
+
+        try:
+            blat_output = read_blat(out_file, "blat-psl")
+
+        except ValueError as e:
+            msg = "Unable to run successful BLAT on target sequence against selected reference protein sequence."
+            raise AlignmentError(msg) from e
+
+    best_hit = _get_best_hit(blat_output, None)
+    best_hsp = _get_best_hsp(best_hit)
+
+    query_subranges = []
+    hit_subranges = []
+    for fragment in best_hsp:
+        query_subranges.append(
+            SequenceRange(start=fragment.query_start, end=fragment.query_end)
+        )
+        hit_subranges.append(
+            SequenceRange(start=fragment.hit_start, end=fragment.hit_end)
+        )
+
+    return AlignmentResult(
+        query_range=SequenceRange(start=best_hsp.query_start, end=best_hsp.query_end),
+        query_subranges=query_subranges,
+        hit_range=SequenceRange(start=best_hsp.hit_start, end=best_hsp.hit_end),
+        hit_subranges=hit_subranges,
+    )

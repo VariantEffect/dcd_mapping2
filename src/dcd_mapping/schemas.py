@@ -106,8 +106,8 @@ class MappedReferenceSequence(ReferenceSequence):
 class AlignmentResult(BaseModel):
     """Define BLAT alignment output."""
 
-    chrom: str
-    strand: Strand
+    chrom: str | None = None
+    strand: Strand | None = None
     coverage: float | None = None
     ident_pct: float | None = None
     query_range: SequenceRange
