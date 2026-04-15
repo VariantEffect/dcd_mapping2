@@ -28,10 +28,12 @@ from dcd_mapping.exceptions import (
     UnsupportedReferenceSequencePrefixError,
 )
 from dcd_mapping.lookup import (
+    build_ref_identical_allele,
     cdot_rest,
     get_chromosome_identifier,
     get_seqrepo,
     translate_hgvs_to_vrs,
+    translate_ref_identical_to_vrs,
 )
 from dcd_mapping.resource_utils import is_missing_value, request_with_backoff
 from dcd_mapping.schemas import (
@@ -80,6 +82,10 @@ def is_intronic_variant(variant: Variant) -> bool:
     """Return True if given Variant is intronic, otherwise return False.
     Supports single or multi-position variants.
     """
+    # ref identical variants with no positions should not be considered intronic
+    if variant.positions is None:
+        return False
+
     if isinstance(variant.positions, Iterable):
         if any(position.is_intronic() for position in variant.positions):
             return True
@@ -217,6 +223,27 @@ def _create_post_mapped_hgvs_strings(
         if is_intronic_variant(variant):
             msg = f"Variant is intronic and cannot be processed: {variant}"
             raise ValueError(msg)
+
+        # Reference-identical variants require no positional adjustment
+        if str(variant).endswith(".="):
+            if layer is AnnotationLayer.PROTEIN:
+                assert tx  # noqa: S101. mypy help
+                hgvs_strings.append(tx.np + ":" + str(variant))
+
+            elif layer is AnnotationLayer.GENOMIC:
+                if accession_id:
+                    hgvs_strings.append(accession_id + ":" + str(variant))
+                else:
+                    assert alignment  # noqa: S101. mypy help
+                    hgvs_strings.append(
+                        get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
+                    )
+
+            else:
+                msg = f"Could not generate HGVS strings for invalid AnnotationLayer: {layer}"
+                raise ValueError(msg)
+
+            continue
 
         if layer is AnnotationLayer.PROTEIN:
             assert tx  # noqa: S101. mypy help
@@ -417,11 +444,7 @@ def _map_protein_coding_pro(
     :param protein_align_result: The protein-protein alignment result for a target against its selected protein reference
     :return: VRS mapping object if mapping succeeds
     """
-    if (
-        row.hgvs_pro in {"_wt", "_sy"}
-        or is_missing_value(row.hgvs_pro)
-        or len(row.hgvs_pro) == 3
-    ):
+    if row.hgvs_pro in {"_wt", "_sy"} or is_missing_value(row.hgvs_pro):
         _logger.warning(
             "Can't process variant syntax %s for %s", row.hgvs_pro, row.accession
         )
@@ -443,7 +466,6 @@ def _map_protein_coding_pro(
             error_message="Protein frameshift variants are not supported",
         )
 
-    # TODO: Handle edge cases without hardcoding URNs.
     # Special case for experiment set urn:mavedb:0000097
     if row.hgvs_pro.startswith("NP_009225.1:p."):
         vrs_variation = translate_hgvs_to_vrs(row.hgvs_pro)
@@ -545,7 +567,6 @@ def _map_genomic(
         row.hgvs_nt in {"_wt", "_sy", "="}
         or "fs"
         in row.hgvs_nt  # TODO I think this line can be taken out, I don't think fs nomenclature can be used for nt anyway
-        or len(row.hgvs_nt) == 3
     ):
         _logger.warning(
             "Can't process variant syntax %s for %s", row.hgvs_nt, row.accession
@@ -743,11 +764,7 @@ def _hgvs_nt_is_valid(hgvs_nt: str) -> bool:
     :param hgvs_nt: MAVE_HGVS nucleotide expression
     :return: True if expression appears populated and valid
     """
-    return (
-        (not is_missing_value(hgvs_nt))
-        and (hgvs_nt not in {"_wt", "_sy", "="})
-        and (len(hgvs_nt) != 3)
-    )
+    return (not is_missing_value(hgvs_nt)) and (hgvs_nt not in {"_wt", "_sy", "="})
 
 
 def _hgvs_pro_is_valid(hgvs_pro: str) -> bool:
@@ -759,7 +776,6 @@ def _hgvs_pro_is_valid(hgvs_pro: str) -> bool:
     return (
         (hgvs_pro not in {"_wt", "_sy"})
         and (not is_missing_value(hgvs_pro))
-        and (len(hgvs_pro) != 3)
         and ("fs" not in hgvs_pro)
     )
 
@@ -939,7 +955,24 @@ def _construct_vrs_allele(
 ) -> Allele | Haplotype:
     alleles: list[Allele] = []
     for hgvs_string in hgvs_strings:
-        _logger.info("Processing HGVS string: %s", hgvs_string)
+        _logger.debug("Processing HGVS string: %s", hgvs_string)
+
+        # Special handling for reference-identical variants, which must be represented as simple Alleles with a
+        # ReferenceLengthExpression state rather than beeing translated from HGVS. This translation is
+        # currently unsupported by ga4gh hgvs_tools and will raise an error if attempted.
+        if hgvs_string.endswith(".="):
+            if pre_map:
+                if sequence_id is None:
+                    msg = "Must provide sequence id to construct pre-mapped ref-identical VRS allele"
+                    raise ValueError(msg)
+                allele = build_ref_identical_allele(sequence_id)
+            else:
+                allele = translate_ref_identical_to_vrs(hgvs_string)
+
+            allele.id = ga4gh_identify(allele)
+            alleles.append(allele)
+            continue
+
         allele = translate_hgvs_to_vrs(hgvs_string)
 
         if pre_map:
@@ -953,7 +986,6 @@ def _construct_vrs_allele(
         if "dup" in hgvs_string:
             allele.state.sequence = SequenceString(2 * _get_allele_sequence(allele))
 
-        # TODO check assumption that c.= leads to an "N" in the sequence.root
         if allele.state.sequence.root == "N" and layer == AnnotationLayer.GENOMIC:
             allele.state.sequence = SequenceString(_get_allele_sequence(allele))
 

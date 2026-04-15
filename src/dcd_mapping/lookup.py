@@ -41,7 +41,9 @@ from ga4gh.core._internal.models import Extension, Gene
 from ga4gh.vrs._internal.models import (
     Allele,
     LiteralSequenceExpression,
+    ReferenceLengthExpression,
     SequenceLocation,
+    SequenceReference,
 )
 from ga4gh.vrs.dataproxy import SeqRepoDataProxy, coerce_namespace
 from ga4gh.vrs.extras.translator import AlleleTranslator
@@ -70,7 +72,9 @@ __all__ = [
     "get_ucsc_chromosome_name",
     "get_chromosome_identifier_from_vrs_id",
     "get_sequence",
+    "build_ref_identical_allele",
     "translate_hgvs_to_vrs",
+    "translate_ref_identical_to_vrs",
     "get_mane_transcripts",
     "get_uniprot_sequence",
 ]
@@ -588,6 +592,65 @@ def translate_hgvs_to_vrs(hgvs: str) -> Allele:
     ):
         raise ValueError
     return allele
+
+
+def build_ref_identical_allele(sequence_id: str) -> Allele:
+    """Build a whole-sequence reference-identical VRS Allele from a sequence identifier.
+
+    Accepts either a GA4GH SQ digest (``SQ.xxx``, without the ``ga4gh:`` prefix) or a
+    named accession such as ``NP_``, ``NM_``, or ``NC_``.
+
+    :param sequence_id: GA4GH SQ digest or named accession
+    :return: VRS Allele spanning the full sequence with a ReferenceLengthExpression state
+    :raises DataLookupError: if the sequence identifier or metadata lookup fails
+    """
+    if sequence_id.startswith("SQ."):
+        ga4gh_id = f"ga4gh:{sequence_id}"
+    else:
+        try:
+            ga4gh_id = get_vrs_id_from_identifier(sequence_id)
+        except KeyError as e:
+            msg = f"Could not retrieve GA4GH identifier for accession {sequence_id!r}"
+            _logger.error(msg)
+            raise DataLookupError(msg) from e
+
+    sr = get_seqrepo()
+    try:
+        metadata = sr.get_metadata(ga4gh_id)
+    except KeyError as e:
+        msg = f"Could not retrieve metadata for sequence {ga4gh_id!r}"
+        _logger.error(msg)
+        raise DataLookupError(msg) from e
+
+    length = metadata["length"]
+    refget_accession = ga4gh_id.split("ga4gh:")[-1]
+
+    seq_ref = SequenceReference(refgetAccession=refget_accession)
+    location = SequenceLocation(sequenceReference=seq_ref, start=0, end=length)
+    state = ReferenceLengthExpression(length=length, repeatSubunitLength=length)
+
+    return Allele(location=location, state=state)
+
+
+def translate_ref_identical_to_vrs(hgvs_string: str) -> Allele:
+    """Convert a reference-identical HGVS variant to a VRS Allele.
+
+    Handles reference-identical variants such as ``NM_001234.1:c.=``,
+    ``NP_001234.1:p.=``, and ``NC_000001.11:g.=``, which regular VRS
+    translation does not support. Returns an Allele with a
+    ``ReferenceLengthExpression`` state spanning the full reference sequence.
+
+    :param hgvs_string: HGVS reference-identical variant string (e.g. ``NM_001234.1:c.=``)
+    :return: VRS Allele spanning the full reference sequence
+    :raises ValueError: if ``hgvs_string`` is not a valid reference-identical HGVS expression
+    :raises DataLookupError: if the sequence identifier or metadata lookup fails
+    """
+    if ":" not in hgvs_string or not hgvs_string.endswith(".="):
+        msg = f"Not a reference-identical HGVS expression: {hgvs_string!r}"
+        raise ValueError(msg)
+
+    accession = hgvs_string.split(":")[0]
+    return build_ref_identical_allele(accession)
 
 
 # ----------------------------------- MANE ----------------------------------- #
