@@ -969,6 +969,8 @@ def _construct_vrs_allele(
             else:
                 allele = translate_ref_identical_to_vrs(hgvs_string)
 
+            normalize(allele, data_proxy=get_seqrepo())
+
             allele.id = ga4gh_identify(allele)
             alleles.append(allele)
             continue
