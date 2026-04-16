@@ -829,17 +829,18 @@ def _map_protein_coding(
                 error_message=str(transcript).strip("'"),
             )
         else:
-            if _hgvs_pro_is_valid(row.hgvs_pro) and protein_align_result is not None:
-                hgvs_pro_mappings = _map_protein_coding_pro(
-                    row, psequence_id, transcript, protein_align_result
-                )
-            # This should not occur because protein align result is only None if transcript selection failed, which should be caught by the TxSelectError check above.
-            elif protein_align_result is None:
-                hgvs_pro_mappings = MappedScore(
-                    accession_id=row.accession,
-                    score=row.score,
-                    error_message="Could not perform mapping for protein variant because transcript sequence is missing or could not be aligned to reference sequence",
-                )
+            if _hgvs_pro_is_valid(row.hgvs_pro):
+                if protein_align_result is not None:
+                    hgvs_pro_mappings = _map_protein_coding_pro(
+                        row, psequence_id, transcript, protein_align_result
+                    )
+                # This should not occur because protein align result is only None if transcript selection failed, which should be caught by the TxSelectError check above.
+                elif protein_align_result is None:
+                    hgvs_pro_mappings = MappedScore(
+                        accession_id=row.accession,
+                        score=row.score,
+                        error_message="Could not perform mapping for protein variant because transcript sequence is missing or could not be aligned to reference sequence",
+                    )
             elif (
                 not hgvs_nt_mappings
             ):  # only create error message if there is not an hgvs nt mapping
