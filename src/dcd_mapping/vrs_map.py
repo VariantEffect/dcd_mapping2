@@ -834,8 +834,10 @@ def _map_protein_coding(
                     hgvs_pro_mappings = _map_protein_coding_pro(
                         row, psequence_id, transcript, protein_align_result
                     )
-                # This should not occur because protein align result is only None if transcript selection failed, which should be caught by the TxSelectError check above.
-                elif protein_align_result is None:
+                # Only create this error message if there is not a valid hgvs nt mapping, because if there is a valid hgvs nt mapping,
+                # it indicates we expect protein alignemnt to fail and we don't want to create redundant error messages about missing
+                # transcript sequence or alignment failure
+                elif protein_align_result is None and not hgvs_nt_mappings:
                     hgvs_pro_mappings = MappedScore(
                         accession_id=row.accession,
                         score=row.score,
