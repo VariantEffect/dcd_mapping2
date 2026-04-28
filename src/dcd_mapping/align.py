@@ -495,7 +495,9 @@ def _cigar_from_coords(aln: "BioAlign.Alignment") -> str | None:
     return "".join(parts) if parts else None
 
 
-def _build_alignment_qc(aln: "BioAlign.Alignment") -> "AlignmentQc":
+def _build_alignment_qc(
+    aln: "BioAlign.Alignment", protein_vs_dna: bool = False
+) -> "AlignmentQc":
     """Derive the per-(target, alignment_level) QC block from a Bio.Align
     ``Alignment`` parsed out of BLAT's pslx output.
 
@@ -512,6 +514,10 @@ def _build_alignment_qc(aln: "BioAlign.Alignment") -> "AlignmentQc":
     must treat ``at_mismatched_locus`` as ``None`` (not evaluated) in that
     situation to avoid a silent disagreement where ``mismatch_count > 0`` but
     no variant is ever flagged.
+
+    :param protein_vs_dna: set ``True`` for ``-q=prot -t=dnax`` BLAT runs.
+        Skips per-base mismatch detection (target/query coordinates are in
+        incompatible spaces) and sets ``mismatch_positions_unavailable=True``.
     """
     counts = aln.counts()
     coords = aln.coordinates
@@ -519,15 +525,23 @@ def _build_alignment_qc(aln: "BioAlign.Alignment") -> "AlignmentQc":
     gap_intervals: list[tuple[int, int]] = []
     query_insert_blocks = 0
 
-    # Per-base mismatch detection requires concrete sequence content for both
-    # target and query. Biopython's pslx parser sometimes leaves bases outside
-    # aligned blocks (or even within, depending on BLAT output) as undefined
-    # placeholders. The aggregate mismatch *count* still comes from
-    # ``aln.counts()`` below; we treat per-position recording as best-effort
-    # and set mismatch_positions_unavailable=True if the sequence content isn't
-    # materialized so callers know at_mismatched_locus is unreliable.
-    mismatch_positions_unavailable = False
-    sequences_available = True
+    # Per-base mismatch detection requires sequence content from pslx tseqs/qseqs.
+    # BioPython sometimes leaves these as undefined placeholders; aggregate
+    # mismatch *count* from counts() is still accurate in that case.  We treat
+    # per-position recording as best-effort and set mismatch_positions_unavailable
+    # so callers leave at_mismatched_locus as None rather than a misleading False.
+    #
+    # For -q=prot -t=dnax runs, target coordinates are in nucleotide space and
+    # query coordinates are in amino-acid space (3:1 ratio).  Minus-strand target
+    # blocks have ts > te, making aln.target.seq[ts:te] return "".  Per-base
+    # comparison is impossible, so we skip it entirely (sequences_available=False).
+    # This is fine: for protein scoresets the preferred layer is PROTEIN, flagged
+    # from the protein-to-protein alignment in vrs_map.py — not this genomic one.
+    # The gap_intervals walk below still runs; its output is stored in AlignmentQc
+    # but not consumed for near_gap in the typical protein-only case (no GENOMIC
+    # layer variants are emitted when hgvs_nt is absent).
+    mismatch_positions_unavailable = protein_vs_dna
+    sequences_available = not protein_vs_dna
     for i in range(coords.shape[1] - 1):
         ts, te = int(coords[0][i]), int(coords[0][i + 1])
         qs, qe = int(coords[1][i]), int(coords[1][i + 1])
@@ -570,7 +584,27 @@ def _build_alignment_qc(aln: "BioAlign.Alignment") -> "AlignmentQc":
                 sequences_available = False
                 continue
 
-            for j, (tb, qb) in enumerate(zip(t_bases, q_bases, strict=True)):
+            # PSL should guarantee equal-length aligned blocks for
+            # nucleotide-vs-nucleotide runs (protein-vs-DNA is excluded
+            # above via sequences_available=False).  This branch is a
+            # defensive fallback for malformed BLAT output.  Compare the
+            # overlapping prefix rather than discarding the entire block.
+            if len(t_bases) != len(q_bases):
+                _logger.warning(
+                    "Aligned-block sequence slices have unequal lengths "
+                    "(%d vs %d) for target block [%d:%d] query block [%d:%d]. "
+                    "Comparing the overlapping prefix; %d base(s) at the tail "
+                    "of the longer slice will not be assessed for mismatches.",
+                    len(t_bases),
+                    len(q_bases),
+                    ts,
+                    te,
+                    qs,
+                    qe,
+                    abs(len(t_bases) - len(q_bases)),
+                )
+
+            for j, (tb, qb) in enumerate(zip(t_bases, q_bases, strict=False)):
                 if qb.upper() != tb.upper():
                     mismatch_positions.append(ts + j)
 
@@ -906,7 +940,8 @@ def _get_best_match(
         hit_subranges.append(SequenceRange(start=ts, end=te))
         query_subranges.append(SequenceRange(start=min(qs, qe), end=max(qs, qe)))
 
-    alignment_qc = _build_alignment_qc(best_aln)
+    protein_vs_dna = "-q=prot" in blat_params.get("target_args", "")
+    alignment_qc = _build_alignment_qc(best_aln, protein_vs_dna=protein_vs_dna)
 
     return AlignmentResult(
         aligner_parameters=blat_params,
