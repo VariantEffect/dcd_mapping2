@@ -1,10 +1,13 @@
 """Annotate MaveDB score set metadata with mapped scores."""
 
+import bisect
 import datetime
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
+import cdot
 import hgvs.edit
 import hgvs.location
 import hgvs.parser
@@ -34,7 +37,7 @@ from dcd_mapping.lookup import (
     get_ucsc_chromosome_name,
     get_vrs_id_from_identifier,
 )
-from dcd_mapping.resource_utils import LOCAL_STORE_PATH
+from dcd_mapping.resource_utils import CDOT_URL, LOCAL_STORE_PATH
 from dcd_mapping.schemas import (
     AlignmentResult,
     ComputedReferenceSequence,
@@ -42,19 +45,174 @@ from dcd_mapping.schemas import (
     MappedReferenceSequence,
     MappedScore,
     ScoreAnnotation,
-    ScoreAnnotationWithLayer,
     ScoresetMapping,
     ScoresetMetadata,
     TargetAnnotation,
     TargetGene,
+    TargetMapping,
     TargetSequenceType,
     TargetType,
     TxSelectResult,
     VrsVersion,
 )
 from dcd_mapping.transcripts import TxSelectError
+from dcd_mapping.version import dcd_mapping_version
 
 _logger = logging.getLogger(__name__)
+
+# How close (in reference bases) a variant must be to an alignment gap before
+# we flag it as ``near_gap``. This is somewhat arbitrary, but seems like a reasonable window to
+# capture potential edge effects without being so large that it flags a large
+# fraction of variants as near-gap. We might consider re-evaluating this window with more
+# rigor in the future, or making it configurable to support situations where callers
+# want to be more or less conservative in their definition of "near".
+NEAR_GAP_WINDOW = 5
+
+
+def _allele_ref_positions(post_mapped: object) -> list[tuple[int, int]]:
+    """Return the reference-frame half-open intervals covered by an Allele or
+    Haplotype-of-Alleles.
+
+    Returns an empty list for:
+    - Unrecognised shapes (e.g. pre-VRS-2.0 representations) — caller leaves
+      locus flags as None.
+    - ReferenceLengthExpression alleles (reference-identical variants) — their
+      span covers the entire reference allele unchanged, so per-variant locus
+      flags carry no meaningful audit value (and could span entire chromosomes).
+    """
+    members = (
+        post_mapped.members if isinstance(post_mapped, Haplotype) else [post_mapped]
+    )
+    intervals: list[tuple[int, int]] = []
+    for member in members:
+        if (
+            not isinstance(member, Allele)
+            or member.location is None
+            or isinstance(member.state, ReferenceLengthExpression)
+        ):
+            continue
+
+        try:
+            start = int(member.location.start)
+            end = int(member.location.end)
+        except (TypeError, AttributeError, ValueError):
+            continue
+
+        # SequenceLocation is half-open [start, end). Ensure we don't produce
+        # a zero-length interval when start == end.
+        intervals.append((start, max(start + 1, end)))
+
+    return intervals
+
+
+def _stamp_alignment_locus_flags(
+    annotations: list[ScoreAnnotation],
+    align_result: AlignmentResult | None,
+    target_layer: AnnotationLayer,
+    near_gap_window: int = NEAR_GAP_WINDOW,
+) -> None:
+    """Stamp ``at_mismatched_locus`` and ``near_gap`` on each annotation whose
+    ``annotation_layer`` matches ``target_layer``, using positions from the
+    given alignment's QC block.
+
+    The caller is responsible for pairing each layer with its own alignment:
+    GENOMIC variants get checked against the BLAT genomic alignment; PROTEIN
+    variants get checked against the target-protein-to-reference-protein
+    alignment. CDNA flags are not currently evaluated -- we'd need either a
+    dedicated cDNA alignment or to translate genomic mismatch/gap positions
+    through exon structure -- cdna annotations leave the flags as None to
+    signal "not evaluated".
+
+    When ``AlignmentQc.mismatch_positions_unavailable`` is ``True`` and
+    ``mismatch_count > 0``, the per-base positions are absent but the aggregate
+    count is non-zero.  In that case ``at_mismatched_locus`` is left as ``None``
+    (not evaluated) for all variants to prevent a silent disagreement between
+    ``mismatch_count`` and the per-variant flag.  ``near_gap`` is still evaluated
+    from gap intervals, which are always coordinate-derived.
+    """
+    if align_result is None or align_result.alignment_qc is None:
+        return
+
+    qc = align_result.alignment_qc
+    mismatches = sorted(qc.mismatch_positions)
+    gap_intervals = sorted(qc.gap_intervals)
+
+    # When sequence content was unavailable during QC computation, mismatch_count
+    # may be non-zero but mismatch_positions is empty. Marking at_mismatched_locus
+    # as False would silently disagree with mismatch_count; leave it as None instead.
+    positions_reliable = not (
+        qc.mismatch_positions_unavailable and qc.mismatch_count > 0
+    )
+
+    layer_anns = [
+        ann
+        for ann in annotations
+        if ann.alignment_level == target_layer and ann.post_mapped is not None
+    ]
+    if not layer_anns:
+        return
+
+    # Explicitly record that this target/layer had no mismatches or gaps. Use
+    # mismatch_count (not the positions list) as the source of truth: when
+    # mismatch_positions_unavailable is True the list is empty even though
+    # mismatches exist, so testing `not mismatches` would be a faulty premise.
+    # mismatch_count comes from aln.counts() which is purely coordinate-based
+    # and is always accurate regardless of sequence availability.
+    if qc.mismatch_count == 0 and not gap_intervals:
+        for ann in layer_anns:
+            ann.at_mismatched_locus = False
+            ann.near_gap = False
+        return
+
+    # Pre-compute sorted lists for O(log G) gap overlap queries.
+    gap_starts = [gs for gs, _ge in gap_intervals]
+    gap_ends = [ge for _gs, ge in gap_intervals]
+
+    for ann in layer_anns:
+        intervals = _allele_ref_positions(ann.post_mapped)
+        if not intervals:
+            # Empty means either RLE allele or unrecognised shape; leave flags None.
+            continue
+
+        at_mismatch = False
+        near_g = False
+        for int_start, int_end in intervals:
+            # -- Mismatch check: any mismatch position in [int_start, int_end)?  O(log M)
+            if mismatches and not at_mismatch:
+                idx = bisect.bisect_left(mismatches, int_start)
+                if idx < len(mismatches) and mismatches[idx] < int_end:
+                    at_mismatch = True
+
+            # -- Gap proximity check: any gap overlaps [int_start-W, int_end+W)?  O(log G)
+            # A gap (gs, ge) overlaps window [L, R) iff gs < R AND ge > L.
+            # With sorted (non-overlapping) gap intervals:
+            #   Case 1: gap start in [L, R) — definitively overlaps.
+            #   Case 2: gap start < L — overlaps only if its end > L.
+            if not near_g:
+                win_l = int_start - near_gap_window
+                win_r = int_end + near_gap_window
+                first_at_or_after_l = bisect.bisect_left(gap_starts, win_l)
+                first_at_or_after_r = bisect.bisect_left(gap_starts, win_r)
+                # At least one gap starts in [win_l, win_r) OR the last gap starting before win_l extends into [win_l, win_r).
+                if first_at_or_after_l < first_at_or_after_r or (
+                    first_at_or_after_l > 0
+                    and gap_ends[first_at_or_after_l - 1] > win_l
+                ):
+                    near_g = True
+
+            if at_mismatch and near_g:
+                break
+
+        # Stamp flags.
+        # Note: when positions_reliable is False (mismatch_positions_unavailable
+        # AND count>0), at_mismatch will always be False here because mismatches
+        # is an empty list — we cannot trust it. Leaving at_mismatched_locus as
+        # None (not evaluated) rather than stamping a misleading False. The
+        # near_gap branch is unaffected: gap_intervals are coordinate-derived and
+        # always reliable, so near_g is evaluated regardless.
+        if positions_reliable:
+            ann.at_mismatched_locus = at_mismatch
+        ann.near_gap = near_g
 
 
 async def compute_target_gene_info(
@@ -353,7 +511,7 @@ def _iter_genomic_spans_from_mapped_scores(
     """
     spans: list[tuple[str, int, int]] = []
     for ms in mapped_scores:
-        if ms.annotation_layer != AnnotationLayer.GENOMIC or ms.post_mapped is None:
+        if ms.alignment_level != AnnotationLayer.GENOMIC or ms.post_mapped is None:
             continue
         if isinstance(ms.post_mapped, Allele):
             loc = ms.post_mapped.location
@@ -559,7 +717,7 @@ def _get_hgvs_string(allele: Allele, accession: str) -> tuple[str, Syntax]:
     if alt == "":
         edit = "del"
 
-    if edit != "dup" or edit != "del" or edit != "=":
+    if edit not in ("dup", "del", "="):
         edit = (
             hgvs.edit.AARefAlt(ref=ref, alt=alt)
             if syntax == Syntax.HGVS_P
@@ -589,7 +747,7 @@ def _annotate_allele_mapping(
     metadata: TargetGene,
     urn: str,
     vrs_version: VrsVersion = VrsVersion.V_2,
-) -> ScoreAnnotationWithLayer:
+) -> ScoreAnnotation:
     """Perform annotations and, if necessary, create VRS 1.3 equivalents for allele mappings."""
     pre_mapped: Allele = mapped_score.pre_mapped
     post_mapped: Allele = mapped_score.post_mapped
@@ -607,7 +765,7 @@ def _annotate_allele_mapping(
 
     if post_mapped:
         # Determine reference sequence
-        if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
+        if mapped_score.alignment_level == AnnotationLayer.GENOMIC:
             sequence_id = f"ga4gh:{mapped_score.post_mapped.location.sequenceReference.refgetAccession}"
             accession = get_chromosome_identifier_from_vrs_id(sequence_id)
             if accession is None:
@@ -641,14 +799,14 @@ def _annotate_allele_mapping(
         pre_mapped = _allele_to_vod(pre_mapped)
         post_mapped = _allele_to_vod(post_mapped) if post_mapped else None
 
-    return ScoreAnnotationWithLayer(
+    return ScoreAnnotation(
         pre_mapped=pre_mapped,
         post_mapped=post_mapped,
         vrs_version=vrs_version,
         mavedb_id=mapped_score.accession_id,
         score=float(mapped_score.score) if mapped_score.score is not None else None,
-        annotation_layer=mapped_score.annotation_layer,
         error_message=mapped_score.error_message,
+        alignment_level=mapped_score.alignment_level,
     )
 
 
@@ -658,7 +816,7 @@ def _annotate_haplotype_mapping(
     metadata: TargetGene,
     urn: str,
     vrs_version: VrsVersion = VrsVersion.V_2,
-) -> ScoreAnnotationWithLayer:
+) -> ScoreAnnotation:
     """Perform annotations and, if necessary, create VRS 1.3 equivalents for haplotype mappings."""
     pre_mapped: Haplotype = mapped_score.pre_mapped  # type: ignore
     post_mapped: Haplotype = mapped_score.post_mapped  # type: ignore
@@ -674,7 +832,7 @@ def _annotate_haplotype_mapping(
 
     if post_mapped:
         # Determine reference sequence
-        if mapped_score.annotation_layer == AnnotationLayer.GENOMIC:
+        if mapped_score.alignment_level == AnnotationLayer.GENOMIC:
             sequence_id = f"ga4gh:{post_mapped.members[0].location.sequenceReference.refgetAccession}"
             accession = get_chromosome_identifier_from_vrs_id(sequence_id)
             if accession is None:
@@ -712,14 +870,14 @@ def _annotate_haplotype_mapping(
         pre_mapped = _haplotype_to_haplotype_1_3(pre_mapped)
         post_mapped = _haplotype_to_haplotype_1_3(post_mapped) if post_mapped else None
 
-    return ScoreAnnotationWithLayer(
+    return ScoreAnnotation(
         pre_mapped=pre_mapped,
         post_mapped=post_mapped,
         vrs_version=vrs_version,
         mavedb_id=mapped_score.accession_id,
         score=float(mapped_score.score) if mapped_score.score is not None else None,
-        annotation_layer=mapped_score.annotation_layer,
         error_message=mapped_score.error_message,
+        alignment_level=mapped_score.alignment_level,
     )
 
 
@@ -729,7 +887,7 @@ def annotate(
     metadata: TargetGene,
     urn: str,
     vrs_version: VrsVersion = VrsVersion.V_2,
-) -> list[ScoreAnnotationWithLayer]:
+) -> list[ScoreAnnotation]:
     """Given a list of mappings, add additional contextual data:
 
     1. ``vrs_ref_allele_seq``: The sequence between the start and end positions
@@ -751,13 +909,14 @@ def annotate(
     for mapped_score in mapped_scores:
         if mapped_score.pre_mapped is None:
             score_annotations.append(
-                ScoreAnnotationWithLayer(
+                ScoreAnnotation(
                     mavedb_id=mapped_score.accession_id,
                     score=float(mapped_score.score)
                     if mapped_score.score is not None
                     else None,
                     vrs_version=vrs_version,
                     error_message=mapped_score.error_message,
+                    alignment_level=mapped_score.alignment_level,
                 )
             )
         elif isinstance(mapped_score.pre_mapped, Haplotype) and (
@@ -780,7 +939,7 @@ def annotate(
             )
         else:
             score_annotations.append(
-                ScoreAnnotationWithLayer(
+                ScoreAnnotation(
                     pre_mapped=mapped_score.pre_mapped,
                     post_mapped=mapped_score.post_mapped,
                     vrs_version=vrs_version,
@@ -789,6 +948,7 @@ def annotate(
                     if mapped_score.score is not None
                     else None,
                     error_message=f"Multiple issues with annotation: Inconsistent variant structure (Allele and Haplotype mix).{' ' + mapped_score.error_message if mapped_score.error_message else ''}",
+                    alignment_level=mapped_score.alignment_level,
                 )
             )
 
@@ -891,16 +1051,44 @@ def _get_mapped_reference_sequence(
     )
 
 
-def _set_scoreset_layer(
-    urn: str, mappings: list[ScoreAnnotationWithLayer]
+def _align_result_for_target(
+    target_gene: str,
+    metadata: ScoresetMetadata,
+    align_results: dict[str, "AlignmentResult"],
+) -> "AlignmentResult | None":
+    """Return the AlignmentResult for a target, handling both sequence-based and
+    accession-based targets.
+
+    Sequence-based targets key ``align_results`` by target gene name.
+    Accession-based targets key it by ``target_accession_id`` (set by
+    ``parse_cdot_mapping`` in ``align.py``). This helper does the fallback so
+    callers don't have to repeat the lookup logic.
+    """
+    result = align_results.get(target_gene)
+    if result is None:
+        accession_id = metadata.target_genes[target_gene].target_accession_id
+        if accession_id:
+            result = align_results.get(accession_id)
+
+    return result
+
+
+def _pick_preferred_genomic_or_protein_layer(
+    mappings: list[ScoreAnnotation],
 ) -> AnnotationLayer:
-    """Many individual score results provide both genomic and protein variant
-    expressions. If genomic expressions are available, that's what we'd like to use.
-    This function tells us how to filter the final annotation objects.
+    """Return GENOMIC if any annotation has that layer, else PROTEIN.
+
+    Precondition: ``mappings`` must contain at least one annotation with
+    ``alignment_level`` in {GENOMIC, PROTEIN}. CDNA-only score sets are not
+    currently supported (``vrs_map`` does not emit CDNA-layer scores); this
+    function will silently return PROTEIN for them, which would then drop
+    every CDNA score from the output. Update this function if CDNA scores
+    become emittable.
     """
     for mapping in mappings:
-        if mapping.annotation_layer == AnnotationLayer.GENOMIC:
+        if mapping.alignment_level == AnnotationLayer.GENOMIC:
             return AnnotationLayer.GENOMIC
+
     return AnnotationLayer.PROTEIN
 
 
@@ -919,47 +1107,344 @@ def write_scoreset_mapping_to_json(
     _logger.info("Saving mapping output to %s", output_path)
     with output_path.open("w") as file:
         json.dump(
-            scoreset_mapping.model_dump(exclude_unset=False, exclude_none=True),
+            scoreset_mapping.model_dump(
+                mode="json", exclude_unset=False, exclude_none=True
+            ),
             file,
             indent=4,
         )
     return output_path
 
 
-def save_mapped_output_json(
+def _resolve_protein_accession(
+    target_metadata: TargetGene,
+    tx_result: TxSelectResult | TxSelectError | None,
+    _align_result: AlignmentResult
+    | None,  # protein accession comes from tx_result only
+) -> str | None:
+    if isinstance(tx_result, TxSelectResult) and tx_result.np:
+        return tx_result.np
+
+    accession_id = target_metadata.target_accession_id
+    if accession_id and accession_id.startswith(("NP", "ENSP")):
+        return accession_id
+
+    return None
+
+
+def _resolve_cdna_accession(
+    target_metadata: TargetGene,
+    tx_result: TxSelectResult | TxSelectError | None,
+    _align_result: AlignmentResult | None,  # cDNA accession comes from tx_result only
+) -> str | None:
+    if isinstance(tx_result, TxSelectResult) and tx_result.nm:
+        return tx_result.nm
+
+    accession_id = target_metadata.target_accession_id
+    if accession_id and accession_id.startswith(("NM", "ENST")):
+        return accession_id
+
+    return None
+
+
+def _resolve_genomic_accession(
+    target_metadata: TargetGene,
+    _tx_result: TxSelectResult
+    | TxSelectError
+    | None,  # genomic accession comes from align_result only
+    align_result: AlignmentResult | None,
+) -> str | None:
+    if align_result is not None and align_result.chrom:
+        try:
+            chrom_id = get_chromosome_identifier(align_result.chrom)
+        except Exception:
+            _logger.exception(
+                "Could not resolve chromosome identifier for %s", align_result.chrom
+            )
+            return None
+
+        if chrom_id and chrom_id.startswith("refseq:"):
+            return chrom_id[len("refseq:") :]
+
+        return chrom_id
+
+    accession_id = target_metadata.target_accession_id
+    if accession_id and accession_id.startswith("NC"):
+        return accession_id
+
+    return None
+
+
+_LAYER_ACCESSION_RESOLVERS = {
+    AnnotationLayer.PROTEIN: _resolve_protein_accession,
+    AnnotationLayer.CDNA: _resolve_cdna_accession,
+    AnnotationLayer.GENOMIC: _resolve_genomic_accession,
+}
+
+
+def _reference_accession_for_target_level(
+    alignment_level: AnnotationLayer,
+    target_metadata: TargetGene,
+    tx_result: TxSelectResult | TxSelectError | None,
+    align_result: AlignmentResult | None,
+) -> str | None:
+    """Pick the most informative RefSeq-style accession describing the reference
+    sequence that variants at ``alignment_level`` were mapped against.
+
+    Falls back to None when nothing sensible is available; the API column is nullable.
+    """
+    resolver = _LAYER_ACCESSION_RESOLVERS.get(alignment_level)
+    if resolver is None:
+        return None
+
+    return resolver(target_metadata, tx_result, align_result)
+
+
+def _build_target_mapping(
+    target_gene_identifier: str,
+    target_meta: TargetGene,
+    alignment_level: AnnotationLayer,
+    preferred: bool,
+    tx_result: TxSelectResult | TxSelectError | None,
+    align_result: AlignmentResult | None,
+    vrs_version: VrsVersion,
+    annotations: list[ScoreAnnotation],
+    protein_align_result: AlignmentResult | None = None,
+    null_failure_count: int = 0,
+    near_gap_window: int = NEAR_GAP_WINDOW,
+) -> TargetMapping:
+    """Assemble one target_mappings[] row for a (target, alignment_level) pair.
+
+    Provenance and aggregate counts are populated from the data the pipeline
+    already has. Alignment QC columns are populated from
+    ``align_result.alignment_qc`` for GENOMIC rows or
+    ``protein_align_result.alignment_qc`` for PROTEIN rows.
+
+    Note: CDNA ``TargetMapping`` rows are **not** emitted today — no
+    ``mapped_score`` carries ``alignment_level=CDNA`` (``vrs_map`` only
+    produces GENOMIC and PROTEIN scores).  The CDNA entry added to
+    ``reference_sequences`` in ``build_scoreset_mapping`` is purely a
+    reference-sequence accession record, not a scored layer.
+    """
+    reference_accession = _reference_accession_for_target_level(
+        alignment_level, target_meta, tx_result, align_result
+    )
+    reference_sequence_id: str | None = None
+    if reference_accession is not None:
+        try:
+            reference_sequence_id = get_vrs_id_from_identifier(reference_accession)
+        except Exception:
+            _logger.exception(
+                "Could not resolve VRS sequence id for %s", reference_accession
+            )
+
+    # Pick the alignment that lives in this row's coordinate frame:
+    # GENOMIC -> BLAT genomic alignment; PROTEIN -> target-protein-to-reference
+    # alignment from vrs_map.
+    # No CDNA branch: vrs_map never emits CDNA-layer scores, so this function
+    # is never called with alignment_level=CDNA in practice.
+    qc_source: AlignmentResult | None = None
+    if alignment_level == AnnotationLayer.GENOMIC:
+        qc_source = align_result
+    elif alignment_level == AnnotationLayer.PROTEIN:
+        qc_source = protein_align_result
+
+    tool_parameters: dict[str, Any] | None
+    # Accession-based targets split into two cases:
+    #   NC_ (chromosome/contig) — no alignment tool was run; no tool_parameters.
+    #   NM_/ENST (transcript)   — cdot was used for transcript placement; record its parameters.
+    # For non-accession-based targets we pull aligner parameters from the BLAT alignment as usual.
+    accession_id = target_meta.target_accession_id
+    if accession_id is not None and accession_id.startswith("NC"):
+        # Direct chromosome/contig accession: the coordinate frame is defined by
+        # the accession itself — no placement tool was invoked.
+        tool_parameters = {
+            "aligner": "direct_contig_accession",
+        }
+    elif accession_id is not None:
+        # Transcript accession (NM_/ENST): cdot was used for transcript placement.
+        # cdot_data_version is present in aligner_parameters (possibly None) for cdot
+        # paths after parse_cdot_mapping, so we can read it unconditionally.
+        cdot_data_version = (
+            align_result.aligner_parameters.get("cdot_data_version")
+            if align_result is not None and align_result.aligner_parameters is not None
+            else None
+        )
+        tool_parameters = {
+            "aligner": "cdot_transcript_placement",
+            "aligner_version": cdot.__version__,
+            "cdot_url": CDOT_URL,
+            # Always emit the key; None means "cdot run, version unknown".
+            "cdot_data_version": cdot_data_version,
+        }
+    else:
+        tool_parameters = (
+            qc_source.aligner_parameters if qc_source is not None else None
+        )
+
+    qc = qc_source.alignment_qc if qc_source is not None else None
+    percent_identity = qc.percent_identity if qc is not None else None
+    alignment_length = qc.alignment_length if qc is not None else None
+    mismatch_count = qc.mismatch_count if qc is not None else None
+    gap_count = qc.gap_count if qc is not None else None
+    alignment_string = qc.alignment_string if qc is not None else None
+
+    # Record the near-gap window alongside the CIGAR so consumers can interpret
+    # the per-variant ``near_gap`` flag. Stamped on every layer that had its
+    # flags evaluated against an alignment (any layer with a non-None qc).
+    alignment_metadata: dict[str, Any] | None = None
+    if qc is not None and qc.cigar:
+        alignment_metadata = {"cigar": qc.cigar}
+    if qc is not None:
+        alignment_metadata = alignment_metadata or {}
+        alignment_metadata["near_gap_window"] = near_gap_window
+        # Always emit this bit so consumers never have to infer it from absence.
+        alignment_metadata[
+            "at_mismatched_locus_evaluated"
+        ] = not qc.mismatch_positions_unavailable
+
+    alignment_score = qc_source.score if qc_source is not None else None
+    next_best_alignment_score = (
+        qc_source.next_best_score if qc_source is not None else None
+    )
+
+    total = len(annotations)
+    failed = sum(1 for a in annotations if a.post_mapped is None)
+    warnings = sum(
+        1
+        for a in annotations
+        if a.post_mapped is not None and a.error_message is not None
+    )
+    clean = total - failed - warnings
+
+    # near_gap is always evaluable (derived from gap positions in the alignment,
+    # not per-base sequence content), so count it unconditionally.
+    # at_mismatched_locus is only reliable when mismatch_positions_unavailable=False;
+    # when pslx tseq/qseq data was absent we leave it as None (falsy) and omit it
+    # from the tally so we don't silently under-count. The schema's
+    # at_mismatched_locus_evaluated flag in alignment_metadata lets consumers
+    # know they may be seeing only the near_gap portion of this count.
+    mismatch_unavailable = qc is not None and qc.mismatch_positions_unavailable
+    alignment_warnings = sum(
+        1
+        for a in annotations
+        if a.near_gap or (not mismatch_unavailable and a.at_mismatched_locus)
+    )
+
+    return TargetMapping(
+        target_gene_identifier=target_gene_identifier,
+        alignment_level=alignment_level,
+        preferred=preferred,
+        tool_name="dcd-mapping",
+        tool_version=dcd_mapping_version,
+        tool_parameters=tool_parameters,
+        reference_assembly=align_result.reference_assembly
+        if align_result is not None
+        else None,
+        reference_accession=reference_accession,
+        reference_sequence_id=reference_sequence_id,
+        vrs_version=vrs_version,
+        percent_identity=percent_identity,
+        alignment_score=alignment_score,
+        next_best_alignment_score=next_best_alignment_score,
+        alignment_length=alignment_length,
+        mismatch_count=mismatch_count,
+        gap_count=gap_count,
+        alignment_string=alignment_string,
+        alignment_metadata=alignment_metadata,
+        total_variants=total,
+        variants_mapped_cleanly=clean,
+        variants_with_mapping_warnings=warnings,
+        variants_with_alignment_warnings=alignment_warnings,
+        variants_failed=failed,
+        variants_failed_pre_layer_selection=null_failure_count
+        if null_failure_count
+        else None,
+    )
+
+
+def build_scoreset_mapping(
     metadata: ScoresetMetadata,
-    mappings: dict[str, list[ScoreAnnotationWithLayer]],
+    raw_metadata: dict,
+    mappings: dict[str, list[ScoreAnnotation]],
     align_results: dict[str, AlignmentResult],
     tx_output: dict[str, TxSelectResult | TxSelectError | None],
     gene_info: dict[str, GeneInfo | None],
     preferred_layer_only: bool = False,
-    output_path: Path | None = None,
-) -> Path:
-    """Save mapping output for a score set in a JSON file
+    vrs_version: VrsVersion = VrsVersion.V_2,
+    protein_align_results: dict[str, AlignmentResult | None] | None = None,
+    near_gap_window: int = NEAR_GAP_WINDOW,
+) -> ScoresetMapping:
+    """Assemble and return a :class:`ScoresetMapping` without writing to disk.
 
-    :param urn: Score set accession
-    :param mappings: A dictionary of annotated VRS mappings for each target
-    :param align_result: A dictionary of alignment information for each target
-    :param tx_output: A dictionary of transcript output for each target
-    :param output_path: specific location to save output to. Default to
-        <dcd_mapping_data_dir>/urn:mavedb:00000XXX-X-X_mapping_<ISO8601 datetime>.json
-    :return: output location
+    :param metadata: parsed scoreset metadata (used for pipeline logic)
+    :param raw_metadata: the full MaveDB API response dict, stored verbatim in
+        the output ``metadata`` field so no fields are lost
+    :param mappings: annotated VRS mappings per target. **Mutated in place** —
+        ``_stamp_alignment_locus_flags`` sets ``at_mismatched_locus`` and
+        ``near_gap`` on each ``ScoreAnnotation``. Do not pass the same dict to
+        two successive calls if you need reproducible per-call results; deep-copy
+        it first.
+    :param align_results: alignment results per target (genomic frame, from BLAT)
+    :param tx_output: transcript selection results per target
+    :param gene_info: gene info per target
+    :param preferred_layer_only: if True, only emit the preferred annotation layer
+    :param vrs_version: VRS schema version for this run
+    :param protein_align_results: per-target target-protein-to-reference-protein
+        alignments (from vrs_map). Used to flag protein-layer variants at
+        mismatched/near-gap loci and as the QC source for PROTEIN target_mappings
+        rows. Pass ``None`` if you don't have them.
+    :param near_gap_window: half-width (in reference bases) of the window used to
+        flag variants as ``near_gap``. Defaults to :data:`NEAR_GAP_WINDOW` (5).
+        Increase for a more conservative call set; decrease to restrict to
+        immediately adjacent variants.
+    :return: fully assembled ScoresetMapping
     """
+    run_mapped_date_utc = datetime.datetime.now(tz=datetime.UTC)
     # set preferred layers for each target, to allow a mix of coding and noncoding targets
     reference_sequences: dict[str, TargetAnnotation] = {}
     mapped_scores: list[ScoreAnnotation] = []
+    target_mappings: list[TargetMapping] = []
     for target_gene in mappings:
+        # Stamp per-variant locus flags first so the warning counts in
+        # TargetMapping and the emitted ScoreAnnotations are consistent.
+        protein_align_for_target = (protein_align_results or {}).get(target_gene)
+        genomic_align_for_target = _align_result_for_target(
+            target_gene, metadata, align_results
+        )
+        _stamp_alignment_locus_flags(
+            mappings[target_gene],
+            genomic_align_for_target,
+            AnnotationLayer.GENOMIC,
+            near_gap_window,
+        )
+        _stamp_alignment_locus_flags(
+            mappings[target_gene],
+            protein_align_for_target,
+            AnnotationLayer.PROTEIN,
+            near_gap_window,
+        )
+
+        # preferred_layer_for_target is the single "best" layer for this target
+        # (GENOMIC when available, else PROTEIN).  It drives both which
+        # TargetMapping row gets preferred=True and where completely-failed
+        # variants (annotation_layer=None) are attributed.
+        preferred_layer_for_target = _pick_preferred_genomic_or_protein_layer(
+            mappings[target_gene]
+        )
         if preferred_layer_only:
-            preferred_layers = {
-                _set_scoreset_layer(metadata.urn, mappings[target_gene]),
-            }
+            preferred_layers = {preferred_layer_for_target}
         else:
             preferred_layers = {
-                mapping.annotation_layer for mapping in mappings[target_gene]
+                mapping.alignment_level for mapping in mappings[target_gene]
             }
 
         # use target gene name in reference sequence dictionary, rather than the label, which differs between score sets
         target_gene_name = metadata.target_genes[target_gene].target_gene_name
+
+        # sometimes Nonetype layers show up in preferred layers dict; remove these
+        # before constructing TargetAnnotation (which requires valid AnnotationLayer keys).
+        preferred_layers.discard(None)
 
         reference_sequences[target_gene_name] = TargetAnnotation(
             gene_info=gene_info.get(target_gene),
@@ -971,8 +1456,6 @@ def save_mapped_output_json(
                 for layer in preferred_layers
             },
         )
-        # sometimes Nonetype layers show up in preferred layers dict; remove these
-        preferred_layers.discard(None)
         for layer in preferred_layers:
             reference_sequences[target_gene_name].layers[layer][
                 "computed_reference_sequence"
@@ -985,7 +1468,7 @@ def save_mapped_output_json(
                 metadata.target_genes[target_gene],
                 layer,
                 tx_output[target_gene],
-                align_results[target_gene],
+                genomic_align_for_target,
             )
 
         # if genomic layer, not accession-based, and target gene type is coding, add cdna entry (just the sequence accession) to reference_sequences dict
@@ -1006,31 +1489,152 @@ def save_mapped_output_json(
             }
 
         for m in mappings[target_gene]:
-            if m.pre_mapped is None:
-                mapped_scores.append(ScoreAnnotation(**m.model_dump()))
-            elif m.annotation_layer in preferred_layers:
-                # drop annotation layer from mapping object
-                mapped_scores.append(ScoreAnnotation(**m.model_dump()))
+            if m.alignment_level is None and m.pre_mapped is None:
+                # Completely-failed variant — vrs_map could not determine a layer.
+                # Re-attribute to the preferred layer so every mapped_score has a
+                # parent TargetMapping row (the API joins on alignment_level).
+                score_dict = m.model_dump()
+                score_dict["alignment_level"] = preferred_layer_for_target
+                score_dict["target_gene_identifier"] = target_gene_name
+                mapped_scores.append(ScoreAnnotation(**score_dict))
+            elif m.alignment_level in preferred_layers:
+                score_dict = m.model_dump()
+                score_dict["target_gene_identifier"] = target_gene_name
+                mapped_scores.append(ScoreAnnotation(**score_dict))
 
-        # drop Nonetype reference sequences
-        for target_gene in reference_sequences:
-            for layer in list(reference_sequences[target_gene].layers.keys()):
-                if (
-                    reference_sequences[target_gene].layers[layer][
-                        "mapped_reference_sequence"
-                    ]
-                    is None
-                    and reference_sequences[target_gene].layers[layer][
-                        "computed_reference_sequence"
-                    ]
-                    is None
-                ) or layer is None:
-                    del reference_sequences[target_gene].layers[layer]
+        # Provenance/QC: emit one TargetMapping per (target, alignment_level) that
+        # actually produced variants in this run. The (target_gene_identifier,
+        # alignment_level) pair must be unique per run; the API uses it to attribute
+        # each mapped_variant to its source row via target_gene_mapping_id.
+        #
+        # Completely-failed variants (annotation_layer=None) were re-attributed to
+        # preferred_layer_for_target in mapped_scores above; include them in that
+        # layer's TargetMapping count so total_variants is accurate.
+        null_failures = [
+            m
+            for m in mappings[target_gene]
+            if m.alignment_level is None and m.pre_mapped is None
+        ]
+        align_result_for_target = genomic_align_for_target
+        emitted_mappings = [
+            m for m in mappings[target_gene] if m.alignment_level in preferred_layers
+        ]
 
-    output = ScoresetMapping(
-        metadata=metadata.model_dump(),
+        # Group by alignment_level.
+        layers_seen: dict = {}
+        for m in emitted_mappings:
+            layers_seen.setdefault(m.alignment_level, []).append(m)
+
+        for layer, layer_annotations in layers_seen.items():
+            if layer is None:
+                continue
+
+            # Defensive: coerce raw string values (e.g. "g") to AnnotationLayer.
+            if not isinstance(layer, AnnotationLayer):
+                try:
+                    layer = AnnotationLayer(layer)
+                except ValueError:
+                    _logger.warning(
+                        "Skipping target_mappings row for unknown annotation layer %r",
+                        layer,
+                    )
+                    continue
+
+            # Null-layer failures are attributed to the preferred layer; fold them
+            # into that layer's annotation list so variant counts are correct.
+            annotations_for_tm = (
+                list(layer_annotations) + null_failures
+                if layer == preferred_layer_for_target
+                else layer_annotations
+            )
+            target_mappings.append(
+                _build_target_mapping(
+                    target_gene_identifier=target_gene_name,
+                    target_meta=metadata.target_genes[target_gene],
+                    alignment_level=layer,
+                    preferred=(layer == preferred_layer_for_target),
+                    tx_result=tx_output.get(target_gene),
+                    align_result=align_result_for_target,
+                    vrs_version=vrs_version,
+                    annotations=annotations_for_tm,
+                    protein_align_result=protein_align_for_target,
+                    null_failure_count=len(null_failures)
+                    if layer == preferred_layer_for_target
+                    else 0,
+                    near_gap_window=near_gap_window,
+                )
+            )
+
+    # Drop layers where both reference sequence entries are None, and any None-keyed
+    # layers. Moved outside the per-target loop to avoid O(n²) scans and eliminate
+    # the variable-shadowing hazard (the inner loop previously reused `target_gene`).
+    for tgt_name in reference_sequences:
+        for layer in list(reference_sequences[tgt_name].layers.keys()):
+            if (
+                reference_sequences[tgt_name].layers[layer]["mapped_reference_sequence"]
+                is None
+                and reference_sequences[tgt_name].layers[layer][
+                    "computed_reference_sequence"
+                ]
+                is None
+            ) or layer is None:
+                del reference_sequences[tgt_name].layers[layer]
+
+    # Runtime invariant: every mapped_score must be attributable to a TargetMapping
+    # row via (target_gene_identifier, alignment_level). If any orphaned keys exist
+    # the API join would silently drop those scores, undermining the audit guarantee.
+    # Using an explicit RuntimeError rather than `assert` so this is never compiled
+    # away with `-O` optimizations in production deployments.
+    tm_keys = {
+        (tm.target_gene_identifier, tm.alignment_level) for tm in target_mappings
+    }
+    orphaned = {
+        (ms.target_gene_identifier, ms.alignment_level)
+        for ms in mapped_scores
+        if ms.alignment_level is not None
+    } - tm_keys
+    if orphaned:
+        raise RuntimeError(
+            f"build_scoreset_mapping produced {len(orphaned)} orphaned mapped_score "  # noqa: EM102
+            f"key(s) with no corresponding TargetMapping row: {orphaned!r}. "
+            "This is a pipeline invariant violation — every mapped_score must have "
+            "a parent TargetMapping so the API join is unambiguous."
+        )
+
+    return ScoresetMapping(
+        metadata=raw_metadata,
+        mapped_date=run_mapped_date_utc,
         reference_sequences=reference_sequences,
         mapped_scores=mapped_scores,
+        target_mappings=target_mappings,
     )
 
+
+def save_mapped_output_json(
+    metadata: ScoresetMetadata,
+    raw_metadata: dict,
+    mappings: dict[str, list[ScoreAnnotation]],
+    align_results: dict[str, AlignmentResult],
+    tx_output: dict[str, TxSelectResult | TxSelectError | None],
+    gene_info: dict[str, GeneInfo | None],
+    preferred_layer_only: bool = False,
+    output_path: Path | None = None,
+    vrs_version: VrsVersion = VrsVersion.V_2,
+    protein_align_results: dict[str, AlignmentResult | None] | None = None,
+) -> Path:
+    """Build and write mapping output for a score set to a JSON file.
+
+    :return: output file path
+    """
+    output = build_scoreset_mapping(
+        metadata=metadata,
+        raw_metadata=raw_metadata,
+        mappings=mappings,
+        align_results=align_results,
+        tx_output=tx_output,
+        gene_info=gene_info,
+        preferred_layer_only=preferred_layer_only,
+        vrs_version=vrs_version,
+        protein_align_results=protein_align_results,
+    )
     return write_scoreset_mapping_to_json(metadata.urn, output, output_path)

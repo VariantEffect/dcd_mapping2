@@ -1,18 +1,28 @@
 {
   "$defs": {
+    "AnnotationLayer": {
+      "description": "Create enum for supported annotation layers",
+      "enum": [
+        "p",
+        "c",
+        "g"
+      ],
+      "title": "AnnotationLayer",
+      "type": "string"
+    },
     "ComputedReferenceSequence": {
       "description": "Define metadata describing a computed reference sequence",
       "properties": {
-        "sequence_type": {
-          "$ref": "#/$defs/TargetSequenceType"
+        "sequence": {
+          "title": "Sequence",
+          "type": "string"
         },
         "sequence_id": {
           "title": "Sequence Id",
           "type": "string"
         },
-        "sequence": {
-          "title": "Sequence",
-          "type": "string"
+        "sequence_type": {
+          "$ref": "#/$defs/TargetSequenceType"
         }
       },
       "required": [
@@ -23,6 +33,37 @@
       "title": "ComputedReferenceSequence",
       "type": "object"
     },
+    "GeneInfo": {
+      "description": "Basic gene metadata for a target, including symbol and selection method.",
+      "properties": {
+        "hgnc_symbol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hgnc Symbol"
+        },
+        "selection_method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selection Method"
+        }
+      },
+      "title": "GeneInfo",
+      "type": "object"
+    },
     "IRI": {
       "description": "An IRI Reference (either an IRI or a relative-reference), according to `RFC3986 section 4.1  <https://datatracker.ietf.org/doc/html/rfc3986#section-4.1>` and `RFC3987 section 2.1 <https://datatracker.ietf.org/doc/html/rfc3987#section-2.1>`. MAY be a JSON Pointer as an IRI fragment, as  described by `RFC6901 section 6 <https://datatracker.ietf.org/doc/html/rfc6901#section-6>`.",
       "title": "IRI",
@@ -31,19 +72,19 @@
     "MappedReferenceSequence": {
       "description": "Define metadata describing a mapped, human reference sequence",
       "properties": {
-        "sequence_type": {
-          "$ref": "#/$defs/TargetSequenceType"
-        },
-        "sequence_id": {
-          "title": "Sequence Id",
-          "type": "string"
-        },
         "sequence_accessions": {
           "items": {
             "type": "string"
           },
           "title": "Sequence Accessions",
           "type": "array"
+        },
+        "sequence_id": {
+          "title": "Sequence Id",
+          "type": "string"
+        },
+        "sequence_type": {
+          "$ref": "#/$defs/TargetSequenceType"
         }
       },
       "required": [
@@ -60,9 +101,6 @@
         "type": {
           "const": "Number",
           "default": "Number",
-          "enum": [
-            "Number"
-          ],
           "title": "Type",
           "type": "string"
         },
@@ -97,32 +135,6 @@
     "ReferenceLengthExpression": {
       "description": "An expression sequence derived from a reference.",
       "properties": {
-        "id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
-          "title": "Id"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "A primary label for the entity.",
-          "title": "Label"
-        },
         "description": {
           "anyOf": [
             {
@@ -151,15 +163,31 @@
           "default": null,
           "title": "Extensions"
         },
-        "type": {
-          "const": "ReferenceLengthExpression",
-          "default": "ReferenceLengthExpression",
-          "description": "MUST be \"ReferenceLengthExpression\"",
-          "enum": [
-            "ReferenceLengthExpression"
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Type",
-          "type": "string"
+          "default": null,
+          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
+          "title": "Id"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A primary label for the entity.",
+          "title": "Label"
         },
         "length": {
           "anyOf": [
@@ -173,6 +201,12 @@
           "description": "The number of residues of the expressed sequence.",
           "title": "Length"
         },
+        "repeatSubunitLength": {
+          "default": null,
+          "description": "The number of residues of the repeat subunit.",
+          "title": "Repeatsubunitlength",
+          "type": "integer"
+        },
         "sequence": {
           "anyOf": [
             {
@@ -185,11 +219,12 @@
           "default": null,
           "description": "the Sequence encoded by the Reference Length Expression."
         },
-        "repeatSubunitLength": {
-          "default": null,
-          "description": "The number of residues of the repeat subunit.",
-          "title": "Repeatsubunitlength",
-          "type": "integer"
+        "type": {
+          "const": "ReferenceLengthExpression",
+          "default": "ReferenceLengthExpression",
+          "description": "MUST be \"ReferenceLengthExpression\"",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -209,16 +244,56 @@
     "ScoreAnnotation": {
       "description": "Provide extra annotations on top of mappings for an individual experiment score.\n\nThis model defines what an individual mapping instance looks like in the final JSON.",
       "properties": {
-        "pre_mapped": {
+        "alignment_level": {
           "anyOf": [
             {
-              "$ref": "#/$defs/VariationDescriptor"
+              "$ref": "#/$defs/AnnotationLayer"
             },
             {
-              "$ref": "#/$defs/dcd_mapping__vrs_v1_schemas__Haplotype"
+              "type": "null"
             }
           ],
-          "title": "Pre Mapped"
+          "default": null
+        },
+        "at_mismatched_locus": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At Mismatched Locus"
+        },
+        "error_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Message"
+        },
+        "mavedb_id": {
+          "title": "Mavedb Id",
+          "type": "string"
+        },
+        "near_gap": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Near Gap"
         },
         "post_mapped": {
           "anyOf": [
@@ -227,12 +302,28 @@
             },
             {
               "$ref": "#/$defs/dcd_mapping__vrs_v1_schemas__Haplotype"
+            },
+            {
+              "$ref": "#/$defs/ga4gh__vrs___internal__models__Allele"
+            },
+            {
+              "$ref": "#/$defs/ga4gh__vrs___internal__models__Haplotype"
+            },
+            {
+              "type": "null"
             }
           ],
+          "default": null,
           "title": "Post Mapped"
         },
-        "pre_mapped_2_0": {
+        "pre_mapped": {
           "anyOf": [
+            {
+              "$ref": "#/$defs/VariationDescriptor"
+            },
+            {
+              "$ref": "#/$defs/dcd_mapping__vrs_v1_schemas__Haplotype"
+            },
             {
               "$ref": "#/$defs/ga4gh__vrs___internal__models__Allele"
             },
@@ -244,33 +335,11 @@
             }
           ],
           "default": null,
-          "title": "Pre Mapped 2 0"
-        },
-        "post_mapped_2_0": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ga4gh__vrs___internal__models__Allele"
-            },
-            {
-              "$ref": "#/$defs/ga4gh__vrs___internal__models__Haplotype"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Post Mapped 2 0"
-        },
-        "mavedb_id": {
-          "title": "Mavedb Id",
-          "type": "string"
+          "title": "Pre Mapped"
         },
         "relation": {
           "const": "SO:is_homologous_to",
           "default": "SO:is_homologous_to",
-          "enum": [
-            "SO:is_homologous_to"
-          ],
           "title": "Relation",
           "type": "string"
         },
@@ -283,14 +352,35 @@
               "type": "null"
             }
           ],
+          "default": null,
           "title": "Score"
+        },
+        "target_gene_identifier": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Gene Identifier"
+        },
+        "vrs_version": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VrsVersion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
-        "pre_mapped",
-        "post_mapped",
-        "mavedb_id",
-        "score"
+        "mavedb_id"
       ],
       "title": "ScoreAnnotation",
       "type": "object"
@@ -298,20 +388,17 @@
     "SequenceInterval": {
       "description": "Define VRS 1.3 SequenceInterval.",
       "properties": {
-        "type": {
-          "const": "SequenceInterval",
-          "default": "SequenceInterval",
-          "enum": [
-            "SequenceInterval"
-          ],
-          "title": "Type",
-          "type": "string"
+        "end": {
+          "$ref": "#/$defs/Number"
         },
         "start": {
           "$ref": "#/$defs/Number"
         },
-        "end": {
-          "$ref": "#/$defs/Number"
+        "type": {
+          "const": "SequenceInterval",
+          "default": "SequenceInterval",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -323,32 +410,6 @@
     },
     "SequenceReference": {
       "properties": {
-        "id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
-          "title": "Id"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "A primary label for the entity.",
-          "title": "Label"
-        },
         "description": {
           "anyOf": [
             {
@@ -377,15 +438,31 @@
           "default": null,
           "title": "Extensions"
         },
-        "type": {
-          "const": "SequenceReference",
-          "default": "SequenceReference",
-          "description": "MUST be \"SequenceReference\"",
-          "enum": [
-            "SequenceReference"
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Type",
-          "type": "string"
+          "default": null,
+          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
+          "title": "Id"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A primary label for the entity.",
+          "title": "Label"
         },
         "refgetAccession": {
           "description": "A `GA4GH RefGet <http://samtools.github.io/hts-specs/refget.html>` identifier for the referenced sequence, using the sha512t24u digest.",
@@ -403,6 +480,13 @@
             }
           ],
           "default": null
+        },
+        "type": {
+          "const": "SequenceReference",
+          "default": "SequenceReference",
+          "description": "MUST be \"SequenceReference\"",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -433,6 +517,314 @@
       "title": "Syntax",
       "type": "string"
     },
+    "TargetAnnotation": {
+      "description": "Represents annotations associated with a biological target, including optional gene metadata\nand structured annotation layers.\n\nAttributes\n----------\ngene_info : GeneInfo | None\n    Optional metadata describing the gene associated with the target,\n    including identifiers and descriptive information where available.\n\nlayers : dict[AnnotationLayer, dict[str, ComputedReferenceSequence | MappedReferenceSequence | dict | None]]\n    A mapping of annotation layers to keyed layer data. Each layer is identified by an\n    AnnotationLayer key and contains a dictionary where:\n      - keys are string identifiers for items within the layer (e.g., feature names),\n      - values are one of:\n          - ComputedReferenceSequence: a computed sequence representation for the item,\n          - MappedReferenceSequence: a sequence mapped to a reference coordinate system,\n          - dict: a generic dictionary for custom layer-specific payloads,\n          - None: indicating missing or intentionally omitted data.\n\nNotes\n-----\n- The default value for 'layers' is an empty dictionary.\n- This model is intended to standardize layer-based annotations for downstream processing\n  and validation, allowing both computed and mapped sequence data to coexist within the same\n  structure.",
+      "properties": {
+        "gene_info": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GeneInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "layers": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ComputedReferenceSequence"
+                },
+                {
+                  "$ref": "#/$defs/MappedReferenceSequence"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "default": {},
+          "propertyNames": {
+            "$ref": "#/$defs/AnnotationLayer"
+          },
+          "title": "Layers",
+          "type": "object"
+        }
+      },
+      "title": "TargetAnnotation",
+      "type": "object"
+    },
+    "TargetMapping": {
+      "description": "Per-(target, alignment_level) provenance and QC block.\n\nField names mirror the corresponding columns on `target_gene_mappings` in the\nMaveDB API so the API worker can deserialize directly with minimal transformation.\nAny aligner-specific structured details go in ``tool_parameters`` /\n``alignment_metadata`` (JSONB on the API side).\n\n``reference_assembly`` is a top-level column (not nested in ``tool_parameters``)\nbecause it describes the coordinate frame of the mapping result, not aligner\nconfiguration.  It is ``None`` for alignments with no genomic frame (e.g.\nprotein-vs-protein).\n\n``tool_parameters`` shape per aligner\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nBLAT genomic (sequence-based, nucleotide or protein-vs-genome)::\n\n    {\n      \"aligner\":         \"blat\",\n      \"aligner_version\": \"<BLAT version string | null>\",\n      \"min_score\":       <int>,\n      \"out_format\":      \"<pslx|...>\",\n      \"target_args\":     \"<e.g. '-q=prot -t=dnax' | ''>\",\n    }\n\nBLAT protein-vs-protein (sequence-based, protein annotation layer)::\n\n    {\n      \"aligner\":         \"blat\",\n      \"aligner_version\": \"<BLAT version string | null>\",\n      \"min_score\":       <int>,\n      \"out_format\":      \"<pslx|...>\",\n      \"target_args\":     \"-q=prot -t=prot\",\n    }\n\ncdot transcript placement (accession-based)::\n\n    {\n      \"aligner\":           \"cdot_transcript_placement\",\n      \"aligner_version\":   \"<cdot library semver, e.g. '0.2.26'>\",\n      \"cdot_url\":          \"<CDOT REST endpoint>\",\n      \"cdot_data_version\": \"<data version string | null>\",\n    }\n\n``cdot_data_version`` is ``null`` when the cdot REST response did not\ninclude a ``cdot_data_version`` field; its presence (even as ``null``)\ndistinguishes \"cdot run, version unknown\" from \"not a cdot run\".",
+      "properties": {
+        "alignment_length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alignment Length"
+        },
+        "alignment_level": {
+          "$ref": "#/$defs/AnnotationLayer"
+        },
+        "alignment_metadata": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alignment Metadata"
+        },
+        "alignment_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alignment Score"
+        },
+        "alignment_string": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alignment String"
+        },
+        "gap_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gap Count"
+        },
+        "mismatch_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mismatch Count"
+        },
+        "next_best_alignment_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Best Alignment Score"
+        },
+        "percent_identity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Percent Identity"
+        },
+        "preferred": {
+          "default": false,
+          "title": "Preferred",
+          "type": "boolean"
+        },
+        "reference_accession": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Accession"
+        },
+        "reference_assembly": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Assembly"
+        },
+        "reference_sequence_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Sequence Id"
+        },
+        "target_gene_identifier": {
+          "title": "Target Gene Identifier",
+          "type": "string"
+        },
+        "tool_name": {
+          "default": "dcd-mapping",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "tool_parameters": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Parameters"
+        },
+        "tool_version": {
+          "default": "2026.1.2",
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "total_variants": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Variants"
+        },
+        "variants_failed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Variants Failed"
+        },
+        "variants_failed_pre_layer_selection": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Variants Failed Pre Layer Selection"
+        },
+        "variants_mapped_cleanly": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Variants Mapped Cleanly"
+        },
+        "variants_with_alignment_warnings": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Variants With Alignment Warnings"
+        },
+        "variants_with_mapping_warnings": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Variants With Mapping Warnings"
+        },
+        "vrs_version": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VrsVersion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "target_gene_identifier",
+        "alignment_level"
+      ],
+      "title": "TargetMapping",
+      "type": "object"
+    },
     "TargetSequenceType": {
       "description": "Define target sequence type. Add more definitions as needed.",
       "enum": [
@@ -445,22 +837,6 @@
     "VariationDescriptor": {
       "description": "Define VRSATILE VariationDescriptor.",
       "properties": {
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "type": {
-          "const": "VariationDescriptor",
-          "default": "VariationDescriptor",
-          "enum": [
-            "VariationDescriptor"
-          ],
-          "title": "Type",
-          "type": "string"
-        },
-        "variation": {
-          "$ref": "#/$defs/dcd_mapping__vrs_v1_schemas__Allele"
-        },
         "expressions": {
           "anyOf": [
             {
@@ -476,16 +852,29 @@
           "default": null,
           "title": "Expressions"
         },
-        "vrs_ref_allele_seq": {
-          "title": "Vrs Ref Allele Seq",
-          "type": "string"
-        },
         "extensions": {
           "items": {
             "$ref": "#/$defs/dcd_mapping__vrs_v1_schemas__Extension"
           },
           "title": "Extensions",
           "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "VariationDescriptor",
+          "default": "VariationDescriptor",
+          "title": "Type",
+          "type": "string"
+        },
+        "variation": {
+          "$ref": "#/$defs/dcd_mapping__vrs_v1_schemas__Allele"
+        },
+        "vrs_ref_allele_seq": {
+          "title": "Vrs Ref Allele Seq",
+          "type": "string"
         }
       },
       "required": [
@@ -497,18 +886,18 @@
       "title": "VariationDescriptor",
       "type": "object"
     },
+    "VrsVersion": {
+      "description": "Define VRS versions",
+      "enum": [
+        "1.3",
+        "2"
+      ],
+      "title": "VrsVersion",
+      "type": "string"
+    },
     "dcd_mapping__vrs_v1_schemas__Allele": {
       "description": "Define VRS 1.3 Allele.",
       "properties": {
-        "type": {
-          "const": "Allele",
-          "default": "Allele",
-          "enum": [
-            "Allele"
-          ],
-          "title": "Type",
-          "type": "string"
-        },
         "id": {
           "title": "Id",
           "type": "string"
@@ -518,6 +907,12 @@
         },
         "state": {
           "$ref": "#/$defs/dcd_mapping__vrs_v1_schemas__LiteralSequenceExpression"
+        },
+        "type": {
+          "const": "Allele",
+          "default": "Allele",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -531,25 +926,22 @@
     "dcd_mapping__vrs_v1_schemas__Expression": {
       "description": "Define VRS 1.3 Expression.",
       "properties": {
+        "syntax": {
+          "title": "Syntax",
+          "type": "string"
+        },
+        "syntax_version": {
+          "title": "Syntax Version"
+        },
         "type": {
           "const": "Expression",
           "default": "Expression",
-          "enum": [
-            "Expression"
-          ],
           "title": "Type",
-          "type": "string"
-        },
-        "syntax": {
-          "title": "Syntax",
           "type": "string"
         },
         "value": {
           "title": "Value",
           "type": "string"
-        },
-        "syntax_version": {
-          "title": "Syntax Version"
         }
       },
       "required": [
@@ -563,17 +955,14 @@
     "dcd_mapping__vrs_v1_schemas__Extension": {
       "description": "Define VRS 1.3 Extension.",
       "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
         "type": {
           "const": "Extension",
           "default": "Extension",
-          "enum": [
-            "Extension"
-          ],
           "title": "Type",
-          "type": "string"
-        },
-        "name": {
-          "title": "Name",
           "type": "string"
         },
         "value": {
@@ -590,15 +979,6 @@
     "dcd_mapping__vrs_v1_schemas__Haplotype": {
       "description": "Define VRS 1.3 Haplotype.",
       "properties": {
-        "type": {
-          "const": "Haplotype",
-          "default": "Haplotype",
-          "enum": [
-            "Haplotype"
-          ],
-          "title": "Type",
-          "type": "string"
-        },
         "members": {
           "anyOf": [
             {
@@ -615,6 +995,12 @@
             }
           ],
           "title": "Members"
+        },
+        "type": {
+          "const": "Haplotype",
+          "default": "Haplotype",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -626,17 +1012,14 @@
     "dcd_mapping__vrs_v1_schemas__LiteralSequenceExpression": {
       "description": "Define VRS 1.3 LiteralSequenceExpression.",
       "properties": {
+        "sequence": {
+          "title": "Sequence",
+          "type": "string"
+        },
         "type": {
           "const": "LiteralSequenceExpression",
           "default": "LiteralSequenceExpression",
-          "enum": [
-            "LiteralSequenceExpression"
-          ],
           "title": "Type",
-          "type": "string"
-        },
-        "sequence": {
-          "title": "Sequence",
           "type": "string"
         }
       },
@@ -660,21 +1043,18 @@
           ],
           "title": "Id"
         },
-        "type": {
-          "const": "SequenceLocation",
-          "default": "SequenceLocation",
-          "enum": [
-            "SequenceLocation"
-          ],
-          "title": "Type",
-          "type": "string"
+        "interval": {
+          "$ref": "#/$defs/SequenceInterval"
         },
         "sequence_id": {
           "title": "Sequence Id",
           "type": "string"
         },
-        "interval": {
-          "$ref": "#/$defs/SequenceInterval"
+        "type": {
+          "const": "SequenceLocation",
+          "default": "SequenceLocation",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -689,19 +1069,16 @@
       "additionalProperties": true,
       "description": "The Extension class provides VODs with a means to extend descriptions with other\nattributes unique to a content provider. These extensions are not expected to be\nnatively understood under VRSATILE, but may be used for pre-negotiated exchange of\nmessage attributes when needed.",
       "properties": {
+        "name": {
+          "description": "A name for the Extension",
+          "title": "Name",
+          "type": "string"
+        },
         "type": {
           "const": "Extension",
           "default": "Extension",
           "description": "MUST be \"Extension\".",
-          "enum": [
-            "Extension"
-          ],
           "title": "Type",
-          "type": "string"
-        },
-        "name": {
-          "description": "A name for the Extension",
-          "title": "Name",
           "type": "string"
         },
         "value": {
@@ -716,6 +1093,7 @@
               "type": "boolean"
             },
             {
+              "additionalProperties": true,
               "type": "object"
             },
             {
@@ -739,32 +1117,6 @@
     },
     "ga4gh__vrs___internal__models__Allele": {
       "properties": {
-        "id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
-          "title": "Id"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "A primary label for the entity.",
-          "title": "Label"
-        },
         "description": {
           "anyOf": [
             {
@@ -777,31 +1129,6 @@
           "default": null,
           "description": "A free-text description of the entity.",
           "title": "Description"
-        },
-        "extensions": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/ga4gh__core___internal__models__Extension"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Extensions"
-        },
-        "type": {
-          "const": "Allele",
-          "default": "Allele",
-          "description": "MUST be \"Allele\"",
-          "enum": [
-            "Allele"
-          ],
-          "title": "Type",
-          "type": "string"
         },
         "digest": {
           "anyOf": [
@@ -831,6 +1158,47 @@
           ],
           "default": null,
           "title": "Expressions"
+        },
+        "extensions": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ga4gh__core___internal__models__Extension"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extensions"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
+          "title": "Id"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A primary label for the entity.",
+          "title": "Label"
         },
         "location": {
           "anyOf": [
@@ -855,6 +1223,13 @@
           ],
           "description": "An expression of the sequence state",
           "title": "State"
+        },
+        "type": {
+          "const": "Allele",
+          "default": "Allele",
+          "description": "MUST be \"Allele\"",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -870,10 +1245,6 @@
         "syntax": {
           "$ref": "#/$defs/Syntax"
         },
-        "value": {
-          "title": "Value",
-          "type": "string"
-        },
         "syntax_version": {
           "anyOf": [
             {
@@ -885,6 +1256,10 @@
           ],
           "default": null,
           "title": "Syntax Version"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
         }
       },
       "required": [
@@ -897,32 +1272,6 @@
     "ga4gh__vrs___internal__models__Haplotype": {
       "description": "A set of non-overlapping Allele members that co-occur on the same molecule.",
       "properties": {
-        "id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
-          "title": "Id"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "A primary label for the entity.",
-          "title": "Label"
-        },
         "description": {
           "anyOf": [
             {
@@ -935,31 +1284,6 @@
           "default": null,
           "description": "A free-text description of the entity.",
           "title": "Description"
-        },
-        "extensions": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/ga4gh__core___internal__models__Extension"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Extensions"
-        },
-        "type": {
-          "const": "Haplotype",
-          "default": "Haplotype",
-          "description": "MUST be \"Haplotype\"",
-          "enum": [
-            "Haplotype"
-          ],
-          "title": "Type",
-          "type": "string"
         },
         "digest": {
           "anyOf": [
@@ -990,6 +1314,47 @@
           "default": null,
           "title": "Expressions"
         },
+        "extensions": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ga4gh__core___internal__models__Extension"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extensions"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
+          "title": "Id"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A primary label for the entity.",
+          "title": "Label"
+        },
         "members": {
           "description": "A list of Alleles (or IRI references to `Alleles`) that comprise a Haplotype. Since each `Haplotype` member MUST be an `Allele`, and all members MUST share a common `SequenceReference`, implementations MAY use a compact representation of Haplotype that omits type and `SequenceReference` information in individual Haplotype members. Implementations MUST transform compact `Allele` representations into an `Allele` when computing GA4GH identifiers.",
           "items": {
@@ -1005,6 +1370,13 @@
           "minItems": 2,
           "title": "Members",
           "type": "array"
+        },
+        "type": {
+          "const": "Haplotype",
+          "default": "Haplotype",
+          "description": "MUST be \"Haplotype\"",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -1016,32 +1388,6 @@
     "ga4gh__vrs___internal__models__LiteralSequenceExpression": {
       "description": "An explicit expression of a Sequence.",
       "properties": {
-        "id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
-          "title": "Id"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "A primary label for the entity.",
-          "title": "Label"
-        },
         "description": {
           "anyOf": [
             {
@@ -1070,23 +1416,42 @@
           "default": null,
           "title": "Extensions"
         },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
+          "title": "Id"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A primary label for the entity.",
+          "title": "Label"
+        },
+        "sequence": {
+          "$ref": "#/$defs/SequenceString",
+          "description": "the literal sequence"
+        },
         "type": {
           "const": "LiteralSequenceExpression",
           "default": "LiteralSequenceExpression",
           "description": "MUST be \"LiteralSequenceExpression\"",
-          "enum": [
-            "LiteralSequenceExpression"
-          ],
           "title": "Type",
           "type": "string"
-        },
-        "sequence": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/SequenceString"
-            }
-          ],
-          "description": "the literal sequence"
         }
       },
       "required": [
@@ -1098,32 +1463,6 @@
     "ga4gh__vrs___internal__models__SequenceLocation": {
       "description": "A `Location` defined by an interval on a referenced `Sequence`.",
       "properties": {
-        "id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
-          "title": "Id"
-        },
-        "label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "A primary label for the entity.",
-          "title": "Label"
-        },
         "description": {
           "anyOf": [
             {
@@ -1136,31 +1475,6 @@
           "default": null,
           "description": "A free-text description of the entity.",
           "title": "Description"
-        },
-        "extensions": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/ga4gh__core___internal__models__Extension"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Extensions"
-        },
-        "type": {
-          "const": "SequenceLocation",
-          "default": "SequenceLocation",
-          "description": "MUST be \"SequenceLocation\"",
-          "enum": [
-            "SequenceLocation"
-          ],
-          "title": "Type",
-          "type": "string"
         },
         "digest": {
           "anyOf": [
@@ -1175,6 +1489,59 @@
           "default": null,
           "description": "A sha512t24u digest created using the VRS Computed Identifier algorithm.",
           "title": "Digest"
+        },
+        "end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Range"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "description": "The end coordinate or range of the SequenceLocation. The minimum value of this coordinate or range is 0. MUST represent a coordinate or range greater than the value of `start`.",
+          "title": "End"
+        },
+        "extensions": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ga4gh__core___internal__models__Extension"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extensions"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The 'logical' identifier of the entity in the system of record, e.g. a UUID. This 'id' is  unique within a given system. The identified entity may have a different 'id' in a different  system, or may refer to an 'id' for the shared concept in another system (e.g. a CURIE).",
+          "title": "Id"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A primary label for the entity.",
+          "title": "Label"
         },
         "sequenceReference": {
           "anyOf": [
@@ -1204,17 +1571,12 @@
           "description": "The start coordinate or range of the SequenceLocation. The minimum value of this coordinate or range is 0. MUST represent a coordinate or range less than the value of `end`.",
           "title": "Start"
         },
-        "end": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Range"
-            },
-            {
-              "type": "integer"
-            }
-          ],
-          "description": "The end coordinate or range of the SequenceLocation. The minimum value of this coordinate or range is 0. MUST represent a coordinate or range greater than the value of `start`.",
-          "title": "End"
+        "type": {
+          "const": "SequenceLocation",
+          "default": "SequenceLocation",
+          "description": "MUST be \"SequenceLocation\"",
+          "title": "Type",
+          "type": "string"
         }
       },
       "required": [
@@ -1227,28 +1589,82 @@
   },
   "description": "Provide all mapped scores for a scoreset.",
   "properties": {
+    "error_message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Message"
+    },
+    "mapped_date": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mapped Date"
+    },
+    "mapped_scores": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ScoreAnnotation"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mapped Scores"
+    },
     "metadata": {
       "title": "Metadata"
     },
-    "computed_reference_sequence": {
-      "$ref": "#/$defs/ComputedReferenceSequence"
+    "reference_sequences": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/TargetAnnotation"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference Sequences"
     },
-    "mapped_reference_sequence": {
-      "$ref": "#/$defs/MappedReferenceSequence"
-    },
-    "mapped_scores": {
-      "items": {
-        "$ref": "#/$defs/ScoreAnnotation"
-      },
-      "title": "Mapped Scores",
-      "type": "array"
+    "target_mappings": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/TargetMapping"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target Mappings"
     }
   },
   "required": [
-    "metadata",
-    "computed_reference_sequence",
-    "mapped_reference_sequence",
-    "mapped_scores"
+    "metadata"
   ],
   "title": "ScoresetMapping",
   "type": "object"

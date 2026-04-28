@@ -4,7 +4,7 @@
       "chrom": "chr11",
       "strand": 1,
       "coverage": 100.0,
-      "ident_pct": 77.45098039215686,
+      "percent_identity": 77.45098039215686,
       "query_range": {
         "start": 0,
         "end": 102
@@ -40,7 +40,7 @@
       "chrom": "chr3",
       "strand": 1,
       "coverage": 100.0,
-      "ident_pct": 100.0,
+      "percent_identity": 100.0,
       "query_range": {
         "start": 0,
         "end": 1047
@@ -100,7 +100,7 @@
       "chrom": "chr22",
       "strand": -1,
       "coverage": 100.0,
-      "ident_pct": 99.9071494893222,
+      "percent_identity": 99.9071494893222,
       "query_range": {
         "start": 0,
         "end": 360
@@ -184,7 +184,7 @@
       "chrom": "chr20",
       "strand": 1,
       "coverage": 100.0,
-      "ident_pct": 99.86666666666666,
+      "percent_identity": 99.86666666666666,
       "query_range": {
         "start": 0,
         "end": 750
@@ -252,7 +252,7 @@
       "chrom": "chr11",
       "strand": 1,
       "coverage": 100.0,
-      "ident_pct": 100.0,
+      "percent_identity": 100.0,
       "query_range": {
         "start": 0,
         "end": 187
@@ -280,7 +280,7 @@
       "chrom": "chr16",
       "strand": 1,
       "coverage": 100.0,
-      "ident_pct": 100.0,
+      "percent_identity": 100.0,
       "query_range": {
         "start": 0,
         "end": 477
@@ -348,7 +348,7 @@
       "chrom": "chr3",
       "strand": -1,
       "coverage": 100.0,
-      "ident_pct": 100.0,
+      "percent_identity": 100.0,
       "query_range": {
         "start": 0,
         "end": 12
@@ -376,7 +376,7 @@
       "chrom": "chr3",
       "strand": -1,
       "coverage": 100.0,
-      "ident_pct": 100.0,
+      "percent_identity": 100.0,
       "query_range": {
         "start": 0,
         "end": 117
@@ -412,7 +412,7 @@
       "chrom": "chr17",
       "strand": -1,
       "coverage": 99.83079526226734,
-      "ident_pct": 99.91525423728814,
+      "percent_identity": 99.91525423728814,
       "query_range": {
         "start": 0,
         "end": 1180
@@ -512,7 +512,7 @@
       "chrom": "chr17",
       "strand": -1,
       "coverage": 100.0,
-      "ident_pct": 100.0,
+      "percent_identity": 100.0,
       "query_range": {
         "start": 0,
         "end": 300
@@ -564,7 +564,7 @@
       "chrom": "chr2",
       "strand": -1,
       "coverage": 97.05882352941177,
-      "ident_pct": 100.0,
+      "percent_identity": 100.0,
       "query_range": {
         "start": 9,
         "end": 306

@@ -32,12 +32,14 @@ from dcd_mapping.lookup import (
     check_uta,
 )
 from dcd_mapping.mavedb_data import (
+    get_raw_scoreset_metadata,
     get_scoreset_metadata,
     get_scoreset_records,
     patch_target_sequence_type,
     with_mavedb_score_set,
 )
 from dcd_mapping.schemas import (
+    AlignmentResult,
     ScoreRow,
     ScoresetMapping,
     ScoresetMetadata,
@@ -151,6 +153,7 @@ async def _check_data_prereqs(silent: bool) -> None:
 
 async def map_scoreset(
     metadata: ScoresetMetadata,
+    raw_metadata: dict,
     records: dict[str, list[ScoreRow]],
     output_path: Path | None = None,
     vrs_version: VrsVersion = VrsVersion.V_2,
@@ -229,17 +232,20 @@ async def map_scoreset(
     _emit_info("Reference selection complete.", silent)
 
     _emit_info("Mapping to VRS...", silent)
-    vrs_results = {}
     gene_info = {}
+    vrs_results = {}
+    protein_align_results: dict[str, AlignmentResult | None] = {}
     try:
         for target_gene in metadata.target_genes:
-            vrs_results[target_gene] = vrs_map(
+            vrs_map_result = vrs_map(
                 metadata=metadata.target_genes[target_gene],
                 align_result=alignment_results[target_gene],
                 records=records[target_gene],
                 transcript=transcripts[target_gene],
                 silent=silent,
             )
+            vrs_results[target_gene] = vrs_map_result.mappings
+            protein_align_results[target_gene] = vrs_map_result.protein_align_result
 
             gene_info[target_gene] = await compute_target_gene_info(
                 target_gene,
@@ -327,12 +333,15 @@ async def map_scoreset(
     try:
         final_output = save_mapped_output_json(
             metadata,
+            raw_metadata,
             annotated_vrs_results,
             alignment_results,
             transcripts,
             gene_info,
             prefer_genomic,
             output_path,
+            vrs_version=vrs_version,
+            protein_align_results=protein_align_results,
         )
     except Exception as e:
         _logger.exception(
@@ -372,6 +381,7 @@ async def map_scoreset_urn(
     :param silent: if True, suppress console information output
     """
     try:
+        raw_metadata = get_raw_scoreset_metadata(urn, store_path)
         metadata = get_scoreset_metadata(urn, store_path)
         records = get_scoreset_records(metadata, silent, store_path)
         metadata = patch_target_sequence_type(metadata, records, force=False)
@@ -407,5 +417,11 @@ async def map_scoreset_urn(
         return
 
     await map_scoreset(
-        metadata, records, output_path, vrs_version, prefer_genomic, silent
+        metadata,
+        raw_metadata,
+        records,
+        output_path,
+        vrs_version,
+        prefer_genomic,
+        silent,
     )
