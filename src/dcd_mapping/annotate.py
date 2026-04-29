@@ -1208,7 +1208,6 @@ def _build_target_mapping(
     vrs_version: VrsVersion,
     annotations: list[ScoreAnnotation],
     protein_align_result: AlignmentResult | None = None,
-    null_failure_count: int = 0,
     near_gap_window: int = NEAR_GAP_WINDOW,
 ) -> TargetMapping:
     """Assemble one target_mappings[] row for a (target, alignment_level) pair.
@@ -1257,7 +1256,7 @@ def _build_target_mapping(
         # Direct chromosome/contig accession: the coordinate frame is defined by
         # the accession itself — no placement tool was invoked.
         tool_parameters = {
-            "aligner": "direct_contig_accession",
+            "aligner": "reference_accession_passthrough",
         }
     elif accession_id is not None:
         # Transcript accession (NM_/ENST): cdot was used for transcript placement.
@@ -1308,12 +1307,7 @@ def _build_target_mapping(
 
     total = len(annotations)
     failed = sum(1 for a in annotations if a.post_mapped is None)
-    warnings = sum(
-        1
-        for a in annotations
-        if a.post_mapped is not None and a.error_message is not None
-    )
-    clean = total - failed - warnings
+    clean = total - failed
 
     # near_gap is always evaluable (derived from gap positions in the alignment,
     # not per-base sequence content), so count it unconditionally.
@@ -1352,12 +1346,8 @@ def _build_target_mapping(
         alignment_metadata=alignment_metadata,
         total_variants=total,
         variants_mapped_cleanly=clean,
-        variants_with_mapping_warnings=warnings,
         variants_with_alignment_warnings=alignment_warnings,
         variants_failed=failed,
-        variants_failed_pre_layer_selection=null_failure_count
-        if null_failure_count
-        else None,
     )
 
 
@@ -1556,9 +1546,6 @@ def build_scoreset_mapping(
                     vrs_version=vrs_version,
                     annotations=annotations_for_tm,
                     protein_align_result=protein_align_for_target,
-                    null_failure_count=len(null_failures)
-                    if layer == preferred_layer_for_target
-                    else 0,
                     near_gap_window=near_gap_window,
                 )
             )

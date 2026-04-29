@@ -425,7 +425,7 @@ class TestBuildScoresetMapping:
         assert "cdot_url" in tm.tool_parameters
 
     def test_tool_parameters_for_nc_accession_target(self):
-        """NC_ (chromosome/contig) targets should use 'direct_contig_accession', not cdot."""
+        """NC_ (chromosome/contig) targets should use 'reference_accession_passthrough', not cdot."""
         metadata = ScoresetMetadata(
             urn="urn:mavedb:00000001-a-1",
             target_genes={"GENE1": _make_acc_target("NC_000001.11", "GENE1")},
@@ -460,7 +460,7 @@ class TestBuildScoresetMapping:
 
         tm = result.target_mappings[0]
         assert tm.tool_parameters is not None
-        assert tm.tool_parameters.get("aligner") == "direct_contig_accession"
+        assert tm.tool_parameters.get("aligner") == "reference_accession_passthrough"
         # Must not bleed cdot fields into a non-cdot path
         assert "cdot_data_version" not in tm.tool_parameters
         assert "cdot_url" not in tm.tool_parameters

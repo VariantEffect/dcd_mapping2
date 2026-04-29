@@ -373,10 +373,10 @@ class TargetMapping(BaseModel):
           "target_args":     "-q=prot -t=prot",
         }
 
-    Direct contig accession (accession-based)::
+    Passthrough for fully qualified reference accessions (accession-based)::
 
         {
-          "aligner":         "direct_contig_accession",
+          "aligner":         "reference_accession_passthrough",
         }
 
     cdot transcript placement (accession-based)::
@@ -433,31 +433,19 @@ class TargetMapping(BaseModel):
     #                                 this target/level.  True otherwise.
     alignment_metadata: dict[str, Any] | None = None
 
-    # Annotation QC -- totals for this target x level. The two warning columns
-    # count disjoint things:
-    #   * variants_with_mapping_warnings: the mapper itself attached an
-    #     ``error_message`` despite producing a ``post_mapped`` value (e.g.
-    #     fell back to RLE, ambiguous reference allele).
-    #   * variants_with_alignment_warnings: the variant's reference position
-    #     fell on a mismatched locus or near a gap in the underlying alignment
-    #     (``at_mismatched_locus`` or ``near_gap`` was True). Mapping itself
-    #     succeeded cleanly; this is purely about alignment context.
-    # A single variant can be in neither, either, or both.
+    # Annotation QC -- totals for this target x level.
+    # variants_with_alignment_warnings: the variant's reference position fell on
+    # a mismatched locus or near a gap in the underlying alignment
+    # (``at_mismatched_locus`` or ``near_gap`` was True). Mapping itself
+    # succeeded cleanly; this is purely about alignment context.
     total_variants: int | None = None
-    # Count of variants where post_mapped is not None AND error_message is None.
+    # Count of variants where post_mapped is not None.
     # Alignment warnings (at_mismatched_locus, near_gap) are counted separately in
     # variants_with_alignment_warnings and do NOT reduce this count; a variant can
     # be "cleanly mapped" and still sit at a mismatched locus or near a gap.
     variants_mapped_cleanly: int | None = None
-    variants_with_mapping_warnings: int | None = None
     variants_with_alignment_warnings: int | None = None
     variants_failed: int | None = None
-    # Count of variants that failed before any annotation layer was determined
-    # (annotation_layer=None, pre_mapped=None in the VRS output). These are
-    # re-attributed to the preferred layer's variants_failed total so the join
-    # invariant holds, but keeping them separate lets consumers see a clean
-    # per-layer failure count on all other (non-preferred) rows.
-    variants_failed_pre_layer_selection: int | None = None
 
 
 class VrsMapResult(NamedTuple):
