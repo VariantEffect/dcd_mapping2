@@ -248,4 +248,4 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
             ).model_dump(exclude_none=True)
         )
 
-    return JSONResponse(content=output.model_dump(mode="json", exclude_none=True))
+    return JSONResponse(content=output.model_dump(exclude_none=True))
