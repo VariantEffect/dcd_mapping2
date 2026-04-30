@@ -564,7 +564,7 @@
       "type": "object"
     },
     "TargetMapping": {
-      "description": "Per-(target, alignment_level) provenance and QC block.\n\nField names mirror the corresponding columns on `target_gene_mappings` in the\nMaveDB API so the API worker can deserialize directly with minimal transformation.\nAny aligner-specific structured details go in ``tool_parameters`` /\n``alignment_metadata`` (JSONB on the API side).\n\n``reference_assembly`` is a top-level column (not nested in ``tool_parameters``)\nbecause it describes the coordinate frame of the mapping result, not aligner\nconfiguration.  It is ``None`` for alignments with no genomic frame (e.g.\nprotein-vs-protein).\n\n``tool_parameters`` shape per aligner\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nBLAT genomic (sequence-based, nucleotide or protein-vs-genome)::\n\n    {\n      \"aligner\":         \"blat\",\n      \"aligner_version\": \"<BLAT version string | null>\",\n      \"min_score\":       <int>,\n      \"out_format\":      \"<pslx|...>\",\n      \"target_args\":     \"<e.g. '-q=prot -t=dnax' | ''>\",\n    }\n\nBLAT protein-vs-protein (sequence-based, protein annotation layer)::\n\n    {\n      \"aligner\":         \"blat\",\n      \"aligner_version\": \"<BLAT version string | null>\",\n      \"min_score\":       <int>,\n      \"out_format\":      \"<pslx|...>\",\n      \"target_args\":     \"-q=prot -t=prot\",\n    }\n\ncdot transcript placement (accession-based)::\n\n    {\n      \"aligner\":           \"cdot_transcript_placement\",\n      \"aligner_version\":   \"<cdot library semver, e.g. '0.2.26'>\",\n      \"cdot_url\":          \"<CDOT REST endpoint>\",\n      \"cdot_data_version\": \"<data version string | null>\",\n    }\n\n``cdot_data_version`` is ``null`` when the cdot REST response did not\ninclude a ``cdot_data_version`` field; its presence (even as ``null``)\ndistinguishes \"cdot run, version unknown\" from \"not a cdot run\".",
+      "description": "Per-(target, alignment_level) provenance and QC block.\n\nField names mirror the corresponding columns on `target_gene_mappings` in the\nMaveDB API so the API worker can deserialize directly with minimal transformation.\nAny aligner-specific structured details go in ``tool_parameters`` /\n``alignment_metadata`` (JSONB on the API side).\n\n``reference_assembly`` is a top-level column (not nested in ``tool_parameters``)\nbecause it describes the coordinate frame of the mapping result, not aligner\nconfiguration.  It is ``None`` for alignments with no genomic frame (e.g.\nprotein-vs-protein).\n\n``tool_parameters`` shape per aligner\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nBLAT genomic (sequence-based, nucleotide or protein-vs-genome)::\n\n    {\n      \"aligner\":         \"blat\",\n      \"aligner_version\": \"<BLAT version string | null>\",\n      \"min_score\":       <int>,\n      \"out_format\":      \"<pslx|...>\",\n      \"target_args\":     \"<e.g. '-q=prot -t=dnax' | ''>\",\n    }\n\nBLAT protein-vs-protein (sequence-based, protein annotation layer)::\n\n    {\n      \"aligner\":         \"blat\",\n      \"aligner_version\": \"<BLAT version string | null>\",\n      \"min_score\":       <int>,\n      \"out_format\":      \"<pslx|...>\",\n      \"target_args\":     \"-q=prot -t=prot\",\n    }\n\nPassthrough for fully qualified reference accessions (accession-based)::\n\n    {\n      \"aligner\":         \"reference_accession_passthrough\",\n    }\n\ncdot transcript placement (accession-based)::\n\n    {\n      \"aligner\":           \"cdot_transcript_placement\",\n      \"aligner_version\":   \"<cdot library semver, e.g. '0.2.26'>\",\n      \"cdot_url\":          \"<CDOT REST endpoint>\",\n      \"cdot_data_version\": \"<data version string | null>\",\n    }\n\n``cdot_data_version`` is ``null`` when the cdot REST response did not\ninclude a ``cdot_data_version`` field; its presence (even as ``null``)\ndistinguishes \"cdot run, version unknown\" from \"not a cdot run\".",
       "properties": {
         "alignment_length": {
           "anyOf": [
@@ -758,18 +758,6 @@
           "default": null,
           "title": "Variants Failed"
         },
-        "variants_failed_pre_layer_selection": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Variants Failed Pre Layer Selection"
-        },
         "variants_mapped_cleanly": {
           "anyOf": [
             {
@@ -793,18 +781,6 @@
           ],
           "default": null,
           "title": "Variants With Alignment Warnings"
-        },
-        "variants_with_mapping_warnings": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Variants With Mapping Warnings"
         },
         "vrs_version": {
           "anyOf": [
