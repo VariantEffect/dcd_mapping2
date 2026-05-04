@@ -19,6 +19,7 @@ from ga4gh.vrs._internal.models import (
     Expression,
     Haplotype,
     LiteralSequenceExpression,
+    ReferenceLengthExpression,
     Syntax,
 )
 
@@ -511,6 +512,12 @@ def _get_hgvs_string(allele: Allele, accession: str) -> tuple[str, Syntax]:
     else:
         syntax = Syntax.HGVS_G
         syntax_value = "g"
+
+    # Reference-identical variants are represented as simple Alleles with a ReferenceLengthExpression state rather than being translated from HGVS.
+    # We can generate a simplified HGVS string for these variants without needing to perform a full translation.
+    if isinstance(allele.state, ReferenceLengthExpression):
+        return f"{accession}:{syntax_value}.=", syntax
+
     start: int = allele.location.start
     end: int = allele.location.end
 
@@ -587,12 +594,16 @@ def _annotate_allele_mapping(
     pre_mapped: Allele = mapped_score.pre_mapped
     post_mapped: Allele = mapped_score.post_mapped
 
-    # get vrs_ref_allele_seq for pre-mapped variants
-    ref_allele_seq_extension = _get_vrs_ref_allele_seq(
-        pre_mapped, metadata, urn, tx_results
-    )
-    if ref_allele_seq_extension is not None:
-        pre_mapped.extensions = [ref_allele_seq_extension]
+    # get vrs_ref_allele_seq for pre-mapped variants if they aren't reference-identical variants, which have a ReferenceLengthExpression state
+    # and for which the vrs_ref_allele_seq would be redundant with the length and sequence reference information already present in the allele.
+    # We also want to avoid fetching the reference sequence for long reference-identical variants, as this can cause performance issues and the
+    # vrs_ref_allele_seq doesn't add much value in these cases.
+    if not isinstance(pre_mapped.state, ReferenceLengthExpression):
+        ref_allele_seq_extension = _get_vrs_ref_allele_seq(
+            pre_mapped, metadata, urn, tx_results
+        )
+        if ref_allele_seq_extension is not None:
+            pre_mapped.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
         # Determine reference sequence
@@ -614,10 +625,14 @@ def _annotate_allele_mapping(
         sr = get_seqrepo()
         loc = mapped_score.post_mapped.location
         sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
-        ref = sr.get_sequence(sequence_id, loc.start, loc.end)
-        post_mapped.extensions = [
-            Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
-        ]
+
+        # Skip getting refereence sequence for RLE Alleles, see above for pre-mapped alleles.
+        if not isinstance(post_mapped.state, ReferenceLengthExpression):
+            ref = sr.get_sequence(sequence_id, loc.start, loc.end)
+            post_mapped.extensions = [
+                Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
+            ]
+
         if accession:
             hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
             post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
@@ -648,13 +663,14 @@ def _annotate_haplotype_mapping(
     pre_mapped: Haplotype = mapped_score.pre_mapped  # type: ignore
     post_mapped: Haplotype = mapped_score.post_mapped  # type: ignore
 
-    # get vrs_ref_allele_seq for pre-mapped variants
+    # see comment in _annotate_allele_mapping regarding why we skip getting vrs_ref_allele_seq for reference-identical variants.
     for allele in pre_mapped.members:
-        ref_allele_seq_extension = _get_vrs_ref_allele_seq(
-            allele, metadata, urn, tx_results
-        )
-        if ref_allele_seq_extension is not None:
-            allele.extensions = [ref_allele_seq_extension]
+        if not isinstance(allele.state, ReferenceLengthExpression):
+            ref_allele_seq_extension = _get_vrs_ref_allele_seq(
+                allele, metadata, urn, tx_results
+            )
+            if ref_allele_seq_extension is not None:
+                allele.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
         # Determine reference sequence
@@ -678,10 +694,16 @@ def _annotate_haplotype_mapping(
         for allele in post_mapped.members:
             loc = allele.location
             sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
-            ref = sr.get_sequence(sequence_id, loc.start, loc.end)  # TODO type issues??
-            allele.extensions = [
-                Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
-            ]
+
+            # Again, skip getting reference sequence for RLE Alleles.
+            if not isinstance(allele.state, ReferenceLengthExpression):
+                ref = sr.get_sequence(
+                    sequence_id, loc.start, loc.end
+                )  # TODO type issues??
+                allele.extensions = [
+                    Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
+                ]
+
             if accession:
                 hgvs, syntax = _get_hgvs_string(allele, accession)
                 allele.expressions = [Expression(syntax=syntax, value=hgvs)]
