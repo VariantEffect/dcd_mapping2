@@ -494,10 +494,13 @@ def _map_protein_coding_pro(
             "An error occurred while generating pre-mapped protein variant for %s, accession %s: %s",
             row.hgvs_pro,
             row.accession,
-            str(e),
+            e,
+            exc_info=True,
         )
         return MappedScore(
-            accession_id=row.accession, score=row.score, error_message=str(e)
+            accession_id=row.accession,
+            score=row.score,
+            error_message=f"{type(e).__name__}: {e}",
         )
 
     try:
@@ -518,14 +521,15 @@ def _map_protein_coding_pro(
             "An error occurred while generating post-mapped protein variant for %s, accession %s: %s",
             row.hgvs_pro,
             row.accession,
-            str(e),
+            e,
+            exc_info=True,
         )
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
             annotation_layer=AnnotationLayer.PROTEIN,
             pre_mapped=pre_mapped_protein,
-            error_message=str(e).strip("'"),
+            error_message=f"{type(e).__name__}: {e}",
         )
 
     return MappedScore(
@@ -606,10 +610,13 @@ def _map_genomic(
                 "An error occurred while generating genomic variant for %s, accession %s: %s",
                 row.hgvs_nt,
                 row.accession,
-                str(e),
+                e,
+                exc_info=True,
             )
             return MappedScore(
-                accession_id=row.accession, score=row.score, error_message=str(e)
+                accession_id=row.accession,
+                score=row.score,
+                error_message=f"{type(e).__name__}: {e}",
             )
 
     elif namespace.lower() in ("refseq", "ncbi", "ensembl"):
@@ -632,10 +639,13 @@ def _map_genomic(
                 "An error occurred while generating pre-mapped genomic variant for %s, accession %s: %s",
                 row.hgvs_nt,
                 row.accession,
-                str(e),
+                e,
+                exc_info=True,
             )
             return MappedScore(
-                accession_id=row.accession, score=row.score, error_message=str(e)
+                accession_id=row.accession,
+                score=row.score,
+                error_message=f"{type(e).__name__}: {e}",
             )
         try:
             post_mapped_hgvs_strings = _create_post_mapped_hgvs_strings(
@@ -654,14 +664,15 @@ def _map_genomic(
                 "An error occurred while generating post-mapped genomic variant for %s, accession %s: %s",
                 row.hgvs_nt,
                 row.accession,
-                str(e),
+                e,
+                exc_info=True,
             )
             return MappedScore(
                 accession_id=row.accession,
                 score=row.score,
                 annotation_layer=AnnotationLayer.GENOMIC,
                 pre_mapped=pre_mapped_genomic,
-                error_message=str(e),
+                error_message=f"{type(e).__name__}: {e}",
             )
     elif namespace.lower() == "ga4gh":
         # target seq way
@@ -682,10 +693,13 @@ def _map_genomic(
                 "An error occurred while generating pre-mapped genomic variant for %s, accession %s: %s",
                 row.hgvs_nt,
                 row.accession,
-                str(e),
+                e,
+                exc_info=True,
             )
             return MappedScore(
-                accession_id=row.accession, score=row.score, error_message=str(e)
+                accession_id=row.accession,
+                score=row.score,
+                error_message=f"{type(e).__name__}: {e}",
             )
 
         try:
@@ -705,14 +719,15 @@ def _map_genomic(
                 "An error occurred while generating post-mapped genomic variant for %s, accession %s: %s",
                 row.hgvs_nt,
                 row.accession,
-                str(e),
+                e,
+                exc_info=True,
             )
             return MappedScore(
                 accession_id=row.accession,
                 score=row.score,
                 annotation_layer=AnnotationLayer.GENOMIC,
                 pre_mapped=pre_mapped_genomic,
-                error_message=str(e),
+                error_message=f"{type(e).__name__}: {e}",
             )
     else:
         msg = f"Unsupported reference sequence namespace: {namespace}"

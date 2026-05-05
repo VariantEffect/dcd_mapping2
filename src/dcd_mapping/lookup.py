@@ -100,6 +100,39 @@ def cdot_rest() -> RESTDataProvider:
 # ---------------------------------- Global ---------------------------------- #
 
 
+class _TimeoutUtaDatabase(UtaDatabase):
+    """UtaDatabase subclass with an increased command timeout.
+
+    The upstream default is 60s, which can be insufficient for range queries
+    against the public UTA server's ``tx_exon_aln_v`` view.
+    """
+
+    async def create_pool(self) -> None:
+        """Create connection pool with a 5-minute command timeout."""
+        if not self._connection_pool:
+            import asyncpg
+
+            self.args = self._get_conn_args()
+            try:
+                self._connection_pool = await asyncpg.create_pool(
+                    min_size=1,
+                    max_size=10,
+                    max_inactive_connection_lifetime=3,
+                    command_timeout=300,
+                    host=self.args["host"],
+                    port=self.args["port"],
+                    user=self.args["user"],
+                    password=self.args["password"],
+                    database=self.args["database"],
+                )
+            except asyncpg.InterfaceError as e:
+                _logger.error(
+                    "While creating connection pool, encountered exception %s", e
+                )
+                msg = "Could not create connection pool"
+                raise Exception(msg) from e
+
+
 class CoolSeqToolBuilder:
     """Singleton constructor for ``cool-seq-tool`` instance."""
 
@@ -126,7 +159,7 @@ class CoolSeqToolBuilder:
                 try:
                     aliases = self.translate_sequence_identifier(ac, namespace="ga4gh")
                 except KeyError:
-                    _logger.error("KeyError when getting refget accession: %s", ac)
+                    _logger.exception("KeyError when getting refget accession: %s", ac)
                 else:
                     if aliases:
                         refget_accession = aliases[0].split("ga4gh:")[-1]
@@ -152,7 +185,7 @@ class CoolSeqToolBuilder:
                 self.mane_transcript_mappings = ManeTranscriptMappings(
                     mane_data_path=mane_data_path
                 )
-                self.uta_db = UtaDatabase(db_url=db_url)
+                self.uta_db = _TimeoutUtaDatabase(db_url=db_url)
                 self.alignment_mapper = AlignmentMapper(
                     self.seqrepo_access, self.transcript_mappings, self.uta_db
                 )
@@ -263,6 +296,9 @@ async def get_protein_accession(transcript: str) -> str | None:
         """  # noqa: S608
         result = await uta.execute_query(query)
     except Exception as e:
+        _logger.exception(
+            "Failed to get protein accession for transcript %s", transcript
+        )
         raise DataLookupError from e
     if result:
         return result[0]["pro_ac"]
@@ -291,6 +327,9 @@ async def get_transcripts(
         """  # noqa: S608
         result = await uta.execute_query(query)
     except Exception as e:
+        _logger.exception(
+            "Failed to get transcripts for %s:%d-%d", chromosome_ac, start, end
+        )
         raise DataLookupError from e
 
     return [(row["tx_ac"], row["hgnc"]) for row in result]

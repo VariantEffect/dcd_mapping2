@@ -200,6 +200,11 @@ def _get_blat_output(
             output = parse_blat(out_file, "blat-psl")
 
         except ValueError:
+            _logger.debug(
+                "Initial BLAT parse failed for %s, retrying with -q=dnax -t=dnax",
+                metadata.urn,
+                exc_info=True,
+            )
             target_args = "-q=dnax -t=dnax"
             process_result = _run_blat(
                 target_args, query_file, reference_genome_file, "/dev/stdout", silent
@@ -209,6 +214,7 @@ def _get_blat_output(
                 output = parse_blat(out_file, "blat-psl")
             except ValueError as e:
                 msg = f"Unable to run successful BLAT on {metadata.urn}"
+                _logger.exception(msg=msg, exc_info=e)
                 raise AlignmentError(msg) from e
 
     return output
