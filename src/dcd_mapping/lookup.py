@@ -368,10 +368,11 @@ def _get_hgnc_symbol(term: str) -> str | None:
 def get_gene_symbol(target_gene: TargetGene) -> str | None:
     """Acquire HGNC gene symbol given provided target gene metadata from MaveDB.
 
-    Right now, we use two sources for normalizing:
-    1. UniProt ID, if available
-    2. Target name: specifically, we try the first word in the name (this could
-    cause some problems and we should double-check it)
+    Tokenizes the target name on whitespace and tries each token against the
+    gene normalizer until one matches (gene symbols are not always the first
+    token, e.g. ``"Wildtype G6PD"``).  Silently returns ``None`` if no token
+    resolves — see ``_get_normalized_gene_response`` for the full description
+    of this limitation.
 
     :param target_gene: target gene metadata given by MaveDB API
     :return: gene symbol if available
@@ -381,10 +382,12 @@ def get_gene_symbol(target_gene: TargetGene) -> str | None:
         if result:
             return result
 
-    # try taking the first word in the target name
     if target_gene.target_gene_name:
-        parsed_name = target_gene.target_gene_name.split(" ")[0]
-        return _get_hgnc_symbol(parsed_name)
+        for word in target_gene.target_gene_name.split(" "):
+            result = _get_hgnc_symbol(word)
+            if result:
+                return result
+
     return None
 
 
@@ -406,7 +409,17 @@ def _get_normalized_gene_response(
 ) -> Gene | None:
     """Fetch best normalized concept given available scoreset metadata.
 
-    :param metadata: salient scoreset metadata items
+    **Limitation — heuristic name parsing**: when the target name is not itself
+    a valid HGNC symbol this function tokenizes it on whitespace and tries each
+    token in order (e.g. ``"Wildtype G6PD"`` resolves because ``"G6PD"`` is the
+    second token).  This will silently fail for names whose tokens are all
+    non-HGNC strings (e.g. ``"my favourite protein"``).  When it fails,
+    downstream chromosome selection has no anchor and BLAT's chromosome fallback
+    may land on the wrong chromosome, causing transcript selection to return no
+    results.  The only reliable fix is to ensure the target name contains the
+    HGNC gene symbol as one of its whitespace-delimited tokens.
+
+    :param target_gene: salient scoreset metadata items
     :return: Normalized gene if available
     """
     if target_gene.target_uniprot_ref:
@@ -414,12 +427,13 @@ def _get_normalized_gene_response(
         if gene_descriptor:
             return gene_descriptor
 
-    # try taking the first word in the target name
+    # Try each whitespace-delimited token from the target name. Gene symbols
+    # are not always the first word (e.g. "Wildtype G6PD").
     if target_gene.target_gene_name:
-        parsed_name = target_gene.target_gene_name.split(" ")[0]
-        gene_descriptor = _normalize_gene(parsed_name)
-        if gene_descriptor:
-            return gene_descriptor
+        for word in target_gene.target_gene_name.split(" "):
+            gene_descriptor = _normalize_gene(word)
+            if gene_descriptor:
+                return gene_descriptor
 
     return None
 
@@ -453,10 +467,8 @@ def get_gene_location(target_gene: TargetGene) -> GeneLocation | None:
     """Acquire gene location data from gene normalizer using metadata provided by
     scoreset.
 
-    As with ``get_gene_symbol()``, we try to normalize from the following:
-    1. UniProt ID, if available
-    2. Target name: specifically, we try the first word in the name (this could
-    cause some problems and we should double-check it)
+    Delegates to ``_get_normalized_gene_response`` — see that function for the
+    full description of the heuristic and its limitations.
 
     :param target_gene: data given by MaveDB API
     :return: gene location data if available

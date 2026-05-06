@@ -1,11 +1,19 @@
 """Provide class definitions for commonly-used information objects."""
 import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from cool_seq_tool.schemas import AnnotationLayer, Strand, TranscriptPriority
 from ga4gh.vrs._internal.models import Allele, Haplotype
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_serializer,
+)
 
 from dcd_mapping import vrs_v1_schemas
 from dcd_mapping.version import dcd_mapping_version
@@ -76,6 +84,61 @@ class SequenceRange(BaseModel):
     end: int
 
 
+class AlignmentQc(BaseModel):
+    """Aggregate QC for a BLAT pslx alignment.
+
+    Mismatch positions and gap intervals are kept on the in-memory model so
+    downstream code can flag individual variants that fall on a mismatched
+    base or near a gap, but they are excluded from JSON serialization to keep
+    payloads compact -- consumers reconstruct per-base detail from the CIGAR
+    or use the per-variant flags emitted on each :class:`ScoreAnnotation`.
+
+    **cDNA→genome BLAT limitation:** BLAT's pslx format is supposed to include
+    per-block target and query sequences (tseqs/qseqs), but in practice
+    Biopython's PSL parser may leave aligned-block bases as undefined when
+    the pslx output is incomplete or when blocks fall outside the portion of
+    the database sequence that BLAT includes in its output.  When this occurs,
+    ``mismatch_count`` (derived from ``Alignment.counts()``, which is purely
+    coordinate-based) remains accurate, but per-position detail cannot be
+    extracted.  The ``mismatch_positions_unavailable`` flag is set to ``True``
+    in that case; consumers should treat ``at_mismatched_locus`` as ``None``
+    (not evaluated) for affected rows rather than trusting a ``False`` value.
+
+    A future improvement would be to fetch target slices directly via SeqRepo
+    when per-base detail is required, decoupling per-position accuracy from
+    what pslx happens to include.
+
+    **Downstream effect** — ``annotate._stamp_alignment_locus_flags`` is the
+    sole consumer of ``mismatch_positions`` and ``gap_intervals``.  When
+    ``mismatch_positions_unavailable`` is ``True`` it skips the
+    ``at_mismatched_locus`` assignment entirely (leaving it ``None``) so
+    that a ``False`` value is never incorrectly written for a variant whose
+    position could not actually be checked against the alignment.
+    """
+
+    percent_identity: float | None = None
+    alignment_length: int
+    mismatch_count: int
+    gap_count: int
+    cigar: StrictStr | None = None
+    # Compact Biopython alignment visualization. Consecutive all-gap display
+    # blocks (intronic regions rendered as '?' characters in cDNA→genome
+    # alignments) are collapsed to a single summary line of the form
+    # ``... [N bp gap: chrom:start-end] ...`` by ``_compact_alignment_string``
+    # in align.py. This keeps the string proportional to exon count rather
+    # than genomic span.
+    alignment_string: StrictStr | None = None
+    # True when per-base sequence content was unavailable during QC computation
+    # (e.g. BLAT pslx did not populate tseqs/qseqs). mismatch_count is still
+    # correct in that case, but mismatch_positions is empty and at_mismatched_locus
+    # should be treated as None (not evaluated) for all variants in this target/level.
+    mismatch_positions_unavailable: bool = False
+    # In-memory only -- not serialized. Used to compute per-variant flags for variants that
+    # fall on a mismatched base or near a gap.
+    mismatch_positions: list[int] = Field(default_factory=list, exclude=True)
+    gap_intervals: list[tuple[int, int]] = Field(default_factory=list, exclude=True)
+
+
 class GeneLocation(BaseModel):
     """Gene location info, gathered from normalizer result. Likely to be incomplete."""
 
@@ -109,11 +172,28 @@ class AlignmentResult(BaseModel):
     chrom: str | None = None
     strand: Strand | None = None
     coverage: float | None = None
-    ident_pct: float | None = None
+    percent_identity: float | None = None
     query_range: SequenceRange
     query_subranges: list[SequenceRange]
     hit_range: SequenceRange
     hit_subranges: list[SequenceRange]
+    # BLAT PSL score (matches - misMatches - qNumInsert - tNumInsert) for the
+    # winning HSP. Only set for BLAT-derived results.
+    score: float | None = None
+    # BLAT PSL score (same units as ``score``) of the next-best HSP considered
+    # during selection. Presence signals that an ambiguity check was performed;
+    # None means no ambiguity check was run (not that there was no ambiguity).
+    # For instance, when returning results for protein->protein alignments, BLAT
+    # returns only the highest scoring HSP.
+    next_best_score: float | None = None
+    # Structured per-base QC derived from the pslx alignment (populated for
+    # BLAT-sourced alignments; None for cdot-fetched results).
+    alignment_qc: AlignmentQc | None = None
+    # Aligner invocation parameters recorded for reproducibility.
+    aligner_parameters: dict[str, Any] | None = None
+    # Human reference genome assembly used for this alignment (e.g. "GRCh38").
+    # None for alignments that have no genomic coordinate frame (protein-vs-protein).
+    reference_assembly: StrictStr | None = None
 
 
 class TranscriptDescription(BaseModel):
@@ -165,7 +245,7 @@ class MappedScore(BaseModel):
 
     accession_id: StrictStr
     score: str | None
-    annotation_layer: AnnotationLayer | None = None
+    alignment_level: AnnotationLayer | None = None
     pre_mapped: Allele | Haplotype | None = None
     post_mapped: Allele | Haplotype | None = None
     error_message: str | None = None
@@ -181,11 +261,22 @@ class ScoreAnnotation(BaseModel):
     relation: Literal[
         "SO:is_homologous_to"
     ] = "SO:is_homologous_to"  # TODO this should probably be None if pre_mapped is false?
+    # Identifies which target gene this score belongs to. Required for the API
+    # to join mapped_scores → target_mappings unambiguously when a score set has
+    # more than one target gene (joining on alignment_level alone is ambiguous in
+    # that case). Nullable for backwards compatibility with older pipeline outputs.
+    target_gene_identifier: StrictStr | None = None
     pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None = None
     post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None = None
     vrs_version: VrsVersion | None = None
     score: float | None = None
     error_message: str | None = None
+    alignment_level: AnnotationLayer | None = None
+    # Per-variant alignment-locus flags. None means "not evaluated" (e.g. no
+    # genomic alignment available, or non-genomic annotation layer); True/False
+    # mean the flag was computed against this run's alignment.
+    at_mismatched_locus: bool | None = None
+    near_gap: bool | None = None
 
 
 class GeneInfo(BaseModel):
@@ -231,24 +322,134 @@ class TargetAnnotation(BaseModel):
     ] = {}
 
 
-class ScoreAnnotationWithLayer(ScoreAnnotation):
-    """Couple annotations with an easily-computable definition of the annotation layer
-    from which they originate.
-
-    Used for filtering individual annotations just before saving the final JSON product.
-    """
-
-    annotation_layer: AnnotationLayer | None = None
-
-
 class ScoresetMapping(BaseModel):
     """Provide all mapped scores for a scoreset."""
 
     metadata: Any  # TODO get exact MaveDB metadata structure?
-    dcd_mapping_version: str = Field(default=dcd_mapping_version)
-    mapped_date_utc: str = Field(
-        default=datetime.datetime.now(tz=datetime.UTC).isoformat()
-    )
+    mapped_date: datetime.datetime | None = None
     reference_sequences: dict[str, TargetAnnotation] | None = None
     mapped_scores: list[ScoreAnnotation] | None = None
+    target_mappings: list["TargetMapping"] | None = None
     error_message: str | None = None
+
+    @field_serializer("mapped_date")
+    def _serialize_mapped_date(self, value: datetime.datetime | None) -> str | None:
+        """Serialize mapped_date as an ISO 8601 string so it is always JSON-safe."""
+        return value.isoformat() if value is not None else None
+
+
+class TargetMapping(BaseModel):
+    """Per-(target, alignment_level) provenance and QC block.
+
+    Field names mirror the corresponding columns on `target_gene_mappings` in the
+    MaveDB API so the API worker can deserialize directly with minimal transformation.
+    Any aligner-specific structured details go in ``tool_parameters`` /
+    ``alignment_metadata`` (JSONB on the API side).
+
+    ``reference_assembly`` is a top-level column (not nested in ``tool_parameters``)
+    because it describes the coordinate frame of the mapping result, not aligner
+    configuration.  It is ``None`` for alignments with no genomic frame (e.g.
+    protein-vs-protein).
+
+    ``tool_parameters`` shape per aligner
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    BLAT genomic (sequence-based, nucleotide or protein-vs-genome)::
+
+        {
+          "aligner":         "blat",
+          "aligner_version": "<BLAT version string | null>",
+          "min_score":       <int>,
+          "out_format":      "<pslx|...>",
+          "target_args":     "<e.g. '-q=prot -t=dnax' | ''>",
+        }
+
+    BLAT protein-vs-protein (sequence-based, protein annotation layer)::
+
+        {
+          "aligner":         "blat",
+          "aligner_version": "<BLAT version string | null>",
+          "min_score":       <int>,
+          "out_format":      "<pslx|...>",
+          "target_args":     "-q=prot -t=prot",
+        }
+
+    Passthrough for fully qualified reference accessions (accession-based)::
+
+        {
+          "aligner":         "reference_accession_passthrough",
+        }
+
+    cdot transcript placement (accession-based)::
+
+        {
+          "aligner":           "cdot_transcript_placement",
+          "aligner_version":   "<cdot library semver, e.g. '0.2.26'>",
+          "cdot_url":          "<CDOT REST endpoint>",
+          "cdot_data_version": "<data version string | null>",
+        }
+
+    ``cdot_data_version`` is ``null`` when the cdot REST response did not
+    include a ``cdot_data_version`` field; its presence (even as ``null``)
+    distinguishes "cdot run, version unknown" from "not a cdot run".
+    """
+
+    # Identity
+    target_gene_identifier: StrictStr
+    # Single-char cool-seq-tool AnnotationLayer value ("p", "c", "g").
+    alignment_level: AnnotationLayer
+    preferred: StrictBool = False
+
+    # Provenance (required on the API side: tool_name, tool_version)
+    tool_name: StrictStr = "dcd-mapping"
+    tool_version: StrictStr = dcd_mapping_version
+    tool_parameters: dict[str, Any] | None = None
+    # Human reference genome assembly (e.g. "GRCh38"). None for protein-vs-protein alignments.
+    reference_assembly: StrictStr | None = None
+    reference_accession: StrictStr | None = None
+    reference_sequence_id: StrictStr | None = None
+    vrs_version: VrsVersion | None = None
+
+    # Alignment QC -- all optional; omit (leave None) fields the aligner doesn't produce.
+    percent_identity: float | None = None
+    alignment_score: float | None = None
+    next_best_alignment_score: float | None = None
+    alignment_length: int | None = None
+    mismatch_count: int | None = None
+    gap_count: int | None = None
+    # Compact alignment visualization (see AlignmentQc.alignment_string).
+    # Intronic gap runs are collapsed to ``... [N bp gap: chrom:start-end] ...``
+    # summaries so the string length is proportional to exon count, not
+    # genomic span. None for protein-layer or cdot-derived alignments.
+    alignment_string: StrictStr | None = None
+    # Structured per-alignment metadata payload (JSONB on the API side).
+    # Keys present when available:
+    #   "cigar"                     — CIGAR string for the winning HSP.
+    #   "near_gap_window"           — half-width (in ref bases) of the window
+    #                                 used to flag ``near_gap`` on each variant.
+    #   "at_mismatched_locus_evaluated" — False when per-base sequence content
+    #                                 was unavailable (BLAT pslx omitted
+    #                                 tseqs/qseqs); treat ``at_mismatched_locus``
+    #                                 as None (not evaluated) for all variants in
+    #                                 this target/level.  True otherwise.
+    alignment_metadata: dict[str, Any] | None = None
+
+    # Annotation QC -- totals for this target x level.
+    # variants_with_alignment_warnings: the variant's reference position fell on
+    # a mismatched locus or near a gap in the underlying alignment
+    # (``at_mismatched_locus`` or ``near_gap`` was True). Mapping itself
+    # succeeded cleanly; this is purely about alignment context.
+    total_variants: int | None = None
+    # Count of variants where post_mapped is not None.
+    # Alignment warnings (at_mismatched_locus, near_gap) are counted separately in
+    # variants_with_alignment_warnings and do NOT reduce this count; a variant can
+    # be "cleanly mapped" and still sit at a mismatched locus or near a gap.
+    variants_mapped_cleanly: int | None = None
+    variants_with_alignment_warnings: int | None = None
+    variants_failed: int | None = None
+
+
+class VrsMapResult(NamedTuple):
+    """Provide mappings for an individual experiment score."""
+
+    mappings: list["MappedScore"]
+    protein_align_result: "AlignmentResult | None"

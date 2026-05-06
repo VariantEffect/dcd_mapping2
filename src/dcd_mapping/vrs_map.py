@@ -44,6 +44,7 @@ from dcd_mapping.schemas import (
     TargetSequenceType,
     TargetType,
     TxSelectResult,
+    VrsMapResult,
 )
 from dcd_mapping.transcripts import TxSelectError
 
@@ -472,7 +473,7 @@ def _map_protein_coding_pro(
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
-            annotation_layer=AnnotationLayer.PROTEIN,
+            alignment_level=AnnotationLayer.PROTEIN,
             pre_mapped=vrs_variation,
             post_mapped=vrs_variation,
         )
@@ -527,7 +528,7 @@ def _map_protein_coding_pro(
         return MappedScore(
             accession_id=row.accession,
             score=row.score,
-            annotation_layer=AnnotationLayer.PROTEIN,
+            alignment_level=AnnotationLayer.PROTEIN,
             pre_mapped=pre_mapped_protein,
             error_message=f"{type(e).__name__}: {e}",
         )
@@ -535,7 +536,7 @@ def _map_protein_coding_pro(
     return MappedScore(
         accession_id=row.accession,
         score=row.score,
-        annotation_layer=AnnotationLayer.PROTEIN,
+        alignment_level=AnnotationLayer.PROTEIN,
         pre_mapped=pre_mapped_protein,
         post_mapped=post_mapped_protein,
     )
@@ -670,7 +671,7 @@ def _map_genomic(
             return MappedScore(
                 accession_id=row.accession,
                 score=row.score,
-                annotation_layer=AnnotationLayer.GENOMIC,
+                alignment_level=AnnotationLayer.GENOMIC,
                 pre_mapped=pre_mapped_genomic,
                 error_message=f"{type(e).__name__}: {e}",
             )
@@ -725,7 +726,7 @@ def _map_genomic(
             return MappedScore(
                 accession_id=row.accession,
                 score=row.score,
-                annotation_layer=AnnotationLayer.GENOMIC,
+                alignment_level=AnnotationLayer.GENOMIC,
                 pre_mapped=pre_mapped_genomic,
                 error_message=f"{type(e).__name__}: {e}",
             )
@@ -736,7 +737,7 @@ def _map_genomic(
     return MappedScore(
         accession_id=row.accession,
         score=row.score,
-        annotation_layer=AnnotationLayer.GENOMIC,
+        alignment_level=AnnotationLayer.GENOMIC,
         pre_mapped=pre_mapped_genomic,
         post_mapped=post_mapped_genomic,
     )
@@ -801,14 +802,17 @@ def _map_protein_coding(
     transcript: TxSelectResult | TxSelectError,
     align_result: AlignmentResult,
     silent: bool,
-) -> list[MappedScore]:
-    """Perform mapping on protein coding experiment results
+) -> tuple[list[MappedScore], AlignmentResult | None]:
+    """Perform mapping on protein coding experiment results.
 
     :param metadata: Target gene metadata from MaveDB API
     :param records: The list of MAVE variants in a given score set
     :param transcript: The transcript data for a score set, or an error message describing why an expected transcript is missing
-    :param align_results: The alignment data for a score set
-    :return: A list of mappings
+    :param align_result: The alignment data for a score set
+    :return: ``(mappings, protein_align_result)``. The target-protein-to-reference-protein
+        alignment is surfaced so downstream annotation can flag protein-layer
+        variants at mismatched/near-gap loci using its QC block; pipelines that
+        don't need it can ignore the second element.
     """
     if metadata.target_sequence_type == TargetSequenceType.DNA:
         sequence = str(
@@ -821,10 +825,23 @@ def _map_protein_coding(
         psequence_id = gsequence_id = store_sequence(sequence)
 
     # align protein sequence to selected reference protein sequence to get offsets and gaps
-    protein_align_result = None
+    protein_align_result: AlignmentResult | None = None
     if isinstance(transcript, TxSelectResult):
         protein_align_result = align_target_to_protein(
             sequence, transcript.sequence, silent
+        )
+        _logger.info(
+            "Protein-to-protein alignment produced for %s (ref protein: %s). "
+            "This alignment will be used for pro-layer variants in place of the genomic alignment.",
+            metadata.target_gene_name,
+            transcript.np,
+        )
+    else:
+        _logger.warning(
+            "Skipping protein-to-protein alignment for %s: no valid transcript selected (%s). "
+            "Pro-layer variants will not be mapped.",
+            metadata.target_gene_name,
+            transcript,
         )
 
     variations: list[MappedScore] = []
@@ -872,7 +889,8 @@ def _map_protein_coding(
             variations.append(hgvs_pro_mappings)
         if hgvs_nt_mappings:
             variations.append(hgvs_nt_mappings)
-    return variations
+
+    return variations, protein_align_result
 
 
 def _map_regulatory_noncoding(
@@ -1042,7 +1060,7 @@ def vrs_map(
     records: list[ScoreRow],
     transcript: TxSelectResult | TxSelectError | None = None,
     silent: bool = True,
-) -> list[MappedScore]:
+) -> VrsMapResult:
     """Given a description of a MAVE scoreset and an aligned transcript, generate
     the corresponding VRS objects.
 
@@ -1051,20 +1069,32 @@ def vrs_map(
     :param records: scoreset records
     :param transcript: output of transcript selection process
     :param silent: If true, suppress console output
-    :return: A list of mapping results
+    :return: :class:`~dcd_mapping.schemas.VrsMapResult` with ``mappings`` and
+        ``protein_align_result``.  ``protein_align_result`` is the
+        target-protein-to-reference-protein alignment used for protein-level
+        mapping, surfaced so downstream annotation can flag protein-layer
+        variants at mismatched/near-gap loci. It is ``None`` for accession-based
+        and regulatory/non-coding targets.
     """
     if metadata.target_accession_id:
-        return _map_accession(metadata, records, align_result, transcript)
+        return VrsMapResult(
+            mappings=_map_accession(metadata, records, align_result, transcript),
+            protein_align_result=None,
+        )
+
     if metadata.target_gene_category == TargetType.PROTEIN_CODING and transcript:
-        return _map_protein_coding(
+        mappings, protein_align_result = _map_protein_coding(
             metadata,
             records,
             transcript,
             align_result,
             silent,
         )
-    return _map_regulatory_noncoding(
-        metadata,
-        records,
-        align_result,
+        return VrsMapResult(
+            mappings=mappings, protein_align_result=protein_align_result
+        )
+
+    return VrsMapResult(
+        mappings=_map_regulatory_noncoding(metadata, records, align_result),
+        protein_align_result=None,
     )

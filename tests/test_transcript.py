@@ -309,7 +309,7 @@ async def test_end_to_end_per_gene_then_similarity(monkeypatch):
         chrom="chr1",
         strand=1,
         coverage=None,
-        ident_pct=None,
+        percent_identity=None,
         query_range=SequenceRange(start=1, end=6),
         query_subranges=[SequenceRange(start=1, end=6)],
         hit_range=SequenceRange(start=1, end=6),
