@@ -28,7 +28,6 @@ from dcd_mapping.schemas import (
 from dcd_mapping.transcripts import (
     TranscriptDescription,
     _choose_most_similar_transcript,
-    _percent_similarity,
     _select_protein_reference,
     select_transcript,
 )
@@ -186,12 +185,6 @@ def make_mane(nm: str, np: str, priority: TranscriptPriority):
     return TranscriptDescription(
         refseq_nuc=nm, refseq_prot=np, transcript_priority=priority
     )
-
-
-def test_percent_similarity_basic():
-    assert _percent_similarity("AAAA", "AAAA") == 1.0
-    assert _percent_similarity("AAAA", "BAAAA") == 1.0  # substring fast path
-    assert 0.0 <= _percent_similarity("ABCD", "WXYZ") <= 1.0
 
 
 def test_choose_most_similar_transcript_simple(monkeypatch):
