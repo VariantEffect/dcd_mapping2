@@ -1,4 +1,5 @@
-""""Provide mapping router"""
+"""Provide mapping router"""
+
 import logging
 from pathlib import Path
 

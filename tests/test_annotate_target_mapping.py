@@ -1,4 +1,5 @@
 """Tests for annotate._reference_accession_for_target_level and build_scoreset_mapping."""
+
 from unittest.mock import patch
 
 from cool_seq_tool.schemas import AnnotationLayer
@@ -519,9 +520,9 @@ class TestBuildScoresetMapping:
         ms_levels = {ms.alignment_level for ms in result.mapped_scores}
 
         # Core invariant: every alignment_level in mapped_scores has a parent row
-        assert (
-            ms_levels <= tm_levels
-        ), f"Orphaned alignment levels in mapped_scores: {ms_levels - tm_levels}"
+        assert ms_levels <= tm_levels, (
+            f"Orphaned alignment levels in mapped_scores: {ms_levels - tm_levels}"
+        )
 
     def test_null_layer_failures_attributed_to_preferred_layer(self):
         """NULL-layer (completely-failed) variants must be re-attributed to the preferred
@@ -568,9 +569,9 @@ class TestBuildScoresetMapping:
 
         # NULL-layer failure should appear in mapped_scores as the preferred layer
         for ms in result.mapped_scores:
-            assert (
-                ms.alignment_level == AnnotationLayer.GENOMIC
-            ), f"Expected alignment_level=GENOMIC for all mapped_scores; got {ms.alignment_level}"
+            assert ms.alignment_level == AnnotationLayer.GENOMIC, (
+                f"Expected alignment_level=GENOMIC for all mapped_scores; got {ms.alignment_level}"
+            )
 
         # The preferred layer's TargetMapping must count the null failure
         tm = result.target_mappings[0]

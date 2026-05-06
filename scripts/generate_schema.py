@@ -11,6 +11,7 @@ to ``schema.json`` at the repository root, overwriting the previous file.
 
 If you change schemas.py, re-run this script and commit the result.
 """
+
 import json
 import pathlib
 

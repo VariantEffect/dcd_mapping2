@@ -6,6 +6,7 @@ Todo:
 
 
 """
+
 from unittest.mock import patch
 
 import numpy as np
@@ -299,13 +300,13 @@ class TestBlatScore:
         clean_counts = clean.counts()
 
         # Identity count: noisy wins
-        assert (
-            noisy_counts.identities > clean_counts.identities
-        ), "Noisy alignment must have more raw identities for the test to be meaningful"
+        assert noisy_counts.identities > clean_counts.identities, (
+            "Noisy alignment must have more raw identities for the test to be meaningful"
+        )
         # BLAT score: clean wins
-        assert (
-            _blat_score(noisy) < _blat_score(clean)
-        ), "Clean alignment must have the higher BLAT score for the test to be meaningful"
+        assert _blat_score(noisy) < _blat_score(clean), (
+            "Clean alignment must have the higher BLAT score for the test to be meaningful"
+        )
 
     def test_get_best_hsp_prefers_blat_score_over_identity_count(self):
         """_get_best_hsp selects the alignment with the higher BLAT score, not
