@@ -12,6 +12,7 @@ Notes on test cases:
 * urn:mavedb:00000061-h-1: RAF, protein coding, DNA, uniprot ref with offset
 * urn:mavedb:00000068-a-1: TP53, protein-coding, DNA
 """
+
 import json
 import os
 from pathlib import Path
@@ -88,7 +89,7 @@ def transcript_results_fixture(fixture_data_dir: Path):
     return results
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_seqrepo_access(mocker: MagicMock):
     """Mock SeqRepo instance.
 
@@ -219,7 +220,7 @@ def mock_seqrepo_access(mocker: MagicMock):
     return mock_seqrepo_access
 
 
-@pytest.fixture()
+@pytest.fixture
 def data_provider(fixture_data_dir: Path):
     """Provide a ChainedSeqFetcher with mocked fasta files for testing.
     Currently, no tests actually use cdot, but a FileNotFoundError would be raised

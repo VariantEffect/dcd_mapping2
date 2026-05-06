@@ -1,4 +1,5 @@
 """Test `dcd_mapping.resources` module."""
+
 import json
 import shutil
 from pathlib import Path
@@ -10,7 +11,7 @@ import respx
 from dcd_mapping.mavedb_data import get_scoreset_metadata, get_scoreset_records
 
 
-@pytest.fixture()
+@pytest.fixture
 def resources_data_dir():
     """Temporarily store data resources"""
     path = Path(__file__).parent / "tmp"
@@ -22,7 +23,7 @@ def resources_data_dir():
     shutil.rmtree(str(path.absolute()))  # clean up afterward
 
 
-@pytest.fixture()
+@pytest.fixture
 def scoreset_metadata_response(fixture_data_dir: Path):
     """Provide response that client receives from MaveDB API"""
     with (fixture_data_dir / "scoreset_metadata_response.json").open() as f:

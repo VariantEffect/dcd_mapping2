@@ -6,6 +6,7 @@ Todo:
 
 
 """
+
 import re
 from collections.abc import Coroutine
 from pathlib import Path
@@ -33,7 +34,7 @@ from dcd_mapping.transcripts import (
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_cst(mocker: MagicMock, mock_seqrepo_access):
     """Mock CoolSeqTool instance."""
 

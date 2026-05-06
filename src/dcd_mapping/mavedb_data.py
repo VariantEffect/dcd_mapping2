@@ -40,12 +40,12 @@ from dcd_mapping.schemas import (
 from dcd_mapping.transcripts import _get_protein_sequence
 
 __all__ = [
-    "get_scoreset_urns",
+    "get_human_urns",
     "get_human_urns",
     "get_raw_scoreset_metadata",
-    "get_scoreset_records",
     "get_scoreset_metadata",
-    "get_human_urns",
+    "get_scoreset_records",
+    "get_scoreset_urns",
 ]
 
 _logger = logging.getLogger(__name__)

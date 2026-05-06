@@ -712,7 +712,7 @@ def _get_hgvs_string(allele: Allele, accession: str) -> tuple[str, Syntax]:
     edit = ""  # empty by default
     if alt == ref:
         edit = "="
-    if ref and (2 * ref == alt or len(ref) == 1 and set(ref) == set(alt)):
+    if ref and (2 * ref == alt or (len(ref) == 1 and set(ref) == set(alt))):
         edit = "dup"
     if alt == "":
         edit = "del"

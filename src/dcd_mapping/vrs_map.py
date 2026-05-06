@@ -167,10 +167,10 @@ def _create_pre_mapped_hgvs_strings(
         # creates such a string, but it is not able to be parsed by the GA4GH VRS translator.
         # hgvs_strings.append('ga4gh:' + sequence_id + ':' + str(variant))
         elif layer is AnnotationLayer.PROTEIN:
-            assert tx  # noqa: S101. mypy help
+            assert tx  # noqa: S101  # mypy help
             hgvs_strings.append(tx.np + ":" + str(variant))
         elif layer is AnnotationLayer.GENOMIC:
-            assert alignment  # noqa: S101. mypy help
+            assert alignment  # noqa: S101  # mypy help
             hgvs_strings.append(
                 get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
             )
@@ -228,14 +228,14 @@ def _create_post_mapped_hgvs_strings(
         # Reference-identical variants require no positional adjustment
         if str(variant).endswith(".="):
             if layer is AnnotationLayer.PROTEIN:
-                assert tx  # noqa: S101. mypy help
+                assert tx  # noqa: S101  # mypy help
                 hgvs_strings.append(tx.np + ":" + str(variant))
 
             elif layer is AnnotationLayer.GENOMIC:
                 if accession_id:
                     hgvs_strings.append(accession_id + ":" + str(variant))
                 else:
-                    assert alignment  # noqa: S101. mypy help
+                    assert alignment  # noqa: S101  # mypy help
                     hgvs_strings.append(
                         get_chromosome_identifier(alignment.chrom) + ":" + str(variant)
                     )
@@ -247,7 +247,7 @@ def _create_post_mapped_hgvs_strings(
             continue
 
         if layer is AnnotationLayer.PROTEIN:
-            assert tx  # noqa: S101. mypy help
+            assert tx  # noqa: S101  # mypy help
 
             variant = _adjust_protein_variant_to_ref(variant, protein_alignment)
             hgvs_strings.append(tx.np + ":" + str(variant))
@@ -262,7 +262,7 @@ def _create_post_mapped_hgvs_strings(
                     msg = f"Could not fetch genomic HGVS on GRCh38 for accession-based variant: {pre_mapped_hgvs}"
                     raise ValueError(msg)
             else:
-                assert alignment  # noqa: S101. mypy help
+                assert alignment  # noqa: S101  # mypy help
 
                 variant = _adjust_genomic_variant_to_ref(variant, alignment)
                 hgvs_strings.append(
@@ -586,12 +586,12 @@ def _map_genomic(
         # for contig accession based score sets, no mapping is performed,
         # so pre- and post-mapped alleles are the same
         try:
-            pre_mapped_hgvs_strings = (
-                post_mapped_hgvs_strings
-            ) = _create_pre_mapped_hgvs_strings(
-                row.hgvs_nt,
-                AnnotationLayer.GENOMIC,
-                accession_id=sequence_id,
+            pre_mapped_hgvs_strings = post_mapped_hgvs_strings = (
+                _create_pre_mapped_hgvs_strings(
+                    row.hgvs_nt,
+                    AnnotationLayer.GENOMIC,
+                    accession_id=sequence_id,
+                )
             )
             # accession-based pre-mapped alleles should be constructed like post-mapped alleles (sequence id is gathered from hgvs string rather than manually provided)
             pre_mapped_genomic = _construct_vrs_allele(

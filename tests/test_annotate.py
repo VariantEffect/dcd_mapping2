@@ -1,4 +1,5 @@
 """Tests for dcd_mapping.annotate"""
+
 from unittest import mock
 
 import pytest
@@ -33,7 +34,7 @@ from dcd_mapping.schemas import (
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def target_dna_pc():
     return TargetGene(
         target_gene_name="BRAF",
@@ -45,7 +46,7 @@ def target_dna_pc():
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def scoreset_metadata(target_dna_pc):
     return ScoresetMetadata(
         urn="urn:mavedb:TEST",
@@ -68,7 +69,7 @@ def make_align(hit_intervals):
     )
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_compute_target_gene_info_non_coding_category():
     meta = ScoresetMetadata(
         urn="urn:mavedb:TEST",
@@ -90,7 +91,7 @@ async def test_compute_target_gene_info_non_coding_category():
     assert res.selection_method == "target_category"
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_compute_target_gene_info_tx_selection(scoreset_metadata):
     tx = TxSelectResult(
         nm="NM_000001.1",
@@ -190,7 +191,7 @@ def test_compute_target_gene_info_mapped_variants_path(scoreset_metadata):
         assert res.selection_method == "variants_max_covered_bases"
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_compute_target_gene_info_fallback_metadata(scoreset_metadata):
     # No tx, no alignment, no mapped scores -> fallback
     with mock.patch("dcd_mapping.annotate.get_gene_symbol", return_value="META"):
@@ -202,7 +203,7 @@ async def test_compute_target_gene_info_fallback_metadata(scoreset_metadata):
         assert res.selection_method == "target_metadata"
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_compute_target_gene_info_fallback_unavailable(scoreset_metadata):
     # No tx, no alignment, no mapped scores -> fallback
     with mock.patch("dcd_mapping.annotate.get_gene_symbol", return_value=None):

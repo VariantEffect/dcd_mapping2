@@ -1,6 +1,7 @@
 """Provide class definitions for commonly-used information objects."""
+
 import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal, NamedTuple
 
 from cool_seq_tool.schemas import AnnotationLayer, Strand, TranscriptPriority
@@ -19,14 +20,14 @@ from dcd_mapping import vrs_v1_schemas
 from dcd_mapping.version import dcd_mapping_version
 
 
-class TargetSequenceType(str, Enum):
+class TargetSequenceType(StrEnum):
     """Define target sequence type. Add more definitions as needed."""
 
     PROTEIN = "protein"
     DNA = "dna"
 
 
-class TargetType(str, Enum):
+class TargetType(StrEnum):
     """Define target gene types."""
 
     PROTEIN_CODING = "protein_coding"
@@ -34,7 +35,7 @@ class TargetType(str, Enum):
     OTHER_NC = "other_noncoding"
 
 
-class VrsVersion(str, Enum):
+class VrsVersion(StrEnum):
     """Define VRS versions"""
 
     V_1_3 = "1.3"
@@ -258,16 +259,28 @@ class ScoreAnnotation(BaseModel):
     """
 
     mavedb_id: StrictStr
-    relation: Literal[
-        "SO:is_homologous_to"
-    ] = "SO:is_homologous_to"  # TODO this should probably be None if pre_mapped is false?
+    relation: Literal["SO:is_homologous_to"] = (
+        "SO:is_homologous_to"  # TODO this should probably be None if pre_mapped is false?
+    )
     # Identifies which target gene this score belongs to. Required for the API
     # to join mapped_scores → target_mappings unambiguously when a score set has
     # more than one target gene (joining on alignment_level alone is ambiguous in
     # that case). Nullable for backwards compatibility with older pipeline outputs.
     target_gene_identifier: StrictStr | None = None
-    pre_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None = None
-    post_mapped: vrs_v1_schemas.VariationDescriptor | vrs_v1_schemas.Haplotype | Allele | Haplotype | None = None
+    pre_mapped: (
+        vrs_v1_schemas.VariationDescriptor
+        | vrs_v1_schemas.Haplotype
+        | Allele
+        | Haplotype
+        | None
+    ) = None
+    post_mapped: (
+        vrs_v1_schemas.VariationDescriptor
+        | vrs_v1_schemas.Haplotype
+        | Allele
+        | Haplotype
+        | None
+    ) = None
     vrs_version: VrsVersion | None = None
     score: float | None = None
     error_message: str | None = None

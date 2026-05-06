@@ -1,4 +1,5 @@
 """Align MaveDB target sequences to a human reference genome."""
+
 import functools
 import logging
 import os
@@ -181,9 +182,9 @@ def _run_blat(
     _logger.debug("Running BLAT command: %s", " ".join(cmd))
 
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603  # BLAT args are all internally derived constants, not user input
             cmd,
-            shell=False,  # noqa: S603 -- BLAT args are all internally derived constants, not user input, so shell=False is safe here
+            shell=False,
             capture_output=True,
             timeout=600,
         )
@@ -221,9 +222,9 @@ def _write_blat_output_tempfile(result: subprocess.CompletedProcess) -> str:
     :return: path-like string representing file location
     """
     raw_output = result.stdout.split(b"Loaded")[0]
-    tmp = tempfile.NamedTemporaryFile(delete=False)
-    tmp.write(raw_output)
-    return tmp.name
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(raw_output)
+        return tmp.name
 
 
 def _count_query_insert_blocks(aln: "BioAlign.Alignment") -> int:
@@ -1200,7 +1201,10 @@ def align_target_to_protein(
     :raise AlignmentError: if BLAT produces no usable alignment
     """
     target_args = "-q=prot -t=prot"
-    with tempfile.NamedTemporaryFile() as query_tmp_file, tempfile.NamedTemporaryFile() as reference_tmp_file:
+    with (
+        tempfile.NamedTemporaryFile() as query_tmp_file,
+        tempfile.NamedTemporaryFile() as reference_tmp_file,
+    ):
         _write_query_file(Path(query_tmp_file.name), [">query", target_sequence])
         _write_query_file(
             Path(reference_tmp_file.name), [">reference", reference_sequence]

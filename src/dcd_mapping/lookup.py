@@ -62,21 +62,21 @@ from dcd_mapping.schemas import (
 
 __all__ = [
     "CoolSeqToolBuilder",
-    "get_seqrepo",
     "GeneNormalizerBuilder",
-    "get_protein_accession",
-    "get_transcripts",
-    "get_gene_symbol",
-    "get_gene_location",
-    "get_chromosome_identifier",
-    "get_ucsc_chromosome_name",
-    "get_chromosome_identifier_from_vrs_id",
-    "get_sequence",
     "build_ref_identical_allele",
+    "get_chromosome_identifier",
+    "get_chromosome_identifier_from_vrs_id",
+    "get_gene_location",
+    "get_gene_symbol",
+    "get_mane_transcripts",
+    "get_protein_accession",
+    "get_seqrepo",
+    "get_sequence",
+    "get_transcripts",
+    "get_ucsc_chromosome_name",
+    "get_uniprot_sequence",
     "translate_hgvs_to_vrs",
     "translate_ref_identical_to_vrs",
-    "get_mane_transcripts",
-    "get_uniprot_sequence",
 ]
 _logger = logging.getLogger(__name__)
 
