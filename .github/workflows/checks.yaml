@@ -39,3 +39,8 @@ jobs:
 
       - name: Check style
         run: python3 -m ruff check . && ruff format --check .
+
+      - name: Verify schema.json is up to date
+        run: |
+          python scripts/generate_schema.py
+          git diff --exit-code schema.json

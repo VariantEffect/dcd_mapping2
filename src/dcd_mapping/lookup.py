@@ -41,7 +41,9 @@ from ga4gh.core._internal.models import Extension, Gene
 from ga4gh.vrs._internal.models import (
     Allele,
     LiteralSequenceExpression,
+    ReferenceLengthExpression,
     SequenceLocation,
+    SequenceReference,
 )
 from ga4gh.vrs.dataproxy import SeqRepoDataProxy, coerce_namespace
 from ga4gh.vrs.extras.translator import AlleleTranslator
@@ -60,19 +62,21 @@ from dcd_mapping.schemas import (
 
 __all__ = [
     "CoolSeqToolBuilder",
-    "get_seqrepo",
     "GeneNormalizerBuilder",
-    "get_protein_accession",
-    "get_transcripts",
-    "get_gene_symbol",
-    "get_gene_location",
+    "build_ref_identical_allele",
     "get_chromosome_identifier",
-    "get_ucsc_chromosome_name",
     "get_chromosome_identifier_from_vrs_id",
-    "get_sequence",
-    "translate_hgvs_to_vrs",
+    "get_gene_location",
+    "get_gene_symbol",
     "get_mane_transcripts",
+    "get_protein_accession",
+    "get_seqrepo",
+    "get_sequence",
+    "get_transcripts",
+    "get_ucsc_chromosome_name",
     "get_uniprot_sequence",
+    "translate_hgvs_to_vrs",
+    "translate_ref_identical_to_vrs",
 ]
 _logger = logging.getLogger(__name__)
 
@@ -94,6 +98,39 @@ def cdot_rest() -> RESTDataProvider:
 
 
 # ---------------------------------- Global ---------------------------------- #
+
+
+class _TimeoutUtaDatabase(UtaDatabase):
+    """UtaDatabase subclass with an increased command timeout.
+
+    The upstream default is 60s, which can be insufficient for range queries
+    against the public UTA server's ``tx_exon_aln_v`` view.
+    """
+
+    async def create_pool(self) -> None:
+        """Create connection pool with a 5-minute command timeout."""
+        if not self._connection_pool:
+            import asyncpg
+
+            self.args = self._get_conn_args()
+            try:
+                self._connection_pool = await asyncpg.create_pool(
+                    min_size=1,
+                    max_size=10,
+                    max_inactive_connection_lifetime=3,
+                    command_timeout=300,
+                    host=self.args["host"],
+                    port=self.args["port"],
+                    user=self.args["user"],
+                    password=self.args["password"],
+                    database=self.args["database"],
+                )
+            except asyncpg.InterfaceError as e:
+                _logger.error(
+                    "While creating connection pool, encountered exception %s", e
+                )
+                msg = "Could not create connection pool"
+                raise Exception(msg) from e
 
 
 class CoolSeqToolBuilder:
@@ -122,7 +159,7 @@ class CoolSeqToolBuilder:
                 try:
                     aliases = self.translate_sequence_identifier(ac, namespace="ga4gh")
                 except KeyError:
-                    _logger.error("KeyError when getting refget accession: %s", ac)
+                    _logger.exception("KeyError when getting refget accession: %s", ac)
                 else:
                     if aliases:
                         refget_accession = aliases[0].split("ga4gh:")[-1]
@@ -148,7 +185,7 @@ class CoolSeqToolBuilder:
                 self.mane_transcript_mappings = ManeTranscriptMappings(
                     mane_data_path=mane_data_path
                 )
-                self.uta_db = UtaDatabase(db_url=db_url)
+                self.uta_db = _TimeoutUtaDatabase(db_url=db_url)
                 self.alignment_mapper = AlignmentMapper(
                     self.seqrepo_access, self.transcript_mappings, self.uta_db
                 )
@@ -259,6 +296,9 @@ async def get_protein_accession(transcript: str) -> str | None:
         """  # noqa: S608
         result = await uta.execute_query(query)
     except Exception as e:
+        _logger.exception(
+            "Failed to get protein accession for transcript %s", transcript
+        )
         raise DataLookupError from e
     if result:
         return result[0]["pro_ac"]
@@ -287,6 +327,9 @@ async def get_transcripts(
         """  # noqa: S608
         result = await uta.execute_query(query)
     except Exception as e:
+        _logger.exception(
+            "Failed to get transcripts for %s:%d-%d", chromosome_ac, start, end
+        )
         raise DataLookupError from e
 
     return [(row["tx_ac"], row["hgnc"]) for row in result]
@@ -325,10 +368,11 @@ def _get_hgnc_symbol(term: str) -> str | None:
 def get_gene_symbol(target_gene: TargetGene) -> str | None:
     """Acquire HGNC gene symbol given provided target gene metadata from MaveDB.
 
-    Right now, we use two sources for normalizing:
-    1. UniProt ID, if available
-    2. Target name: specifically, we try the first word in the name (this could
-    cause some problems and we should double-check it)
+    Tokenizes the target name on whitespace and tries each token against the
+    gene normalizer until one matches (gene symbols are not always the first
+    token, e.g. ``"Wildtype G6PD"``).  Silently returns ``None`` if no token
+    resolves — see ``_get_normalized_gene_response`` for the full description
+    of this limitation.
 
     :param target_gene: target gene metadata given by MaveDB API
     :return: gene symbol if available
@@ -338,10 +382,12 @@ def get_gene_symbol(target_gene: TargetGene) -> str | None:
         if result:
             return result
 
-    # try taking the first word in the target name
     if target_gene.target_gene_name:
-        parsed_name = target_gene.target_gene_name.split(" ")[0]
-        return _get_hgnc_symbol(parsed_name)
+        for word in target_gene.target_gene_name.split(" "):
+            result = _get_hgnc_symbol(word)
+            if result:
+                return result
+
     return None
 
 
@@ -363,7 +409,17 @@ def _get_normalized_gene_response(
 ) -> Gene | None:
     """Fetch best normalized concept given available scoreset metadata.
 
-    :param metadata: salient scoreset metadata items
+    **Limitation — heuristic name parsing**: when the target name is not itself
+    a valid HGNC symbol this function tokenizes it on whitespace and tries each
+    token in order (e.g. ``"Wildtype G6PD"`` resolves because ``"G6PD"`` is the
+    second token).  This will silently fail for names whose tokens are all
+    non-HGNC strings (e.g. ``"my favourite protein"``).  When it fails,
+    downstream chromosome selection has no anchor and BLAT's chromosome fallback
+    may land on the wrong chromosome, causing transcript selection to return no
+    results.  The only reliable fix is to ensure the target name contains the
+    HGNC gene symbol as one of its whitespace-delimited tokens.
+
+    :param target_gene: salient scoreset metadata items
     :return: Normalized gene if available
     """
     if target_gene.target_uniprot_ref:
@@ -371,12 +427,13 @@ def _get_normalized_gene_response(
         if gene_descriptor:
             return gene_descriptor
 
-    # try taking the first word in the target name
+    # Try each whitespace-delimited token from the target name. Gene symbols
+    # are not always the first word (e.g. "Wildtype G6PD").
     if target_gene.target_gene_name:
-        parsed_name = target_gene.target_gene_name.split(" ")[0]
-        gene_descriptor = _normalize_gene(parsed_name)
-        if gene_descriptor:
-            return gene_descriptor
+        for word in target_gene.target_gene_name.split(" "):
+            gene_descriptor = _normalize_gene(word)
+            if gene_descriptor:
+                return gene_descriptor
 
     return None
 
@@ -410,10 +467,8 @@ def get_gene_location(target_gene: TargetGene) -> GeneLocation | None:
     """Acquire gene location data from gene normalizer using metadata provided by
     scoreset.
 
-    As with ``get_gene_symbol()``, we try to normalize from the following:
-    1. UniProt ID, if available
-    2. Target name: specifically, we try the first word in the name (this could
-    cause some problems and we should double-check it)
+    Delegates to ``_get_normalized_gene_response`` — see that function for the
+    full description of the heuristic and its limitations.
 
     :param target_gene: data given by MaveDB API
     :return: gene location data if available
@@ -588,6 +643,65 @@ def translate_hgvs_to_vrs(hgvs: str) -> Allele:
     ):
         raise ValueError
     return allele
+
+
+def build_ref_identical_allele(sequence_id: str) -> Allele:
+    """Build a whole-sequence reference-identical VRS Allele from a sequence identifier.
+
+    Accepts either a GA4GH SQ digest (``SQ.xxx``, without the ``ga4gh:`` prefix) or a
+    named accession such as ``NP_``, ``NM_``, or ``NC_``.
+
+    :param sequence_id: GA4GH SQ digest or named accession
+    :return: VRS Allele spanning the full sequence with a ReferenceLengthExpression state
+    :raises DataLookupError: if the sequence identifier or metadata lookup fails
+    """
+    if sequence_id.startswith("SQ."):
+        ga4gh_id = f"ga4gh:{sequence_id}"
+    else:
+        try:
+            ga4gh_id = get_vrs_id_from_identifier(sequence_id)
+        except KeyError as e:
+            msg = f"Could not retrieve GA4GH identifier for accession {sequence_id!r}"
+            _logger.error(msg)
+            raise DataLookupError(msg) from e
+
+    sr = get_seqrepo()
+    try:
+        metadata = sr.get_metadata(ga4gh_id)
+    except KeyError as e:
+        msg = f"Could not retrieve metadata for sequence {ga4gh_id!r}"
+        _logger.error(msg)
+        raise DataLookupError(msg) from e
+
+    length = metadata["length"]
+    refget_accession = ga4gh_id.split("ga4gh:")[-1]
+
+    seq_ref = SequenceReference(refgetAccession=refget_accession)
+    location = SequenceLocation(sequenceReference=seq_ref, start=0, end=length)
+    state = ReferenceLengthExpression(length=length, repeatSubunitLength=length)
+
+    return Allele(location=location, state=state)
+
+
+def translate_ref_identical_to_vrs(hgvs_string: str) -> Allele:
+    """Convert a reference-identical HGVS variant to a VRS Allele.
+
+    Handles reference-identical variants such as ``NM_001234.1:c.=``,
+    ``NP_001234.1:p.=``, and ``NC_000001.11:g.=``, which regular VRS
+    translation does not support. Returns an Allele with a
+    ``ReferenceLengthExpression`` state spanning the full reference sequence.
+
+    :param hgvs_string: HGVS reference-identical variant string (e.g. ``NM_001234.1:c.=``)
+    :return: VRS Allele spanning the full reference sequence
+    :raises ValueError: if ``hgvs_string`` is not a valid reference-identical HGVS expression
+    :raises DataLookupError: if the sequence identifier or metadata lookup fails
+    """
+    if ":" not in hgvs_string or not hgvs_string.endswith(".="):
+        msg = f"Not a reference-identical HGVS expression: {hgvs_string!r}"
+        raise ValueError(msg)
+
+    accession = hgvs_string.split(":")[0]
+    return build_ref_identical_allele(accession)
 
 
 # ----------------------------------- MANE ----------------------------------- #

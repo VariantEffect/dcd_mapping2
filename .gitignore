@@ -166,3 +166,8 @@ cython_debug/
 # mapping data/output
 notebooks/analysis/analysis_files
 notebooks/analysis/mavedb_files
+
+# debug / ad-hoc mapping output files — prevent accidental commits
+urn:*.json
+tmp:*.json
+*_mapping_*.json

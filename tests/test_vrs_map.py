@@ -4,6 +4,7 @@
 we're focused on remaining consistent w/ previous results.
 * Move expected data into a separate JSON file or something?
 """
+
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -29,10 +30,10 @@ def _assert_correct_vrs_map(
     expected_mappings_data: dict[tuple[str, AnnotationLayer], dict],
 ):
     """Note that we're testing against VRS 1.3 VA IDs (temporary?)."""
-    key = (mapping.accession_id, mapping.annotation_layer)
-    assert (
-        key in expected_mappings_data
-    ), "Score row/layer combination is not in expected mappings"
+    key = (mapping.accession_id, mapping.alignment_level)
+    assert key in expected_mappings_data, (
+        "Score row/layer combination is not in expected mappings"
+    )
     expected = expected_mappings_data[key]
     vrs_2_to_1 = lambda var: _allele_to_v1_allele(var)  # noqa: E731
     if isinstance(mapping.pre_mapped, Haplotype) and isinstance(
@@ -67,7 +68,7 @@ def _assert_correct_vrs_map(
         pytest.fail("mapping format appears to be broken")
 
 
-@pytest.fixture()
+@pytest.fixture
 def get_fixtures(
     fixture_data_dir: Path,
     scoreset_metadata_fixture: dict[str, ScoresetMetadata],
@@ -116,7 +117,7 @@ def test_2_a_2(
                 align_result=align_result[target_gene],
                 records=records[target_gene],
                 transcript=tx_result[target_gene],
-            )
+            ).mappings
     assert mappings["hYAP65 WW domain"] is not None
     assert len(mappings["hYAP65 WW domain"]) == 1
 
@@ -178,7 +179,7 @@ def test_41_a_1(
                 align_result=align_result[target_gene],
                 records=records[target_gene],
                 transcript=tx_result[target_gene],
-            )
+            ).mappings
     assert mappings["Src catalytic domain"] is not None
     assert len(mappings["Src catalytic domain"]) == 5
 
@@ -251,7 +252,7 @@ def test_99_a_1(
                 align_result=align_result[target_gene],
                 records=records[target_gene],
                 transcript=tx_result[target_gene],
-            )
+            ).mappings
     assert mappings["RHO"] is not None
     assert len(mappings["RHO"]) == 8  # includes protein and genomic for all 4 rows
 
@@ -309,7 +310,7 @@ def test_103_c_1(
                 align_result=align_result[target_gene],
                 records=records[target_gene],
                 transcript=tx_result[target_gene],
-            )
+            ).mappings
     assert mappings["MAPK1"] is not None
     assert len(mappings["MAPK1"]) == 4
     for m in mappings["MAPK1"]:
@@ -378,7 +379,7 @@ def test_1_b_2(
                 align_result=align_result[target_gene],
                 records=records[target_gene],
                 transcript=tx_result[target_gene],
-            )
+            ).mappings
     assert mappings["SUMO1"] is not None
     assert len(mappings["SUMO1"]) == 8
     for m in mappings["SUMO1"]:

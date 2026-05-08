@@ -180,11 +180,15 @@ def test_non_retryable_4xx_raises_immediately():
 def test_exhausted_retries_without_response_raises_request_exception():
     # The only way to trigger the terminal state in the function is to not even
     # attempt a request (max_retries=0)
-    with mock.patch(
-        "dcd_mapping.resource_utils.httpx.get", return_value=_DummyResponse(500)
-    ), mock.patch("dcd_mapping.resource_utils.time.sleep"), pytest.raises(
-        Exception  # noqa: PT011
-    ) as exc:
+    with (
+        mock.patch(
+            "dcd_mapping.resource_utils.httpx.get", return_value=_DummyResponse(500)
+        ),
+        mock.patch("dcd_mapping.resource_utils.time.sleep"),
+        pytest.raises(
+            Exception  # noqa: PT011
+        ) as exc,
+    ):
         request_with_backoff("http://example.com/resource", max_retries=0)
     assert "Failed to fetch" in str(exc.value)
 

@@ -1,10 +1,11 @@
 """FastAPI server file"""
+
 import logging
 
 import uvicorn
 from fastapi import FastAPI
 
-from api.routers import map
+from api.routers import map  # noqa: A004
 from application_logging import init_logging
 from dcd_mapping import dcd_mapping_version
 

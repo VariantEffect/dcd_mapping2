@@ -1,4 +1,5 @@
 """Provide basic utilities for fetching and storing external data."""
+
 import logging
 import os
 import time
@@ -7,6 +8,8 @@ from pathlib import Path
 import click
 import httpx
 from tqdm import tqdm
+
+from dcd_mapping.exceptions import ResourceAcquisitionError
 
 _logger = logging.getLogger(__name__)
 
@@ -111,14 +114,23 @@ def request_with_backoff(
     Immediately raises on other HTTP errors (e.g., 4xx client errors).
     """
     attempt = 0
+    last_exception: Exception | None = None
     while attempt < max_retries:
         try:
             kwargs.setdefault("timeout", 60)
             response = httpx.get(url, **kwargs)
-        except (httpx.TimeoutException, httpx.ConnectError):
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            last_exception = e
             # Retry on transient network failures
             if attempt == max_retries - 1:
                 raise
+            _logger.debug(
+                "Transient network error fetching %s (attempt %d/%d): %s",
+                url,
+                attempt + 1,
+                max_retries,
+                e,
+            )
             sleep_time = backoff_factor * (2**attempt)
             time.sleep(sleep_time)
             attempt += 1
@@ -141,6 +153,10 @@ def request_with_backoff(
                     else backoff_factor * (2**attempt)
                 )
             except ValueError:
+                _logger.debug(
+                    "Invalid Retry-After header value: %s, using exponential backoff",
+                    retry_after,
+                )
                 sleep_time = backoff_factor * (2**attempt)
             time.sleep(sleep_time)
             attempt += 1
@@ -150,6 +166,13 @@ def request_with_backoff(
         if 500 <= status < 600:
             if attempt == max_retries - 1:
                 response.raise_for_status()
+            _logger.debug(
+                "Server error %d fetching %s (attempt %d/%d)",
+                status,
+                url,
+                attempt + 1,
+                max_retries,
+            )
             sleep_time = backoff_factor * (2**attempt)
             time.sleep(sleep_time)
             attempt += 1
@@ -160,4 +183,4 @@ def request_with_backoff(
 
     # Exhausted retries without success
     msg = f"Failed to fetch {url} after {max_retries} attempts"
-    raise Exception(msg)
+    raise ResourceAcquisitionError(msg) from last_exception

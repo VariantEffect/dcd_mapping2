@@ -1,4 +1,5 @@
 """Tests for dcd_mapping.annotate"""
+
 from unittest import mock
 
 import pytest
@@ -9,17 +10,21 @@ from ga4gh.vrs._internal.models import (
     SequenceReference,
 )
 
+from dcd_mapping import vrs_v1_schemas
 from dcd_mapping.annotate import (
     _compute_target_gene_info_from_alignment,
     _compute_target_gene_info_from_mapped_variant_spans,
     _covered_bases_from_overlapping_genes_of_chromosomal_intervals,
+    _stamp_alignment_locus_flags,
     compute_target_gene_info,
 )
 from dcd_mapping.schemas import (
+    AlignmentQc,
     AlignmentResult,
     AnnotationLayer,
     GeneInfo,
     MappedScore,
+    ScoreAnnotation,
     ScoresetMetadata,
     SequenceRange,
     TargetGene,
@@ -29,7 +34,7 @@ from dcd_mapping.schemas import (
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def target_dna_pc():
     return TargetGene(
         target_gene_name="BRAF",
@@ -41,7 +46,7 @@ def target_dna_pc():
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def scoreset_metadata(target_dna_pc):
     return ScoresetMetadata(
         urn="urn:mavedb:TEST",
@@ -56,7 +61,7 @@ def make_align(hit_intervals):
         chrom="NC_000001.11",
         strand=1,
         coverage=None,
-        ident_pct=None,
+        percent_identity=None,
         query_range=SequenceRange(start=1, end=10),
         query_subranges=[SequenceRange(start=1, end=10)],
         hit_range=SequenceRange(start=1, end=10),
@@ -64,7 +69,7 @@ def make_align(hit_intervals):
     )
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_compute_target_gene_info_non_coding_category():
     meta = ScoresetMetadata(
         urn="urn:mavedb:TEST",
@@ -86,7 +91,7 @@ async def test_compute_target_gene_info_non_coding_category():
     assert res.selection_method == "target_category"
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_compute_target_gene_info_tx_selection(scoreset_metadata):
     tx = TxSelectResult(
         nm="NM_000001.1",
@@ -161,7 +166,7 @@ def test_compute_target_gene_info_mapped_variants_path(scoreset_metadata):
         accession_id="id",
         pre_mapped=None,
         post_mapped=allele,
-        annotation_layer=AnnotationLayer.GENOMIC,
+        alignment_level=AnnotationLayer.GENOMIC,
         score=None,
         error_message=None,
     )
@@ -186,7 +191,7 @@ def test_compute_target_gene_info_mapped_variants_path(scoreset_metadata):
         assert res.selection_method == "variants_max_covered_bases"
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_compute_target_gene_info_fallback_metadata(scoreset_metadata):
     # No tx, no alignment, no mapped scores -> fallback
     with mock.patch("dcd_mapping.annotate.get_gene_symbol", return_value="META"):
@@ -198,7 +203,7 @@ async def test_compute_target_gene_info_fallback_metadata(scoreset_metadata):
         assert res.selection_method == "target_metadata"
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_compute_target_gene_info_fallback_unavailable(scoreset_metadata):
     # No tx, no alignment, no mapped scores -> fallback
     with mock.patch("dcd_mapping.annotate.get_gene_symbol", return_value=None):
@@ -246,7 +251,7 @@ def test_interval_merging_overlapping_and_adjacent_merge(scoreset_metadata):
             accession_id=f"id_{start}",
             pre_mapped=None,
             post_mapped=allele,
-            annotation_layer=AnnotationLayer.GENOMIC,
+            alignment_level=AnnotationLayer.GENOMIC,
             score=None,
             error_message=None,
         )
@@ -281,3 +286,131 @@ def test_interval_merging_overlapping_and_adjacent_merge(scoreset_metadata):
         assert isinstance(res, GeneInfo)
         assert res.hgnc_symbol == "GENEZ"
         assert res.selection_method == "variants_max_covered_bases"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _apply_alignment_locus_flags / mismatch_positions_unavailable
+# ---------------------------------------------------------------------------
+
+
+def _make_genomic_annotation(start: int, end: int) -> "ScoreAnnotation":
+    """Return a ScoreAnnotation with a simple genomic post_mapped Allele."""
+    allele = Allele(
+        location=SequenceLocation(
+            sequenceReference=SequenceReference(
+                refgetAccession="SQ.1234567890abcdef1234567890abcdef"
+            ),
+            start=start,
+            end=end,
+        ),
+        state=LiteralSequenceExpression(sequence="A"),
+        expressions=[],
+    )
+    return ScoreAnnotation(
+        mavedb_id=f"id_{start}",
+        pre_mapped=None,
+        post_mapped=allele,
+        alignment_level=AnnotationLayer.GENOMIC,
+        score=None,
+    )
+
+
+def _make_align_result_with_qc(**qc_kwargs) -> "AlignmentResult":
+    """Build a minimal AlignmentResult with an AlignmentQc built from qc_kwargs."""
+    qc = AlignmentQc(
+        alignment_length=100,
+        mismatch_count=qc_kwargs.pop("mismatch_count", 0),
+        gap_count=qc_kwargs.pop("gap_count", 0),
+        **qc_kwargs,
+    )
+    return AlignmentResult(
+        chrom="NC_000001.11",
+        strand=1,
+        coverage=None,
+        percent_identity=None,
+        query_range=SequenceRange(start=0, end=100),
+        query_subranges=[SequenceRange(start=0, end=100)],
+        hit_range=SequenceRange(start=0, end=100),
+        hit_subranges=[SequenceRange(start=0, end=100)],
+        alignment_qc=qc,
+    )
+
+
+def test_apply_alignment_locus_flags_mismatch_positions_unavailable_leaves_at_mismatched_locus_none():
+    """When mismatch_positions_unavailable=True and mismatch_count>0, at_mismatched_locus
+    must stay None (not evaluated) to prevent silent disagreement with mismatch_count.
+    """
+    ann = _make_genomic_annotation(10, 11)
+    assert ann.at_mismatched_locus is None  # pre-condition
+
+    align_result = _make_align_result_with_qc(
+        mismatch_count=5,
+        mismatch_positions_unavailable=True,
+    )
+    _stamp_alignment_locus_flags([ann], align_result, AnnotationLayer.GENOMIC)
+
+    assert ann.at_mismatched_locus is None, (
+        "at_mismatched_locus must remain None when mismatch_positions_unavailable=True "
+        "and mismatch_count>0 -- it cannot claim False when positions are unknown"
+    )
+    assert ann.near_gap is False  # gap_intervals empty → near_gap still evaluated
+
+
+def test_apply_alignment_locus_flags_mismatch_positions_unavailable_zero_count_stamps_false():
+    """When mismatch_positions_unavailable=True but mismatch_count==0, there are no
+    mismatches to miss, so at_mismatched_locus=False is safe.
+    """
+    ann = _make_genomic_annotation(10, 11)
+    align_result = _make_align_result_with_qc(
+        mismatch_count=0,
+        mismatch_positions_unavailable=True,
+    )
+    _stamp_alignment_locus_flags([ann], align_result, AnnotationLayer.GENOMIC)
+
+    assert ann.at_mismatched_locus is False
+    assert ann.near_gap is False
+
+
+def test_apply_alignment_locus_flags_early_exit_does_not_fire_when_count_nonzero():
+    """The early-exit 'no mismatches and no gaps → stamp False' must NOT fire when
+    mismatch_positions_unavailable=True and mismatch_count>0, even if gap_intervals
+    is also empty.  Previously the check was ``not mismatch_positions``, which is
+    always True under unavailability, causing the early-exit to stamp near_gap=False
+    on annotations whose positions could not be extracted (and thus were never evaluated).
+    The fix uses ``mismatch_count == 0`` as the ground-truth condition.
+    """
+    # A VRS v1 Allele is not an instance of ga4gh.vrs.Allele (v2), so
+    # _allele_ref_positions returns [] and the main-loop body is skipped via `continue`.
+    v1_allele = vrs_v1_schemas.Allele(
+        id="ga4gh:VA.test",
+        location=vrs_v1_schemas.SequenceLocation(
+            id="loc1",
+            sequence_id="ga4gh:SQ.test",
+            interval=vrs_v1_schemas.SequenceInterval(
+                start=vrs_v1_schemas.Number(value=10),
+                end=vrs_v1_schemas.Number(value=11),
+            ),
+        ),
+        state=vrs_v1_schemas.LiteralSequenceExpression(sequence="A"),
+    )
+    ann = ScoreAnnotation.model_construct(
+        mavedb_id="id_v1",
+        post_mapped=v1_allele,
+        alignment_level=AnnotationLayer.GENOMIC,
+        at_mismatched_locus=None,
+        near_gap=None,
+    )
+
+    align_result = _make_align_result_with_qc(
+        mismatch_count=3,
+        mismatch_positions_unavailable=True,
+    )
+    _stamp_alignment_locus_flags([ann], align_result, AnnotationLayer.GENOMIC)
+
+    # Both flags must remain None: positions could not be extracted, and the early-exit
+    # must not have fired (it would have incorrectly stamped near_gap=False).
+    assert ann.at_mismatched_locus is None
+    assert ann.near_gap is None, (
+        "near_gap must be None when positions are unextractable and mismatch_count>0 "
+        "prevents the early-exit from firing -- old code stamped False via faulty early-exit"
+    )

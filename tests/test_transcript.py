@@ -6,6 +6,7 @@ Todo:
 
 
 """
+
 import re
 from collections.abc import Coroutine
 from pathlib import Path
@@ -28,13 +29,12 @@ from dcd_mapping.schemas import (
 from dcd_mapping.transcripts import (
     TranscriptDescription,
     _choose_most_similar_transcript,
-    _percent_similarity,
     _select_protein_reference,
     select_transcript,
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_cst(mocker: MagicMock, mock_seqrepo_access):
     """Mock CoolSeqTool instance."""
 
@@ -188,12 +188,6 @@ def make_mane(nm: str, np: str, priority: TranscriptPriority):
     )
 
 
-def test_percent_similarity_basic():
-    assert _percent_similarity("AAAA", "AAAA") == 1.0
-    assert _percent_similarity("AAAA", "BAAAA") == 1.0  # substring fast path
-    assert 0.0 <= _percent_similarity("ABCD", "WXYZ") <= 1.0
-
-
 def test_choose_most_similar_transcript_simple(monkeypatch):
     # Query is most similar to NP_2
     query = "MKTFFV"
@@ -309,7 +303,7 @@ async def test_end_to_end_per_gene_then_similarity(monkeypatch):
         chrom="chr1",
         strand=1,
         coverage=None,
-        ident_pct=None,
+        percent_identity=None,
         query_range=SequenceRange(start=1, end=6),
         query_subranges=[SequenceRange(start=1, end=6)],
         hit_range=SequenceRange(start=1, end=6),

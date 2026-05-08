@@ -1,4 +1,5 @@
 """Select best reference sequence."""
+
 import logging
 import re
 from collections.abc import Mapping
