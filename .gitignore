@@ -171,3 +171,6 @@ notebooks/analysis/mavedb_files
 urn:*.json
 tmp:*.json
 *_mapping_*.json
+
+# Agent settings
+.claude/
