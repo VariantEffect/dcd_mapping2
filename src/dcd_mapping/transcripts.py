@@ -2,23 +2,27 @@
 
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from Bio import Align
 from Bio.Data.CodonTable import IUPACData
 from Bio.Seq import Seq
 from Bio.SeqUtils import seq1
 from cool_seq_tool.schemas import TranscriptPriority
+from mavehgvs.util import parse_variant_strings
 
-from dcd_mapping.exceptions import TxSelectError
+from dcd_mapping.exceptions import NoCodingTranscriptError, TxSelectError
 from dcd_mapping.lookup import (
     get_chromosome_identifier,
+    get_gene_symbol,
     get_mane_transcripts,
+    get_mane_transcripts_for_gene,
     get_protein_accession,
     get_seqrepo,
     get_sequence,
     get_transcripts,
     get_uniprot_sequence,
+    infer_hgnc_symbol_from_genomic_loci,
 )
 from dcd_mapping.schemas import (
     AlignmentResult,
@@ -380,6 +384,125 @@ def _handle_edge_cases(
     return transcript_reference
 
 
+def _genomic_positions_from_records(records: list[ScoreRow]) -> list[int]:
+    """Extract 0-based genomic positions from a target's ``NC_:g.`` variant rows.
+
+    Used to resolve the target's gene by genomic-locus overlap before mapping (see
+    :func:`_select_genomic_accession_reference`). A single representative position per
+    variant is enough to identify the gene at the locus; unparseable, reference, and
+    intronic rows are skipped.
+    """
+    positions: list[int] = []
+    for row in records:
+        if row.hgvs_nt in {"_wt", "_sy", "="} or "fs" in row.hgvs_nt:
+            continue
+
+        try:
+            variants, errors = parse_variant_strings([row.hgvs_nt])
+        except Exception:  # noqa: S112 -- best-effort locus parse; skip unparseable rows
+            continue
+
+        variant, error = variants[0], errors[0]
+        if error is not None or variant is None or variant.positions is None:
+            continue
+
+        variant_positions = (
+            variant.positions
+            if isinstance(variant.positions, Iterable)
+            else [variant.positions]
+        )
+        for position in variant_positions:
+            if position.is_intronic():
+                continue
+            # mavehgvs positions are 1-based; Ensembl overlap is 0-based.
+            positions.append(position.position - 1)
+
+    return positions
+
+
+def _select_genomic_accession_reference(
+    target_gene: TargetGene, records: list[ScoreRow]
+) -> TxSelectResult:
+    """Select the coding transcript for a protein-coding genomic-accession target.
+
+    Genomic-accession targets (variants submitted as ``NC_:g.``) have no BLAT
+    alignment to seed candidate transcripts, so transcript selection resolves the
+    target's gene symbol and asks cool-seq-tool for that gene's MANE transcript
+    directly (MANE Select, then MANE Plus Clinical). This is the coding transcript
+    the genomic variants project onto for reverse translation; the mapper surfaces
+    it as cdna target metadata rather than emitting per-variant coding mappings.
+
+    Gene resolution prefers the mapper-resolved gene -- inferred from the variants'
+    genomic loci via Ensembl overlap -- and falls back to normalizing the declared
+    target metadata. The inferred gene is more reliable than the declared name (which
+    may be e.g. ``"Wildtype G6PD"``), and stamping it onto the returned
+    ``hgnc_symbol`` lets ``compute_target_gene_info`` reuse it instead of re-querying
+    Ensembl.
+
+    The returned ``TxSelectResult`` carries ``nm``/``np``/``hgnc_symbol`` for that
+    purpose; ``start``/``sequence`` are inert (mirroring the ``NP_`` accession
+    passthrough) because no protein-sequence offset is computed for this path.
+
+    :param target_gene: target gene metadata from MaveDB
+    :param records: the target's score rows (source of the genomic loci)
+    :return: transcript selection carrying the selected coding transcript
+    :raise NoCodingTranscriptError: if no gene symbol resolves or the gene has no
+        MANE transcript
+    """
+    gene_symbol = None
+    gene_source = None
+    if target_gene.target_accession_id:
+        gene_symbol = infer_hgnc_symbol_from_genomic_loci(
+            target_gene.target_accession_id,
+            _genomic_positions_from_records(records),
+        )
+        if gene_symbol:
+            gene_source = "locus_overlap"
+
+    if not gene_symbol:
+        gene_symbol = get_gene_symbol(target_gene)
+        if gene_symbol:
+            gene_source = "target_metadata"
+
+    if not gene_symbol:
+        msg = (
+            f"Unable to resolve a gene symbol for genomic-accession target "
+            f"{target_gene.target_gene_name!r} (accession "
+            f"{target_gene.target_accession_id!r}); cannot select a coding transcript."
+        )
+        _logger.warning(msg)
+        raise NoCodingTranscriptError(msg)
+
+    mane_transcripts = get_mane_transcripts_for_gene(gene_symbol)
+    best_tx = _choose_best_mane_transcript(mane_transcripts)
+    if not best_tx:
+        msg = (
+            f"No MANE transcript found for gene {gene_symbol!r} (resolved via "
+            f"{gene_source}) for target {target_gene.target_gene_name!r}."
+        )
+        _logger.warning(msg)
+        raise NoCodingTranscriptError(msg)
+
+    _logger.info(
+        "Selected coding transcript %s (%s) for genomic-accession target %r: "
+        "gene %s resolved via %s.",
+        best_tx.refseq_nuc,
+        best_tx.transcript_priority,
+        target_gene.target_gene_name,
+        gene_symbol,
+        gene_source,
+    )
+    return TxSelectResult(
+        nm=best_tx.refseq_nuc,
+        np=best_tx.refseq_prot,
+        start=0,
+        is_full_match=True,
+        sequence="",
+        transcript_mode=best_tx.transcript_priority,
+        hgnc_symbol=best_tx.symbol,
+    )
+
+
 async def select_transcript(
     scoreset_urn: str,
     target_gene: TargetGene,
@@ -432,23 +555,44 @@ async def select_transcripts(
         str, TxSelectResult | TxSelectError | KeyError | None
     ] = {}
     for target_gene in scoreset_metadata.target_genes:
-        if scoreset_metadata.target_genes[target_gene].target_accession_id:
-            # for accession-based targets, create tx select objects for protein sequence accessions only
-            accession_id = scoreset_metadata.target_genes[
-                target_gene
-            ].target_accession_id
-            # TODO create full list of possible protein accession prefixes
-            if accession_id.startswith(("NP_", "ENSP_")):
-                # TODO make sequence field optional instead of leaving blank here?
+        target = scoreset_metadata.target_genes[target_gene]
+        if target.target_accession_id:
+            accession_id = target.target_accession_id
+            # Passthrough for targets with NP_ or ENSP_ accessions -- skip selection
+            # and just use the provided protein accession as the reference.
+            if accession_id.startswith(
+                (
+                    "NP_",
+                    "ENSP_",
+                )
+            ):  # TODO create full list of possible protein accession prefixes
                 selected_transcripts[target_gene] = TxSelectResult(
                     np=accession_id,
                     start=0,
                     is_full_match=True,
                     sequence="",
                     transcript_mode=None,
-                )
+                )  # TODO make sequence field optional instead of leaving blank here?
+
+            # Genomic accession targets (variants submitted as NC_:g.) are handled by a
+            # special path in transcript selection because they have no BLAT alignment.
+            # Resolve the gene's MANE coding transcript directly.
+            elif (
+                accession_id.startswith("NC_")
+                and target.target_gene_category == TargetType.PROTEIN_CODING
+            ):
+                try:
+                    selected_transcripts[target_gene] = (
+                        _select_genomic_accession_reference(
+                            target, records[target_gene]
+                        )
+                    )
+                except (TxSelectError, KeyError) as e:
+                    selected_transcripts[target_gene] = e
+
             else:
                 selected_transcripts[target_gene] = None
+
         else:
             try:
                 selected_transcripts[target_gene] = await select_transcript(

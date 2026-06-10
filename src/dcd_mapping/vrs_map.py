@@ -2,7 +2,9 @@
 
 import logging
 import os
+from collections import Counter
 from collections.abc import Iterable
+from enum import StrEnum
 from itertools import cycle
 
 from Bio.Seq import Seq
@@ -11,11 +13,13 @@ from cool_seq_tool.schemas import AnnotationLayer, Strand
 from ga4gh.core import sha512t24u
 from ga4gh.vrs._internal.models import (
     Allele,
+    Expression,
     Haplotype,
     LiteralSequenceExpression,
     ReferenceLengthExpression,
     SequenceLocation,
     SequenceString,
+    Syntax,
 )
 from ga4gh.vrs.normalize import normalize
 from mavehgvs.util import parse_variant_strings
@@ -30,8 +34,13 @@ from dcd_mapping.exceptions import (
 from dcd_mapping.lookup import (
     build_ref_identical_allele,
     cdot_rest,
+    coding_hgvs_is_intronic,
     get_chromosome_identifier,
+    get_genomic_accession_for_transcript,
     get_seqrepo,
+    project_coding_hgvs_to_genomic,
+    project_coding_hgvs_to_protein,
+    project_genomic_hgvs_to_coding,
     translate_hgvs_to_vrs,
     translate_ref_identical_to_vrs,
 )
@@ -39,6 +48,7 @@ from dcd_mapping.resource_utils import is_missing_value, request_with_backoff
 from dcd_mapping.schemas import (
     AlignmentResult,
     MappedScore,
+    MappingOutcome,
     ScoreRow,
     TargetGene,
     TargetSequenceType,
@@ -57,19 +67,32 @@ _logger = logging.getLogger(__name__)
 CLINGEN_API_URL = os.environ.get("CLINGEN_API_URL", "https://reg.genome.network/allele")
 
 
+class ProjectionOutcome(StrEnum):
+    """Per-variant projection QC (internal; drives the validation log only, never emitted).
+
+    ``failed`` means the selected transcript could not project its own variant -- a
+    mis-selection signal.
+    """
+
+    PROJECTED = "projected"  # coding (and usually protein) form constructed cleanly
+    INTRONIC = "intronic"  # coding projection lands in an intron -- benign, no protein consequence
+    SKIPPED = "skipped"  # not a projectable variant row (_wt/_sy/=/fs)
+    FAILED = "failed"  # g.->c. projection or coding allele construction failed -- selection suspect
+
+
+_PROJECTION_FAILURE_WARN_FRACTION = 0.25
+"""Projection-failure fraction above which the per-target summary logs at WARNING, not INFO."""
+
+
 def _hgvs_variant_is_valid(hgvs_string: str) -> bool:
     return not hgvs_string.endswith((".=", ")", "X"))
 
 
 def _process_any_aa_code(hgvs_pro_string: str) -> str:
-    """Substitute "Xaa" for "?" in variation expression.
+    """Substitute "Xaa" for the "?" wildcard in a protein expression.
 
-    Some expressions seem to use the single-character "?" wildcard in the context of
-    three-letter amino acid codes. This is weird, and the proper replacement is "Xaa".
-
-    Note that we currently do NOT make any alterations to nucleotide strings that use
-    weird apparently-wildcard characters like "X" -- we just treat them as invalid (see
-    _hgvs_variant_is_valid()).
+    Nucleotide strings with "X"-style wildcards are not adjusted -- they're treated as
+    invalid (see ``_hgvs_variant_is_valid``).
 
     :param hgvs_string: MAVE HGVS expression
     :return: processed variation (equivalent to input if no wildcard code found)
@@ -126,12 +149,11 @@ def _create_pre_mapped_hgvs_strings(
     alignment: AlignmentResult | None = None,
     accession_id: str | None = None,
 ) -> list[str]:
-    """Generate a list of (pre-mapped) HGVS strings from one long string containing many valid HGVS substrings
+    """Generate pre-mapped HGVS strings from a raw string of one or more HGVS substrings.
 
-    Currently, the provided transcript is used as the reference for the hgvs string, but this is inaccurate
-    because pre-mapped variants should be relative to the user-provided target sequence, not an external accession.
-    Any offset between the transcript and target sequence is not taken into account here (the variant position
-    is relative to the target sequence).
+    Known limitation: the transcript is used as the reference, but pre-mapped variants
+    should be relative to the user-provided target sequence; any transcript/target offset
+    is not accounted for here.
 
     :param raw_description: A string containing valid HGVS sub-strings
     :param layer: An enum denoting the targeted annotation layer of these HGVS strings
@@ -156,8 +178,7 @@ def _create_pre_mapped_hgvs_strings(
             msg = f"Variant could not be parsed by mavehgvs: {error}"
             raise ValueError(msg)
 
-        # ga4gh hgvs_tools does not support intronic variants, so they will err out when vrs allele translator is called
-        # therefore skip them there
+        # ga4gh hgvs_tools can't translate intronic variants -- reject them here.
         if is_intronic_variant(variant):
             msg = f"Variant is intronic and cannot be processed: {variant}"
             raise ValueError(msg)
@@ -220,8 +241,7 @@ def _create_post_mapped_hgvs_strings(
             msg = f"Variant could not be parsed by mavehgvs: {error}"
             raise ValueError(msg)
 
-        # ga4gh hgvs_tools does not support intronic variants, so they will err out when vrs allele translator is called
-        # therefore skip them there
+        # ga4gh hgvs_tools can't translate intronic variants -- reject them here.
         if is_intronic_variant(variant):
             msg = f"Variant is intronic and cannot be processed: {variant}"
             raise ValueError(msg)
@@ -744,6 +764,57 @@ def _map_genomic(
     )
 
 
+def _map_coding(row: ScoreRow, sequence_id: str) -> MappedScore:
+    """Map a cdna-source (``NM_``/``ENST``) measured variant on its native transcript.
+
+    The measured ``c.`` variant is already the least-derived layer, and the target *is* the
+    reference transcript, so pre- and post-mapped are the same coding allele -- no genomic
+    round-trip. Genomic/protein forms come separately from :func:`_construct_projected_layers`.
+
+    :param row: a MaveDB score row
+    :param sequence_id: the coding transcript accession the variant is described against
+    :return: a CDNA-layer mapping, or a failed ``MappedScore`` carrying the error
+    """
+    if row.hgvs_nt in {"_wt", "_sy", "="} or "fs" in row.hgvs_nt:
+        _logger.warning(
+            "Can't process variant syntax %s for %s", row.hgvs_nt, row.accession
+        )
+        return MappedScore(
+            accession_id=row.accession,
+            score=row.score,
+            error_message=f"Can't process variant syntax {row.hgvs_nt}",
+        )
+
+    try:
+        coding_hgvs_strings = _create_pre_mapped_hgvs_strings(
+            row.hgvs_nt, AnnotationLayer.CDNA, accession_id=sequence_id
+        )
+        coding_allele = _construct_vrs_allele(
+            coding_hgvs_strings, AnnotationLayer.CDNA, None, False
+        )
+    except Exception as e:
+        _logger.warning(
+            "An error occurred while generating coding variant for %s, accession %s: %s",
+            row.hgvs_nt,
+            row.accession,
+            e,
+            exc_info=True,
+        )
+        return MappedScore(
+            accession_id=row.accession,
+            score=row.score,
+            error_message=f"{type(e).__name__}: {e}",
+        )
+
+    return MappedScore(
+        accession_id=row.accession,
+        score=row.score,
+        alignment_level=AnnotationLayer.CDNA,
+        pre_mapped=coding_allele,
+        post_mapped=coding_allele,
+    )
+
+
 def _get_allele_sequence(allele: Allele) -> str:
     """Get sequence for Allele
 
@@ -845,12 +916,31 @@ def _map_protein_coding(
             transcript,
         )
 
+    # Sequence-based coding target: measures a genomic variant, carries a BLAT-selected
+    # coding transcript. Project onto the unmeasured layers (c., and p. if no protein was
+    # measured); build_scoreset_mapping routes them via preferred_layer_only.
+    project_nm = transcript.nm if isinstance(transcript, TxSelectResult) else None
+    projection_outcomes: list[ProjectionOutcome] = []
+
     variations: list[MappedScore] = []
     for row in records:
         hgvs_nt_mappings = None
         hgvs_pro_mappings = None
+        projected: list[MappedScore] = []
         if _hgvs_nt_is_valid(row.hgvs_nt):
             hgvs_nt_mappings = _map_genomic(row, gsequence_id, align_result)
+            if project_nm and align_result is not None:
+                projected, outcome = _construct_projected_layers(
+                    row,
+                    AnnotationLayer.GENOMIC,
+                    project_nm,
+                    alignment=align_result,
+                    # Protein is measured here only if a valid hgvs_pro is present; when
+                    # it is, _map_protein_coding_pro maps it directly, so do not project
+                    # a redundant protein layer.
+                    project_protein=not _hgvs_pro_is_valid(row.hgvs_pro),
+                )
+                projection_outcomes.append(outcome)
 
         if (
             isinstance(transcript, TxSelectError) and not hgvs_nt_mappings
@@ -867,9 +957,8 @@ def _map_protein_coding(
                     hgvs_pro_mappings = _map_protein_coding_pro(
                         row, psequence_id, transcript, protein_align_result
                     )
-                # Only create this error message if there is not a valid hgvs nt mapping, because if there is a valid hgvs nt mapping,
-                # it indicates we expect protein alignemnt to fail and we don't want to create redundant error messages about missing
-                # transcript sequence or alignment failure
+                # Skip this error when an nt mapping exists: protein alignment is then
+                # expected to fail, so the message would be redundant.
                 elif protein_align_result is None and not hgvs_nt_mappings:
                     hgvs_pro_mappings = MappedScore(
                         accession_id=row.accession,
@@ -885,11 +974,20 @@ def _map_protein_coding(
                     error_message="Invalid protein variant syntax",
                 )
 
-        # append both pro and nt mappings if both available
+        # append both pro and nt mappings if both available, plus the deterministic
+        # projected layers (suppressed as variants by the API, emitted by the CLI).
         if hgvs_pro_mappings:
             variations.append(hgvs_pro_mappings)
         if hgvs_nt_mappings:
             variations.append(hgvs_nt_mappings)
+        variations.extend(projected)
+
+    if project_nm and projection_outcomes:
+        _log_projection_validation(
+            metadata.target_accession_id or metadata.target_gene_name,
+            project_nm,
+            projection_outcomes,
+        )
 
     return variations, protein_align_result
 
@@ -927,6 +1025,293 @@ def store_accession(
     sr.sr.store(sequence, alias_dict_list)
 
 
+def _coding_pivot_hgvs_strings(
+    row: ScoreRow,
+    source_layer: AnnotationLayer,
+    transcript_nm: str,
+    accession_id: str | None,
+    alignment: AlignmentResult | None,
+) -> list[str]:
+    """Build the coding (``c.``) HGVS form(s) of a measured variant -- the pivot every
+    deterministic projection runs through.
+
+    The coding form is reached differently per assay level:
+
+    * **genomic source** (``NC_`` accession or sequence-based BLAT alignment) -- build
+      the genomic HGVS first (pre-mapped on the accession, or post-mapped onto the
+      reference contig via the alignment), then project ``g. -> c.`` onto the transcript.
+    * **cdna source** (``NM_``/``ENST`` accession) -- the measured variant is already
+      coding on ``transcript_nm``; prefix the accession onto the parsed variant string(s).
+
+    :raise Exception: if the genomic build or ``g. -> c.`` projection fails (the caller
+        classifies this as ``FAILED``).
+    """
+    if source_layer is AnnotationLayer.CDNA:
+        # Measured variant is already coding on transcript_nm; just prefix the accession.
+        return [f"{accession_id}:{v}" for v in _parse_raw_variant_str(row.hgvs_nt)]
+
+    if accession_id is not None:
+        genomic_hgvs_strings = _create_pre_mapped_hgvs_strings(
+            row.hgvs_nt, AnnotationLayer.GENOMIC, accession_id=accession_id
+        )
+    else:
+        genomic_hgvs_strings = _create_post_mapped_hgvs_strings(
+            row.hgvs_nt, AnnotationLayer.GENOMIC, alignment=alignment
+        )
+    return [
+        project_genomic_hgvs_to_coding(g, transcript_nm) for g in genomic_hgvs_strings
+    ]
+
+
+def _projection_record(
+    row: ScoreRow,
+    layer: AnnotationLayer,
+    *,
+    outcome: MappingOutcome,
+    allele: Allele | Haplotype | None = None,
+    error_message: str | None = None,
+) -> MappedScore:
+    """Build one projected-layer record carrying its typed :class:`MappingOutcome`.
+
+    Benign outcomes (``INTRONIC`` / ``NO_PROTEIN_CONSEQUENCE``) leave ``error_message``
+    ``None`` so a populated ``error_message`` always means a genuine failure.
+    """
+    return MappedScore(
+        accession_id=row.accession,
+        score=row.score,
+        alignment_level=layer,
+        pre_mapped=allele,
+        post_mapped=allele,
+        error_message=error_message,
+        outcome=outcome,
+    )
+
+
+def _construct_projected_layers(
+    row: ScoreRow,
+    source_layer: AnnotationLayer,
+    transcript_nm: str,
+    *,
+    accession_id: str | None = None,
+    alignment: AlignmentResult | None = None,
+    genomic_accession: str | None = None,
+    project_protein: bool = True,
+) -> tuple[list[MappedScore], ProjectionOutcome]:
+    """Project a measured variant onto its own deterministic non-measured forms.
+
+    A 1-to-1 transform of one measured variant onto the other layers -- distinct from the
+    equivalence-class expansion (synonymous codons) the reverse-translation job owns. The
+    non-measured forms depend on ``source_layer``:
+
+    * **genomic source** (``NC_`` accession, or sequence-based via ``alignment``) -- cdna
+      (``g. -> c.``) and, unless ``project_protein`` is False, protein (``c. -> p.``).
+    * **cdna source** (``NM_``/``ENST``) -- genomic (``c. -> g.`` onto ``genomic_accession``,
+      from :func:`lookup.get_genomic_accession_for_transcript`) and protein (``c. -> p.``).
+
+    Every expected level yields exactly one record (never a silent omission), each with a
+    typed :class:`MappingOutcome`: ``MAPPED``, benign ``INTRONIC``/``NO_PROTEIN_CONSEQUENCE``
+    (no ``error_message``), or ``FAILED`` (``error_message`` populated). Non-variant rows
+    (``_wt``/``_sy``/``=``/``fs``) yield none. The returned :class:`ProjectionOutcome` (for
+    the per-target validation log) tracks the load-bearing nucleotide form -- ``FAILED``
+    there is a mis-selection signal; a protein-stage miss never fails the aggregate.
+
+    :param row: a MaveDB score row
+    :param source_layer: the assay (measured) level -- ``GENOMIC`` or ``CDNA``
+    :param transcript_nm: the coding transcript the cdna form is expressed against
+    :param accession_id: accession the measured variant is described against; ``None`` for
+        a sequence-based genomic source, which uses ``alignment``
+    :param alignment: BLAT alignment for a sequence-based genomic source
+    :param genomic_accession: reference contig for the ``c. -> g.`` projection (cdna source)
+    :param project_protein: construct the protein form (False when protein was measured)
+    :return: one typed ``MappedScore`` per expected non-measured level, and the outcome
+    """
+    if row.hgvs_nt in {"_wt", "_sy", "="} or "fs" in row.hgvs_nt:
+        # Not an input variant (wildtype/synonymous/reference/frameshift) -- the measured
+        # path already emits the row's record; there is nothing to project.
+        return [], ProjectionOutcome.SKIPPED
+
+    # The deterministic non-measured layer set, with the load-bearing nucleotide
+    # re-expression first: cdna for a genomic source, genomic for a cdna source.
+    load_bearing_layer = (
+        AnnotationLayer.CDNA
+        if source_layer is AnnotationLayer.GENOMIC
+        else AnnotationLayer.GENOMIC
+    )
+    expected_layers = [load_bearing_layer]
+    if project_protein:
+        expected_layers.append(AnnotationLayer.PROTEIN)
+
+    try:
+        coding_hgvs_strings = _coding_pivot_hgvs_strings(
+            row, source_layer, transcript_nm, accession_id, alignment
+        )
+    except Exception as e:
+        # The coding pivot underpins every projection; if it cannot be built, none of the
+        # expected layers can. Emit a FAILED record for each rather than omitting them.
+        _logger.debug(
+            "Projection for %s (accession %s) failed: coding pivot failed: %s",
+            row.hgvs_nt,
+            row.accession,
+            e,
+        )
+        records = [
+            _projection_record(
+                row,
+                layer,
+                outcome=MappingOutcome.FAILED,
+                error_message=f"coding pivot ({source_layer} -> c.) failed: {e}",
+            )
+            for layer in expected_layers
+        ]
+        return records, ProjectionOutcome.FAILED
+
+    if any(coding_hgvs_is_intronic(c) for c in coding_hgvs_strings):
+        # Intronic: the coding form is not VRS-representable and there is no protein
+        # consequence. A benign absence for every expected layer (no error_message).
+        _logger.debug(
+            "Projection for %s (accession %s): coding projection is intronic.",
+            row.hgvs_nt,
+            row.accession,
+        )
+        records = [
+            _projection_record(row, layer, outcome=MappingOutcome.INTRONIC)
+            for layer in expected_layers
+        ]
+        return records, ProjectionOutcome.INTRONIC
+
+    # 1. Resolve this layer's HGVS strings. The cdna form is the pivot itself; the
+    #    genomic form is the c.->g. re-expression (cdna source); the protein form is
+    #    the c.->p. consequence. A protein string-projection miss is a *benign*
+    #    no-consequence; a load-bearing nucleotide miss is a FAILED record.
+    records: list[MappedScore] = []
+    aggregate = ProjectionOutcome.PROJECTED
+    for layer in expected_layers:
+        if layer is AnnotationLayer.CDNA:
+            hgvs_strings = coding_hgvs_strings
+
+        elif layer is AnnotationLayer.GENOMIC:
+            if genomic_accession is None:
+                records.append(
+                    _projection_record(
+                        row,
+                        layer,
+                        outcome=MappingOutcome.FAILED,
+                        error_message="no resolvable reference contig for c. -> g. projection",
+                    )
+                )
+                aggregate = ProjectionOutcome.FAILED
+                continue
+
+            try:
+                hgvs_strings = [
+                    project_coding_hgvs_to_genomic(c, genomic_accession)
+                    for c in coding_hgvs_strings
+                ]
+            except Exception as e:
+                records.append(
+                    _projection_record(
+                        row,
+                        layer,
+                        outcome=MappingOutcome.FAILED,
+                        error_message=f"c. -> g. projection failed: {e}",
+                    )
+                )
+                aggregate = ProjectionOutcome.FAILED
+                continue
+
+        elif layer is AnnotationLayer.PROTEIN:
+            try:
+                hgvs_strings = [
+                    project_coding_hgvs_to_protein(c) for c in coding_hgvs_strings
+                ]
+            except Exception as e:
+                # Non-projectable protein is a benign no-consequence (e.g. UTR); the
+                # load-bearing nucleotide layer carries any mis-selection signal.
+                _logger.debug(
+                    "No protein consequence for %s (accession %s): %s",
+                    row.hgvs_nt,
+                    row.accession,
+                    e,
+                )
+                records.append(
+                    _projection_record(
+                        row, layer, outcome=MappingOutcome.NO_PROTEIN_CONSEQUENCE
+                    )
+                )
+                continue
+
+        else:
+            msg = f"Unexpected annotation layer: {layer}"
+            raise ValueError(msg)
+
+        # 2. Construct the VRS allele for this layer.
+        try:
+            allele = _construct_vrs_allele(hgvs_strings, layer, None, False)
+            records.append(
+                _projection_record(
+                    row, layer, outcome=MappingOutcome.MAPPED, allele=allele
+                )
+            )
+        except Exception as e:
+            records.append(
+                _projection_record(
+                    row,
+                    layer,
+                    outcome=MappingOutcome.FAILED,
+                    error_message=f"{layer} allele construction failed: {e}",
+                )
+            )
+            if layer is load_bearing_layer:
+                aggregate = ProjectionOutcome.FAILED
+
+    return records, aggregate
+
+
+def _log_projection_validation(
+    accession_id: str,
+    transcript_nm: str,
+    outcomes: list[ProjectionOutcome],
+) -> None:
+    """Log a per-target summary of how cleanly a target's variants projected.
+
+    For a selected transcript (genomic/sequence source) a high failure fraction signals a
+    mis-selection; for a cdna source (``accession_id == transcript_nm``) nothing was
+    selected, so this just reports the c. -> g./p. projection. WARNING above
+    ``_PROJECTION_FAILURE_WARN_FRACTION`` of attempted (non-skipped) variants, else INFO.
+    """
+    counts = Counter(outcomes)
+    projected = counts[ProjectionOutcome.PROJECTED]
+    intronic = counts[ProjectionOutcome.INTRONIC]
+    failed = counts[ProjectionOutcome.FAILED]
+    skipped = counts[ProjectionOutcome.SKIPPED]
+    attempted = projected + intronic + failed  # non-variant skipped rows excluded
+    if attempted == 0:
+        return
+
+    failure_fraction = failed / attempted
+    log = (
+        _logger.warning
+        if failure_fraction > _PROJECTION_FAILURE_WARN_FRACTION
+        else _logger.info
+    )
+
+    if accession_id == transcript_nm:
+        scope = f"Projecting cdna target {accession_id} to its genomic/protein forms"
+    else:
+        scope = f"Projection of {accession_id} onto selected transcript {transcript_nm}"
+
+    log(
+        "%s: %d projected, %d intronic, %d failed, %d skipped (%.0f%% of %d attempted failed).",
+        scope,
+        projected,
+        intronic,
+        failed,
+        skipped,
+        100 * failure_fraction,
+        attempted,
+    )
+
+
 def _map_accession(
     metadata: TargetGene,
     records: list[ScoreRow],
@@ -942,8 +1327,12 @@ def _map_accession(
 
     store_accession(sequence_id)
 
-    # TODO full list of protein accession id prefixes
-    if metadata.target_accession_id.startswith(("NP", "ENSP")):
+    if metadata.target_accession_id.startswith(
+        (
+            "NP",
+            "ENSP",
+        )
+    ):  # TODO full list of protein accession id prefixes
         for row in records:
             hgvs_pro_mappings = _map_protein_coding_pro(
                 row,
@@ -951,11 +1340,114 @@ def _map_accession(
                 transcript,
             )
             variations.append(hgvs_pro_mappings)
-    # TODO full list of transcript and contig accession id prefixes
-    elif metadata.target_accession_id.startswith(("NM", "ENST", "NC")):
+
+    # Coding accession targets project their measured variant onto the unmeasured
+    # deterministic layers; build_scoreset_mapping routes them via preferred_layer_only.
+    #   NC_ (genomic source): measured variant is genomic; project g.->c.->p. onto the
+    #     gene's selected MANE transcript (transcript.nm).
+    #   NM_/ENST (cdna source): measured variant is already coding; project c.->g. (onto
+    #     the transcript's reference contig) and c.->p.
+    elif metadata.target_accession_id.startswith(
+        (
+            "NM",
+            "ENST",
+            "NC",
+        )
+    ):  # TODO full list of transcript and contig accession id prefixes
+        is_genomic_source = metadata.target_accession_id.startswith("NC")
+        project_nm = transcript.nm if isinstance(transcript, TxSelectResult) else None
+
+        # NM_/ENST accession is itself the coding transcript even without a
+        # TxSelectResult (none is produced for transcript accessions).
+        if not is_genomic_source and project_nm is None:
+            project_nm = sequence_id
+
+        # The c. -> g. projection (cdna source only) needs the transcript's reference
+        # contig; resolve it once per target, not per variant.
+        genomic_accession = (
+            get_genomic_accession_for_transcript(project_nm)
+            if project_nm and not is_genomic_source
+            else None
+        )
+
+        # Map the measured variant in its native layer: genomic for an NC_ source,
+        # coding (directly on the transcript) for an NM_/ENST source.
+        projection_outcomes: list[ProjectionOutcome] = []
         for row in records:
-            hgvs_nt_mappings = _map_genomic(row, sequence_id, align_result)
+            if is_genomic_source:
+                hgvs_nt_mappings = _map_genomic(row, sequence_id, align_result)
+            else:
+                hgvs_nt_mappings = _map_coding(row, sequence_id)
             variations.append(hgvs_nt_mappings)
+
+            # cdna source: map a measured hgvs_pro directly rather than projecting it --
+            # it's already in reference coordinates (pre_mapped == post_mapped). Needs the
+            # NP_ from a TxSelectResult; if unavailable, skip and log rather than fall back
+            # to a projection that could silently diverge from the measured value.
+            has_measured_protein = False
+            if not is_genomic_source and _hgvs_pro_is_valid(row.hgvs_pro):
+                has_measured_protein = True
+                np_accession = (
+                    transcript.np
+                    if isinstance(transcript, TxSelectResult) and transcript.np
+                    else None
+                )
+                if np_accession:
+                    try:
+                        pro_hgvs = _create_pre_mapped_hgvs_strings(
+                            row.hgvs_pro, AnnotationLayer.PROTEIN, tx=transcript
+                        )
+                        pro_allele = _construct_vrs_allele(
+                            pro_hgvs, AnnotationLayer.PROTEIN, None, False
+                        )
+                        variations.append(
+                            MappedScore(
+                                accession_id=row.accession,
+                                score=row.score,
+                                alignment_level=AnnotationLayer.PROTEIN,
+                                pre_mapped=pro_allele,
+                                post_mapped=pro_allele,
+                            )
+                        )
+                    except Exception as e:
+                        _logger.warning(
+                            "Could not map measured hgvs_pro %s for %s: %s",
+                            row.hgvs_pro,
+                            row.accession,
+                            e,
+                        )
+                        variations.append(
+                            MappedScore(
+                                accession_id=row.accession,
+                                score=row.score,
+                                alignment_level=AnnotationLayer.PROTEIN,
+                                error_message=f"measured protein mapping failed: {e}",
+                            )
+                        )
+                else:
+                    _logger.warning(
+                        "hgvs_pro %s present for %s but no NP_ accession resolvable "
+                        "from transcript; skipping protein layer",
+                        row.hgvs_pro,
+                        row.accession,
+                    )
+
+            if project_nm:
+                projected, outcome = _construct_projected_layers(
+                    row,
+                    AnnotationLayer.GENOMIC
+                    if is_genomic_source
+                    else AnnotationLayer.CDNA,
+                    project_nm,
+                    accession_id=sequence_id,
+                    genomic_accession=genomic_accession,
+                    project_protein=not has_measured_protein,
+                )
+                variations.extend(projected)
+                projection_outcomes.append(outcome)
+        if project_nm:
+            _log_projection_validation(sequence_id, project_nm, projection_outcomes)
+
     else:
         msg = f"Unrecognized accession prefix for accession id: {metadata.target_accession_id}"
         raise UnsupportedReferenceSequencePrefixError(msg)
@@ -994,9 +1486,8 @@ def _construct_vrs_allele(
     for hgvs_string in hgvs_strings:
         _logger.debug("Processing HGVS string: %s", hgvs_string)
 
-        # Special handling for reference-identical variants, which must be represented as simple Alleles with a
-        # ReferenceLengthExpression state rather than beeing translated from HGVS. This translation is
-        # currently unsupported by ga4gh hgvs_tools and will raise an error if attempted.
+        # Reference-identical variants must be built as Alleles with a
+        # ReferenceLengthExpression state; ga4gh hgvs_tools can't translate them from HGVS.
         if hgvs_string.endswith(".="):
             if pre_map:
                 if sequence_id is None:
@@ -1037,6 +1528,11 @@ def _construct_vrs_allele(
                 allele.state.model_dump_json(),
             )
             allele.state = _rle_to_lse(allele.state, allele.location)
+
+        # Carry the verbatim c. HGVS so annotate need not reconstruct it (it can't: its
+        # reconstructor only handles g./p. frames).
+        if not pre_map and layer is AnnotationLayer.CDNA:
+            allele.expressions = [Expression(syntax=Syntax.HGVS_C, value=hgvs_string)]
 
         allele.id = identify_allele(allele)
         alleles.append(allele)
