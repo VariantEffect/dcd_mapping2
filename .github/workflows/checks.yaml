@@ -1,21 +1,23 @@
 name: Checks
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - mavedb-main
+      - mavedb-dev
+  pull_request:
 jobs:
   test:
-    name: test py${{ matrix.python-version }}
+    name: test py3.11
     runs-on: ubuntu-latest
     env:
       MAVEDB_BASE_URL: https://api.mavedb.org
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -23,7 +25,14 @@ jobs:
 
       - name: Run tests
         # only run tests known to work in CI
-        run: python3 -m pytest tests/test_mavedb_data.py
+        run: |
+          mkdir -p coverage
+          python3 -m pytest tests/test_mavedb_data.py --cov-report=lcov:coverage/lcov.info
+
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          path-to-lcov: coverage/lcov.info
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -32,7 +41,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.11
+          python-version: "3.11"
 
       - name: Install dependencies
         run: python3 -m pip install ".[dev]"
