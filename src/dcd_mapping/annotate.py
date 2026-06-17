@@ -1538,6 +1538,13 @@ def build_scoreset_mapping(
         # before constructing TargetAnnotation (which requires valid AnnotationLayer keys).
         preferred_layers.discard(None)
 
+        _logger.info(
+            "For target %s, preferred layer is %s and layers seen are %s",
+            target_gene_name,
+            preferred_layer_for_target,
+            preferred_layers,
+        )
+
         reference_sequences[target_gene_name] = TargetAnnotation(
             gene_info=gene_info.get(target_gene),
             layers={
@@ -1584,62 +1591,75 @@ def build_scoreset_mapping(
                 },
             }
 
-        for m in mappings[target_gene]:
-            if m.alignment_level is None and m.pre_mapped is None:
-                # Completely-failed variant — vrs_map could not determine a layer.
-                # Re-attribute to the preferred layer so every mapped_score has a
-                # parent TargetMapping row (the API joins on alignment_level).
-                score_dict = m.model_dump()
-                score_dict["alignment_level"] = preferred_layer_for_target
-                score_dict["target_gene_identifier"] = target_gene_name
-                mapped_scores.append(ScoreAnnotation(**score_dict))
-            elif m.alignment_level in preferred_layers:
-                score_dict = m.model_dump()
-                score_dict["target_gene_identifier"] = target_gene_name
-                mapped_scores.append(ScoreAnnotation(**score_dict))
-
-        # Provenance/QC: emit one TargetMapping per (target, alignment_level) that
-        # actually produced variants in this run. The (target_gene_identifier,
-        # alignment_level) pair must be unique per run; the API uses it to attribute
-        # each mapped_variant to its source row via target_gene_mapping_id.
-        #
-        # Completely-failed variants (annotation_layer=None) were re-attributed to
-        # preferred_layer_for_target in mapped_scores above; include them in that
-        # layer's TargetMapping count so total_variants is accurate.
-        null_failures = [
-            m
-            for m in mappings[target_gene]
-            if m.alignment_level is None and m.pre_mapped is None
-        ]
-        align_result_for_target = genomic_align_for_target
-        emitted_mappings = [
+        # Every input variant must yield exactly one record at the preferred layer.
+        # Records already at a preferred layer are emitted directly. A variant with none
+        # gets a single re-attributed failure there: its own null-layer failure if it has
+        # one, else a synthesized failure (it mapped only at non-preferred layers -- e.g. a
+        # wild-type p.= on a genomic-preferred target). A variant already represented is
+        # never also re-attributed, so a dead attempt can't duplicate its real record.
+        preferred_mappings = [
             m for m in mappings[target_gene] if m.alignment_level in preferred_layers
         ]
+        represented_ids = {m.mavedb_id for m in preferred_mappings}
 
-        # Group by alignment_level.
-        layers_seen: dict = {}
-        for m in emitted_mappings:
+        records_by_id: dict[str, list[ScoreAnnotation]] = {}
+        for m in mappings[target_gene]:
+            records_by_id.setdefault(m.mavedb_id, []).append(m)
+
+        reattributed: list[ScoreAnnotation] = []
+        for variant_id, recs in records_by_id.items():
+            if variant_id in represented_ids:
+                continue
+            null_failure = next(
+                (m for m in recs if m.alignment_level is None and m.pre_mapped is None),
+                None,
+            )
+            if null_failure is not None:
+                score_dict = null_failure.model_dump()
+            else:
+                # Mapped only at non-preferred layers; synthesize a failure there.
+                mapped_layers = sorted(
+                    {
+                        m.alignment_level.value
+                        for m in recs
+                        if m.alignment_level is not None
+                    }
+                )
+                score_dict = recs[0].model_dump()
+                score_dict["pre_mapped"] = None
+                score_dict["post_mapped"] = None
+                score_dict["outcome"] = MappingOutcome.FAILED
+                score_dict["error_message"] = (
+                    f"No representation at preferred layer {preferred_layer_for_target.value}"
+                    + (
+                        f"; mapped only at: {', '.join(mapped_layers)}"
+                        if mapped_layers
+                        else ""
+                    )
+                )
+            score_dict["alignment_level"] = preferred_layer_for_target
+            score_dict["target_gene_identifier"] = target_gene_name
+            reattributed.append(ScoreAnnotation(**score_dict))
+
+        for m in preferred_mappings:
+            score_dict = m.model_dump()
+            score_dict["target_gene_identifier"] = target_gene_name
+            mapped_scores.append(ScoreAnnotation(**score_dict))
+        mapped_scores.extend(reattributed)
+
+        # One TargetMapping per preferred layer that produced records. The
+        # (target_gene_identifier, alignment_level) key must be unique per run and
+        # cover every mapped_score, so the preferred layer also gets a row whenever
+        # failures were re-attributed to it. Re-attributed failures count toward its totals.
+        layers_seen: dict[AnnotationLayer, list[ScoreAnnotation]] = {}
+        for m in preferred_mappings:
             layers_seen.setdefault(m.alignment_level, []).append(m)
+        if reattributed:
+            layers_seen.setdefault(preferred_layer_for_target, [])
 
         for layer, layer_annotations in layers_seen.items():
-            if layer is None:
-                continue
-
-            # Defensive: coerce raw string values (e.g. "g") to AnnotationLayer.
-            if not isinstance(layer, AnnotationLayer):
-                try:
-                    layer = AnnotationLayer(layer)
-                except ValueError:
-                    _logger.warning(
-                        "Skipping target_mappings row for unknown annotation layer %r",
-                        layer,
-                    )
-                    continue
-
-            # Null-layer failures are attributed to the preferred layer; fold them
-            # into that layer's annotation list so variant counts are correct.
             annotations_for_tm = (
-                list(layer_annotations) + null_failures
+                layer_annotations + reattributed
                 if layer == preferred_layer_for_target
                 else layer_annotations
             )
@@ -1650,7 +1670,7 @@ def build_scoreset_mapping(
                     alignment_level=layer,
                     preferred=(layer == preferred_layer_for_target),
                     tx_result=tx_output.get(target_gene),
-                    align_result=align_result_for_target,
+                    align_result=genomic_align_for_target,
                     vrs_version=vrs_version,
                     annotations=annotations_for_tm,
                     protein_align_result=protein_align_for_target,
@@ -1669,7 +1689,7 @@ def build_scoreset_mapping(
         # forms are filtered, so those layers never appear in layers_seen.
         target_meta = metadata.target_genes[target_gene]
         if target_meta.target_gene_category == TargetType.PROTEIN_CODING:
-            scored_levels = {m.alignment_level for m in emitted_mappings}
+            scored_levels = {m.alignment_level for m in preferred_mappings}
             scored_levels.discard(None)
             for identity_level in (AnnotationLayer.CDNA, AnnotationLayer.PROTEIN):
                 if identity_level in scored_levels:
@@ -1678,7 +1698,7 @@ def build_scoreset_mapping(
                     identity_level,
                     target_meta,
                     tx_output.get(target_gene),
-                    align_result_for_target,
+                    genomic_align_for_target,
                 )
                 if identity_accession is None:
                     continue

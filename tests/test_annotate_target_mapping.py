@@ -178,10 +178,11 @@ def _make_annotation(
     layer: AnnotationLayer | None,
     post_mapped=None,
     error_message: str | None = None,
+    mavedb_id: str = "urn:mavedb:00000001-a-1#1",
 ) -> ScoreAnnotation:
     """Minimal ScoreAnnotation for golden test."""
     return ScoreAnnotation(
-        mavedb_id="urn:mavedb:00000001-a-1#1",
+        mavedb_id=mavedb_id,
         alignment_level=layer,
         pre_mapped=None,
         post_mapped=post_mapped,
@@ -920,8 +921,12 @@ class TestBuildScoresetMapping:
             urn="urn:mavedb:00000001-a-1",
             target_genes={"GENE1": _make_seq_target("GENE1")},
         )
-        g_ann = _make_annotation(AnnotationLayer.GENOMIC)
-        null_ann = _make_annotation(None)  # completely failed
+        g_ann = _make_annotation(
+            AnnotationLayer.GENOMIC, mavedb_id="urn:mavedb:00000001-a-1#1"
+        )
+        null_ann = _make_annotation(
+            None, mavedb_id="urn:mavedb:00000001-a-1#2"
+        )  # completely failed, distinct variant
 
         with (
             patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
@@ -974,9 +979,17 @@ class TestBuildScoresetMapping:
             urn="urn:mavedb:00000001-a-1",
             target_genes={"GENE1": _make_seq_target("GENE1")},
         )
-        # 3 genomic successes + 2 completely-failed variants
-        g_anns = [_make_annotation(AnnotationLayer.GENOMIC) for _ in range(3)]
-        null_anns = [_make_annotation(None) for _ in range(2)]
+        # 3 genomic successes + 2 completely-failed variants, each a distinct variant
+        g_anns = [
+            _make_annotation(
+                AnnotationLayer.GENOMIC, mavedb_id=f"urn:mavedb:00000001-a-1#{i}"
+            )
+            for i in range(1, 4)
+        ]
+        null_anns = [
+            _make_annotation(None, mavedb_id=f"urn:mavedb:00000001-a-1#{i}")
+            for i in range(4, 6)
+        ]
 
         with (
             patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
@@ -1242,3 +1255,181 @@ class TestCdotDataVersionPropagation:
         assert tm.tool_parameters is not None
         assert "cdot_data_version" in tm.tool_parameters
         assert tm.tool_parameters["cdot_data_version"] == "0.2.26"
+
+
+class TestNullFailureDedup:
+    """A completely-failed (null-layer) record is re-attributed to the preferred layer
+    only when the variant is not already represented there.
+
+    The motivating case is a codon-optimized (e.g. yeast-expressed) target: its genomic
+    mapping fails wholesale, the preferred layer falls back to PROTEIN, and a variant's
+    dead genomic attempt must not duplicate its measured protein record -- which would
+    emit two mapped_scores for one input variant (and over-count the protein QC row).
+    """
+
+    def _protein_allele(self) -> Allele:
+        return Allele(
+            location=SequenceLocation(
+                sequenceReference=SequenceReference(refgetAccession="SQ." + "A" * 32),
+                start=0,
+                end=1,
+            ),
+            state=LiteralSequenceExpression(sequence="A"),
+        )
+
+    def _run(self, mappings: dict[str, list[ScoreAnnotation]]):
+        metadata = ScoresetMetadata(
+            urn="urn:mavedb:00000001-a-1",
+            target_genes={"GENE1": _make_seq_target("GENE1")},
+        )
+        with (
+            patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="NC_000001.11",
+            ),
+            patch(
+                "dcd_mapping.annotate._pick_preferred_layer",
+                return_value=AnnotationLayer.PROTEIN,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_computed_reference_sequence",
+                return_value=None,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_mapped_reference_sequence", return_value=None
+            ),
+        ):
+            return build_scoreset_mapping(
+                metadata=metadata,
+                raw_metadata={},
+                mappings=mappings,
+                align_results={"GENE1": _make_align()},
+                tx_output={"GENE1": None},
+                gene_info={"GENE1": None},
+                preferred_layer_only=True,
+                vrs_version=VrsVersion.V_2,
+            )
+
+    def test_failing_genomic_does_not_duplicate_measured_protein(self):
+        variant = "urn:mavedb:00000001-a-1#1"
+        mappings = {
+            "GENE1": [
+                # Dead genomic attempt (null layer) and the measured protein record,
+                # same input variant.
+                _make_annotation(None, mavedb_id=variant),
+                _make_annotation(
+                    AnnotationLayer.PROTEIN,
+                    post_mapped=self._protein_allele(),
+                    mavedb_id=variant,
+                ),
+            ]
+        }
+        result = self._run(mappings)
+
+        # Exactly one mapped_score, the protein record -- not the re-attributed failure.
+        assert len(result.mapped_scores) == 1
+        assert result.mapped_scores[0].alignment_level == AnnotationLayer.PROTEIN
+
+        protein_tm = next(
+            tm
+            for tm in result.target_mappings
+            if tm.alignment_level == AnnotationLayer.PROTEIN
+        )
+        # The variant counts once, as a clean map -- the dead genomic attempt is not
+        # folded back in as a phantom failure.
+        assert protein_tm.total_variants == 1
+        assert protein_tm.variants_failed == 0
+        assert protein_tm.variants_mapped_cleanly == 1
+
+    def test_completely_failed_variant_reattributed_without_orphan(self):
+        variant = "urn:mavedb:00000001-a-1#1"
+        # Only a null-layer failure: nothing represents the variant at the preferred
+        # layer, so it must be re-attributed there and still get a parent TargetMapping.
+        mappings = {"GENE1": [_make_annotation(None, mavedb_id=variant)]}
+        result = self._run(mappings)
+
+        assert len(result.mapped_scores) == 1
+        assert result.mapped_scores[0].alignment_level == AnnotationLayer.PROTEIN
+
+        protein_tm = next(
+            tm
+            for tm in result.target_mappings
+            if tm.alignment_level == AnnotationLayer.PROTEIN
+        )
+        assert protein_tm.total_variants == 1
+        assert protein_tm.variants_failed == 1
+
+        # Orphan invariant: the re-attributed score resolves to a TargetMapping.
+        tm_keys = {
+            (tm.target_gene_identifier, tm.alignment_level)
+            for tm in result.target_mappings
+        }
+        assert (
+            result.mapped_scores[0].target_gene_identifier,
+            result.mapped_scores[0].alignment_level,
+        ) in tm_keys
+
+    def test_non_preferred_success_synthesizes_preferred_failure(self):
+        """A variant whose only record is a success at a non-preferred layer (a wild-type
+        p.= on a genomic-preferred target) still needs one preferred-layer record. It gets
+        a synthesized failure there; the off-layer success survives only in CLI output.
+        """
+        variant = "urn:mavedb:00000001-a-1#1"
+        mappings = {
+            "GENE1": [
+                _make_annotation(
+                    AnnotationLayer.PROTEIN,
+                    post_mapped=self._protein_allele(),
+                    mavedb_id=variant,
+                )
+            ]
+        }
+        metadata = ScoresetMetadata(
+            urn="urn:mavedb:00000001-a-1",
+            target_genes={"GENE1": _make_seq_target("GENE1")},
+        )
+        with (
+            patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="NC_000001.11",
+            ),
+            patch(
+                "dcd_mapping.annotate._pick_preferred_layer",
+                return_value=AnnotationLayer.GENOMIC,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_computed_reference_sequence",
+                return_value=None,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_mapped_reference_sequence", return_value=None
+            ),
+        ):
+            result = build_scoreset_mapping(
+                metadata=metadata,
+                raw_metadata={},
+                mappings=mappings,
+                align_results={"GENE1": _make_align()},
+                tx_output={"GENE1": None},
+                gene_info={"GENE1": None},
+                preferred_layer_only=True,
+                vrs_version=VrsVersion.V_2,
+            )
+
+        # Exactly one mapped_score: a synthesized failure at the preferred (genomic) layer.
+        assert len(result.mapped_scores) == 1
+        synth = result.mapped_scores[0]
+        assert synth.alignment_level == AnnotationLayer.GENOMIC
+        assert synth.post_mapped is None
+        assert synth.error_message is not None
+        assert "preferred layer" in synth.error_message
+
+        genomic_tm = next(
+            tm
+            for tm in result.target_mappings
+            if tm.alignment_level == AnnotationLayer.GENOMIC
+        )
+        assert genomic_tm.total_variants == 1
+        assert genomic_tm.variants_failed == 1

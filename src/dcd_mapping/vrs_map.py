@@ -868,6 +868,45 @@ def _hgvs_pro_is_valid(hgvs_pro: str) -> bool:
     )
 
 
+def _failed_score(row: ScoreRow, error_message: str) -> MappedScore:
+    """Build a bare failed mapping for a row -- no layer, no allele, just the error."""
+    return MappedScore(
+        accession_id=row.accession, score=row.score, error_message=error_message
+    )
+
+
+def _map_protein_layer(
+    row: ScoreRow,
+    psequence_id: str,
+    transcript: TxSelectResult | TxSelectError,
+    protein_align_result: AlignmentResult | None,
+) -> tuple[MappedScore | None, str | None]:
+    """Map the row's protein layer, or ``None`` when there is no protein layer to map.
+
+    Returns ``None`` when the row carries no valid protein variant or the target protein
+    could not be aligned -- those are not protein-layer failures, they just mean this row
+    has no protein record. A row that maps at no layer is failed once, layer-agnostically,
+    by the caller. A genuine protein-layer failure (a valid ``p.`` that fails to map) is
+    still returned by ``_map_protein_coding_pro``.
+    """
+    if isinstance(transcript, TxSelectError):
+        return None, str(transcript).strip("'")
+    if not _hgvs_pro_is_valid(row.hgvs_pro):
+        return (
+            None,
+            f"Can't process variant syntax (hgvs_nt={row.hgvs_nt!r}, hgvs_pro={row.hgvs_pro!r})",
+        )
+    if protein_align_result is None:
+        return (
+            None,
+            "Could not perform mapping for protein variant because transcript sequence is missing or could not be aligned to reference sequence",
+        )
+    return (
+        _map_protein_coding_pro(row, psequence_id, transcript, protein_align_result),
+        None,
+    )
+
+
 def _map_protein_coding(
     metadata: TargetGene,
     records: list[ScoreRow],
@@ -904,7 +943,8 @@ def _map_protein_coding(
         )
         _logger.info(
             "Protein-to-protein alignment produced for %s (ref protein: %s). "
-            "This alignment will be used for pro-layer variants in place of the genomic alignment.",
+            "Pro-layer variants are offset against this alignment rather than the genomic "
+            "alignment; this does not change which layer is preferred in the output.",
             metadata.target_gene_name,
             transcript.np,
         )
@@ -924,63 +964,42 @@ def _map_protein_coding(
 
     variations: list[MappedScore] = []
     for row in records:
-        hgvs_nt_mappings = None
-        hgvs_pro_mappings = None
+        # Nucleotide (genomic) layer, plus its deterministic projected layers.
+        nt_mapping = None
         projected: list[MappedScore] = []
         if _hgvs_nt_is_valid(row.hgvs_nt):
-            hgvs_nt_mappings = _map_genomic(row, gsequence_id, align_result)
+            nt_mapping = _map_genomic(row, gsequence_id, align_result)
             if project_nm and align_result is not None:
                 projected, outcome = _construct_projected_layers(
                     row,
                     AnnotationLayer.GENOMIC,
                     project_nm,
                     alignment=align_result,
-                    # Protein is measured here only if a valid hgvs_pro is present; when
-                    # it is, _map_protein_coding_pro maps it directly, so do not project
-                    # a redundant protein layer.
+                    # Protein is measured directly below when hgvs_pro is valid; don't
+                    # project a redundant protein layer in that case.
                     project_protein=not _hgvs_pro_is_valid(row.hgvs_pro),
                 )
                 projection_outcomes.append(outcome)
 
-        if (
-            isinstance(transcript, TxSelectError) and not hgvs_nt_mappings
-        ):  # only create error message if there is not an hgvs nt mapping
-            # TODO create pre mapped allele
-            hgvs_pro_mappings = MappedScore(
-                accession_id=row.accession,
-                score=row.score,
-                error_message=str(transcript).strip("'"),
-            )
-        else:
-            if _hgvs_pro_is_valid(row.hgvs_pro):
-                if protein_align_result is not None:
-                    hgvs_pro_mappings = _map_protein_coding_pro(
-                        row, psequence_id, transcript, protein_align_result
-                    )
-                # Skip this error when an nt mapping exists: protein alignment is then
-                # expected to fail, so the message would be redundant.
-                elif protein_align_result is None and not hgvs_nt_mappings:
-                    hgvs_pro_mappings = MappedScore(
-                        accession_id=row.accession,
-                        score=row.score,
-                        error_message="Could not perform mapping for protein variant because transcript sequence is missing or could not be aligned to reference sequence",
-                    )
-            elif (
-                not hgvs_nt_mappings
-            ):  # only create error message if there is not an hgvs nt mapping
-                hgvs_pro_mappings = MappedScore(
-                    accession_id=row.accession,
-                    score=row.score,
-                    error_message="Invalid protein variant syntax",
-                )
+        # Protein layer: a success (or genuine protein failure), else None.
+        pro_mapping, unmappable_reason = _map_protein_layer(
+            row, psequence_id, transcript, protein_align_result
+        )
 
-        # append both pro and nt mappings if both available, plus the deterministic
-        # projected layers (suppressed as variants by the API, emitted by the CLI).
-        if hgvs_pro_mappings:
-            variations.append(hgvs_pro_mappings)
-        if hgvs_nt_mappings:
-            variations.append(hgvs_nt_mappings)
-        variations.extend(projected)
+        # A row that mapped at no measured layer (neither nt nor protein) is failed once,
+        # layer-agnostically; build_scoreset_mapping re-attributes it to the preferred
+        # layer. Projections don't count toward "the row mapped" -- they're derived from
+        # the measured nt variant, so they're added only alongside a real mapping.
+        row_records = [m for m in (pro_mapping, nt_mapping) if m]
+        if not row_records:
+            row_records = [
+                _failed_score(
+                    row, unmappable_reason or "No valid measured layer could be mapped"
+                )
+            ]
+        # Projected layers are suppressed as variants by the API, emitted by the CLI.
+        row_records.extend(projected)
+        variations.extend(row_records)
 
     if project_nm and projection_outcomes:
         _log_projection_validation(
