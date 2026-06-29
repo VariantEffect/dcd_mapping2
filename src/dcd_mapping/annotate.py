@@ -1074,6 +1074,24 @@ def _get_mapped_reference_sequence(
             sequence_id=vrs_id,
             sequence_accessions=[tx_output.np],
         )
+    if layer == AnnotationLayer.CDNA:
+        nm_accession: str | None = None
+        if isinstance(tx_output, TxSelectResult) and tx_output.nm:
+            nm_accession = tx_output.nm
+        elif metadata.target_accession_id and metadata.target_accession_id.startswith(
+            ("NM", "ENST")
+        ):
+            nm_accession = metadata.target_accession_id
+        if nm_accession is None:
+            return None
+        vrs_id = get_vrs_id_from_identifier(nm_accession)
+        if vrs_id is None:
+            return None
+        return MappedReferenceSequence(
+            sequence_type=TargetSequenceType.DNA,
+            sequence_id=vrs_id,
+            sequence_accessions=[nm_accession],
+        )
     # accession-based score sets with genomic accession do not have alignment results
     if (
         align_result is None
