@@ -8,7 +8,7 @@ from itertools import cycle
 from Bio.Seq import Seq
 from bioutils.accessions import infer_namespace
 from cool_seq_tool.schemas import AnnotationLayer, Strand
-from ga4gh.core import ga4gh_identify, sha512t24u
+from ga4gh.core import sha512t24u
 from ga4gh.vrs._internal.models import (
     Allele,
     Haplotype,
@@ -47,6 +47,7 @@ from dcd_mapping.schemas import (
     VrsMapResult,
 )
 from dcd_mapping.transcripts import TxSelectError
+from dcd_mapping.vrs_utils import identify_allele, normalize_and_identify
 
 __all__ = ["vrs_map"]
 
@@ -1005,10 +1006,7 @@ def _construct_vrs_allele(
             else:
                 allele = translate_ref_identical_to_vrs(hgvs_string)
 
-            normalize(allele, data_proxy=get_seqrepo())
-
-            allele.id = ga4gh_identify(allele)
-            alleles.append(allele)
+            alleles.append(normalize_and_identify(allele))
             continue
 
         allele = translate_hgvs_to_vrs(hgvs_string)
@@ -1040,8 +1038,7 @@ def _construct_vrs_allele(
             )
             allele.state = _rle_to_lse(allele.state, allele.location)
 
-        # Run ga4gh_identify to assign VA digest
-        allele.id = ga4gh_identify(allele)
+        allele.id = identify_allele(allele)
         alleles.append(allele)
 
     if not alleles:

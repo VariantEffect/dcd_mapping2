@@ -177,7 +177,12 @@ def _run_blat(
         cmd.extend(shlex.split(target_args))
 
     cmd.extend(
-        [f"-minScore={min_score}", f"-out={out_format}", str(query_file), out_file]
+        [
+            f"-minScore={min_score}",
+            f"-out={out_format}",
+            str(query_file),
+            out_file,
+        ]
     )
     _logger.debug("Running BLAT command: %s", " ".join(cmd))
 
