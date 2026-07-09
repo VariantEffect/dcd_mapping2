@@ -919,7 +919,22 @@ def _get_best_match(
     tcoords = coords[0]
     qcoords = coords[1]
 
-    strand = Strand.POSITIVE if int(qcoords[0]) <= int(qcoords[-1]) else Strand.NEGATIVE
+    protein_vs_dna = "-q=prot" in blat_params.get("target_args", "")
+
+    # For cDNA queries the strand is read from qcoords direction: cDNA on the
+    # negative strand is reverse-complemented, so its qcoords decrease.
+    # For protein queries qcoords always increase (protein reads N→C regardless
+    # of genome strand), so qcoords direction is uninformative — use tcoords
+    # instead (they decrease when the gene is on the minus strand).
+    if protein_vs_dna:
+        strand = (
+            Strand.POSITIVE if int(tcoords[0]) <= int(tcoords[-1]) else Strand.NEGATIVE
+        )
+    else:
+        strand = (
+            Strand.POSITIVE if int(qcoords[0]) <= int(qcoords[-1]) else Strand.NEGATIVE
+        )
+
     q_start = int(qcoords.min())
     q_end = int(qcoords.max())
 
@@ -943,10 +958,9 @@ def _get_best_match(
         if ts == te or qs == qe:
             continue
 
-        hit_subranges.append(SequenceRange(start=ts, end=te))
+        hit_subranges.append(SequenceRange(start=min(ts, te), end=max(ts, te)))
         query_subranges.append(SequenceRange(start=min(qs, qe), end=max(qs, qe)))
 
-    protein_vs_dna = "-q=prot" in blat_params.get("target_args", "")
     alignment_qc = _build_alignment_qc(best_aln, protein_vs_dna=protein_vs_dna)
 
     return AlignmentResult(
@@ -958,7 +972,10 @@ def _get_best_match(
         coverage=coverage,
         query_range=SequenceRange(start=q_start, end=q_end),
         query_subranges=query_subranges,
-        hit_range=SequenceRange(start=int(tcoords[0]), end=int(tcoords[-1])),
+        hit_range=SequenceRange(
+            start=min(int(tcoords[0]), int(tcoords[-1])),
+            end=max(int(tcoords[0]), int(tcoords[-1])),
+        ),
         hit_subranges=hit_subranges,
         score=float(_scores[id(best_aln)]),
         next_best_score=next_best,
@@ -1251,7 +1268,7 @@ def align_target_to_protein(
         qs, qe = int(qcoords[i]), int(qcoords[i + 1])
         if ts == te or qs == qe:
             continue
-        hit_subranges.append(SequenceRange(start=ts, end=te))
+        hit_subranges.append(SequenceRange(start=min(ts, te), end=max(ts, te)))
         query_subranges.append(SequenceRange(start=min(qs, qe), end=max(qs, qe)))
 
     # Attach full sequences so _build_alignment_qc can do per-base mismatch
@@ -1265,7 +1282,10 @@ def align_target_to_protein(
     result = AlignmentResult(
         query_range=SequenceRange(start=int(qcoords.min()), end=int(qcoords.max())),
         query_subranges=query_subranges,
-        hit_range=SequenceRange(start=int(tcoords[0]), end=int(tcoords[-1])),
+        hit_range=SequenceRange(
+            start=min(int(tcoords[0]), int(tcoords[-1])),
+            end=max(int(tcoords[0]), int(tcoords[-1])),
+        ),
         hit_subranges=hit_subranges,
         percent_identity=_blat_style_identity(
             best_counts.identities,

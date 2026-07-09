@@ -15,6 +15,7 @@ from dcd_mapping.annotate import (
     _compute_target_gene_info_from_alignment,
     _compute_target_gene_info_from_mapped_variant_spans,
     _covered_bases_from_overlapping_genes_of_chromosomal_intervals,
+    _get_mapped_reference_sequence,
     _stamp_alignment_locus_flags,
     compute_target_gene_info,
 )
@@ -23,6 +24,7 @@ from dcd_mapping.schemas import (
     AlignmentResult,
     AnnotationLayer,
     GeneInfo,
+    MappedReferenceSequence,
     MappedScore,
     ScoreAnnotation,
     ScoresetMetadata,
@@ -414,3 +416,149 @@ def test_apply_alignment_locus_flags_early_exit_does_not_fire_when_count_nonzero
         "near_gap must be None when positions are unextractable and mismatch_count>0 "
         "prevents the early-exit from firing -- old code stamped False via faulty early-exit"
     )
+
+
+def _make_nm_target(accession_id: str | None = "NM_007294.3") -> TargetGene:
+    return TargetGene(
+        target_gene_name="BRCA1",
+        target_gene_category=TargetType.PROTEIN_CODING,
+        target_sequence="ATGG",
+        target_sequence_type=TargetSequenceType.DNA,
+        target_accession_id=accession_id,
+        target_uniprot_ref=None,
+    )
+
+
+def _make_tx_result(nm: str = "NM_007294.3", np: str = "NP_009225.1") -> TxSelectResult:
+    return TxSelectResult(
+        nm=nm,
+        np=np,
+        start=0,
+        is_full_match=True,
+        sequence="MAST",
+    )
+
+
+def _make_genomic_align(chrom: str = "NC_000017.11") -> AlignmentResult:
+    return AlignmentResult(
+        chrom=chrom,
+        strand=1,
+        coverage=None,
+        percent_identity=None,
+        query_range=SequenceRange(start=1, end=10),
+        query_subranges=[SequenceRange(start=1, end=10)],
+        hit_range=SequenceRange(start=1, end=10),
+        hit_subranges=[SequenceRange(start=1, end=10)],
+    )
+
+
+class TestGetMappedReferenceSequence:
+    """_get_mapped_reference_sequence must return the NM/ENST transcript for the CDNA
+    layer -- never the genomic chromosome -- regardless of whether an align_result with
+    a chromosome is also available.
+    """
+
+    def test_cdna_layer_nm_accession_target_uses_nm(self):
+        """NM_ accession target: the NM_ accession itself is the cdna mapped reference."""
+        target = _make_nm_target("NM_007294.3")
+        align = _make_genomic_align("NC_000017.11")
+        vrs_id = "ga4gh:SQ.fake_nm"
+        with mock.patch(
+            "dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=vrs_id
+        ):
+            result = _get_mapped_reference_sequence(
+                target, AnnotationLayer.CDNA, None, align
+            )
+        assert isinstance(result, MappedReferenceSequence)
+        assert result.sequence_accessions == ["NM_007294.3"]
+        assert result.sequence_id == vrs_id
+        assert result.sequence_type == TargetSequenceType.DNA
+
+    def test_cdna_layer_tx_result_nm_takes_priority_over_accession(self):
+        """When a TxSelectResult carries an nm, it takes precedence over the target accession."""
+        target = _make_nm_target("NM_007294.3")
+        tx = _make_tx_result(nm="NM_007294.4")  # versioned upgrade
+        align = _make_genomic_align("NC_000017.11")
+        vrs_id = "ga4gh:SQ.fake_nm_v4"
+        with mock.patch(
+            "dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=vrs_id
+        ):
+            result = _get_mapped_reference_sequence(
+                target, AnnotationLayer.CDNA, tx, align
+            )
+        assert isinstance(result, MappedReferenceSequence)
+        assert result.sequence_accessions == ["NM_007294.4"]
+
+    def test_cdna_layer_nc_accession_target_uses_tx_nm(self):
+        """NC_ accession target: the cdna mapped reference is the MANE transcript from tx_result."""
+        target = _make_nm_target("NC_000017.11")
+        target = TargetGene(
+            target_gene_name="BRCA1",
+            target_gene_category=TargetType.PROTEIN_CODING,
+            target_sequence="ATGG",
+            target_sequence_type=TargetSequenceType.DNA,
+            target_accession_id="NC_000017.11",
+            target_uniprot_ref=None,
+        )
+        tx = _make_tx_result(nm="NM_007294.3")
+        align = _make_genomic_align("NC_000017.11")
+        vrs_id = "ga4gh:SQ.fake_nm"
+        with mock.patch(
+            "dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=vrs_id
+        ):
+            result = _get_mapped_reference_sequence(
+                target, AnnotationLayer.CDNA, tx, align
+            )
+        assert isinstance(result, MappedReferenceSequence)
+        assert result.sequence_accessions == ["NM_007294.3"]
+
+    def test_cdna_layer_no_nm_returns_none(self):
+        """When no NM is resolvable for the CDNA layer, return None rather than a chromosome."""
+        target = TargetGene(
+            target_gene_name="BRCA1",
+            target_gene_category=TargetType.PROTEIN_CODING,
+            target_sequence="ATGG",
+            target_sequence_type=TargetSequenceType.DNA,
+            target_accession_id=None,
+            target_uniprot_ref=None,
+        )
+        align = _make_genomic_align("NC_000017.11")
+        result = _get_mapped_reference_sequence(
+            target, AnnotationLayer.CDNA, None, align
+        )
+        assert result is None
+
+    def test_genomic_layer_returns_chromosome(self):
+        """GENOMIC layer: existing behaviour -- returns the chromosome from align_result.chrom."""
+        target = _make_nm_target(None)
+        align = _make_genomic_align("NC_000017.11")
+        vrs_id = "ga4gh:SQ.fake_nc"
+        with (
+            mock.patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="NC_000017.11",
+            ),
+            mock.patch(
+                "dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=vrs_id
+            ),
+        ):
+            result = _get_mapped_reference_sequence(
+                target, AnnotationLayer.GENOMIC, None, align
+            )
+        assert isinstance(result, MappedReferenceSequence)
+        assert result.sequence_accessions == ["NC_000017.11"]
+
+    def test_protein_layer_returns_np(self):
+        """PROTEIN layer: existing behaviour -- returns the NP_ accession from tx_result."""
+        target = _make_nm_target(None)
+        tx = _make_tx_result(np="NP_009225.1")
+        vrs_id = "ga4gh:SQ.fake_np"
+        with mock.patch(
+            "dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=vrs_id
+        ):
+            result = _get_mapped_reference_sequence(
+                target, AnnotationLayer.PROTEIN, tx, None
+            )
+        assert isinstance(result, MappedReferenceSequence)
+        assert result.sequence_accessions == ["NP_009225.1"]
+        assert result.sequence_type == TargetSequenceType.PROTEIN

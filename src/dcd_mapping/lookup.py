@@ -485,6 +485,118 @@ def get_gene_location(target_gene: TargetGene) -> GeneLocation | None:
     return None
 
 
+_MAX_LOCUS_INFERENCE_SPAN = 5_000_000
+"""
+The maximum span between the most distant variant loci of a target for which we will attempt
+to infer the gene via Ensembl overlap. If the span is wider than this, we will skip locus
+inference and fall back to the declared gene metadata. This threshold is set based on the
+fact that even the largest human genes are well under 5 Mb in length, so a wider span likely
+indicates an anomalous target (e.g. a multi-gene construct or stray positions) for which
+locus inference would be unreliable and an oversized request to Ensembl would be doomed to fail.
+"""
+
+
+def infer_hgnc_symbol_from_genomic_loci(
+    accession: str, positions: list[int]
+) -> str | None:
+    """Resolve the gene at a genomic accession's variant loci via Ensembl overlap.
+
+    For a genomic-accession (``NC_``) target the variants' chromosomal positions are
+    known before mapping, so the "mapper-resolved" gene can be found by asking which
+    gene overlaps those loci -- the same Ensembl overlap source the post-mapping
+    gene-info cascade uses, but driven from the raw positions rather than mapped VRS
+    spans so it is available in time for transcript selection. The gene that selection
+    stamps onto ``TxSelectResult.hgnc_symbol`` is then reused by
+    ``annotate.compute_target_gene_info`` (its first-priority path), so Ensembl is
+    queried once, not twice.
+
+    Issues a **single** Ensembl overlap request over the bounding span of all loci
+    (the variants of a coding target sit within one gene's span), then disambiguates
+    locally using the gene coordinates the response carries -- counting how many of the
+    query loci fall inside each returned gene -- so the cost is one request per target,
+    not one per variant. Only ``protein_coding`` genes are considered (a coding/MANE
+    transcript exists for no others). Returns the coding gene containing the most loci;
+    ``None`` on a tie, no protein-coding overlap, or a bounding span too wide to be a
+    single gene (see ``_MAX_LOCUS_INFERENCE_SPAN``).
+
+    :param accession: genomic accession the variants are described against (``NC_``)
+    :param positions: 0-based genomic positions of the variants
+    :return: HGNC gene symbol if one gene clearly dominates, else ``None``
+    """
+    if not positions:
+        return None
+
+    unique_positions = sorted(set(positions))
+    span = unique_positions[-1] - unique_positions[0]
+    if span >= _MAX_LOCUS_INFERENCE_SPAN:
+        _logger.warning(
+            "Variant loci of %s span %d bp (>= %d), too wide for single-gene locus "
+            "inference; falling back to declared gene metadata.",
+            accession,
+            span,
+            _MAX_LOCUS_INFERENCE_SPAN,
+        )
+        return None
+
+    try:
+        features = get_overlapping_features_for_region(
+            accession, unique_positions[0], unique_positions[-1] + 1, features=["gene"]
+        )
+    except Exception:
+        _logger.exception(
+            "Overlap query failed for %s over %d-%d",
+            accession,
+            unique_positions[0],
+            unique_positions[-1],
+        )
+        return None
+
+    # Disambiguate locally from the returned gene coordinates -- no extra requests.
+    # Restrict to protein-coding genes: a coding transcript (MANE) only exists for one,
+    # so a non-coding gene (lncRNA, pseudogene, etc.) overlapping the same locus would
+    # just fail the downstream MANE lookup. Filtering here also resolves the common tie
+    # between a coding gene and an overlapping non-coding one.
+    counts: dict[str, int] = {}
+    for feature in features:
+        symbol = feature.get("external_name")
+        start = feature.get("start")
+        end = feature.get("end")
+        biotype = feature.get("biotype")
+        if not symbol or start is None or end is None or biotype != "protein_coding":
+            continue
+
+        contained = sum(1 for p in unique_positions if start <= p <= end)
+        if contained:
+            counts[symbol] = contained
+
+    if not counts:
+        _logger.info(
+            "No protein-coding gene overlaps the variant loci of %s; cannot infer gene.",
+            accession,
+        )
+        return None
+
+    max_count = max(counts.values())
+    candidates = sorted(g for g, c in counts.items() if c == max_count)
+    if len(candidates) > 1:
+        _logger.warning(
+            "Multiple candidate genes overlap the variant loci of %s: %s. "
+            "No gene inferred from loci.",
+            accession,
+            candidates,
+        )
+        return None
+
+    # Ensembl's ``external_name`` is already the gene's HGNC symbol, which is what the
+    # MANE-by-gene lookup matches on. Canonicalize through the gene normalizer when it
+    # resolves, but fall back to the Ensembl symbol rather than dropping the gene if the
+    # normalizer returns nothing -- losing a locus-confirmed gene to a normalizer miss
+    # would force an avoidable "no coding transcript" skip.
+    inferred = _get_hgnc_symbol(candidates[0]) or candidates[0]
+    _logger.info("Inferred gene %s from variant loci of %s.", inferred, accession)
+    return inferred
+
+
 # --------------------------------- SeqRepo --------------------------------- #
 
 
@@ -704,7 +816,152 @@ def translate_ref_identical_to_vrs(hgvs_string: str) -> Allele:
     return build_ref_identical_allele(accession)
 
 
+# ------------------------------ HGVS Projection ------------------------------ #
+
+
+def project_genomic_hgvs_to_coding(g_hgvs: str, transcript: str) -> str:
+    """Project a genomic HGVS expression onto a coding transcript (``g.`` -> ``c.``).
+
+    Uses the cdot-backed hgvs ``VariantMapper`` already wired up for this package
+    (see :func:`init_hgvs_tools`). This is the mapper's *projection* of a measured
+    variant onto its own coding form -- distinct from the equivalence-class
+    expansion (all synonymous codons) that the reverse-translation job owns.
+
+    :param g_hgvs: genomic HGVS string, e.g. ``NC_000001.11:g.123A>G``
+    :param transcript: coding transcript accession to project onto, e.g. ``NM_...``
+    :return: coding HGVS string (``NM_...:c....``)
+    """
+    tools = TranslatorBuilder(get_seqrepo()).hgvs_tools
+    var_g = tools.parser.parse(g_hgvs)
+    var_c = tools.variant_mapper.g_to_c(var_g, transcript)
+    return str(var_c)
+
+
+def coding_hgvs_is_intronic(c_hgvs: str) -> bool:
+    """Return whether a coding HGVS expression refers to an intronic position.
+
+    Detected from the parsed base-offset position (a non-zero intron offset), not the
+    string: a textual ``-`` would misclassify 5'UTR positions (``c.-20``, offset 0) as
+    intronic. Intronic variants have no protein consequence and cannot be represented by
+    ga4gh's VRS tools, so callers projecting a variant onto a transcript skip them.
+
+    :param c_hgvs: coding HGVS string, e.g. ``NM_...:c.2002-1_2003del``
+    :return: ``True`` if either endpoint carries a non-zero intron offset
+    """
+    tools = TranslatorBuilder(get_seqrepo()).hgvs_tools
+    pos = tools.parser.parse(c_hgvs).posedit.pos
+    return bool(getattr(pos.start, "offset", 0) or getattr(pos.end, "offset", 0))
+
+
+def project_coding_hgvs_to_protein(c_hgvs: str) -> str:
+    """Project a coding HGVS expression onto its protein consequence (``c.`` -> ``p.``).
+
+    :param c_hgvs: coding HGVS string, e.g. ``NM_...:c.76A>G``
+    :return: protein HGVS string (``NP_...:p....``)
+    """
+    tools = TranslatorBuilder(get_seqrepo()).hgvs_tools
+    var_c = tools.parser.parse(c_hgvs)
+    var_p = tools.variant_mapper.c_to_p(var_c)
+    return str(var_p)
+
+
+def get_genomic_accession_for_transcript(
+    transcript: str, assembly: str = "GRCh38"
+) -> str | None:
+    """Resolve the genomic contig (``NC_``) a coding transcript aligns to on an assembly.
+
+    Needed for the ``c.`` -> ``g.`` projection: unlike :func:`project_genomic_hgvs_to_coding`
+    (whose ``g_to_c`` reads the genomic accession from the input string), hgvs's
+    ``c_to_g`` requires the target genomic accession passed explicitly. cdot carries one
+    contig per genome build in the transcript record, but its public
+    ``get_tx_mapping_options`` flattens the build keys away, so disambiguate by
+    intersecting the candidate contigs with the requested assembly's contig set
+    (``get_assembly_map``).
+
+    :param transcript: coding transcript accession, e.g. ``NM_004333.6``
+    :param assembly: genome build to resolve the contig on (``GRCh38`` or ``GRCh37``)
+    :return: the assembly's ``NC_`` contig for the transcript, or ``None`` if unresolvable
+    """
+    cd = cdot_rest()
+    try:
+        options = cd.get_tx_mapping_options(transcript)
+        assembly_contigs = cd.get_assembly_map(assembly)
+    except Exception:
+        _logger.exception(
+            "Could not resolve genomic contig for transcript %s on %s",
+            transcript,
+            assembly,
+        )
+        return None
+
+    for option in options:
+        if option["alt_ac"] in assembly_contigs:
+            return option["alt_ac"]
+
+    return None
+
+
+def project_coding_hgvs_to_genomic(c_hgvs: str, alt_ac: str) -> str:
+    """Project a coding HGVS expression onto its genomic form (``c.`` -> ``g.``).
+
+    The deterministic genomic re-expression of a coding variant, on the contig
+    ``alt_ac`` (resolve it with :func:`get_genomic_accession_for_transcript`). Like the
+    other projection helpers this routes through the cdot-backed package hgvs
+    ``VariantMapper`` (see :func:`init_hgvs_tools`); ``c_to_g`` needs the target contig
+    explicitly because the coding expression does not name one.
+
+    :param c_hgvs: coding HGVS string, e.g. ``NM_004333.6:c.1A>G``
+    :param alt_ac: genomic contig accession to project onto, e.g. ``NC_000007.14``
+    :return: genomic HGVS string (``NC_...:g....``)
+    """
+    tools = TranslatorBuilder(get_seqrepo()).hgvs_tools
+    var_c = tools.parser.parse(c_hgvs)
+    var_g = tools.variant_mapper.c_to_g(var_c, alt_ac)
+    return str(var_g)
+
+
 # ----------------------------------- MANE ----------------------------------- #
+
+
+def _sort_mane_result(description: ManeDescription) -> int:
+    if description.transcript_priority == TranscriptPriority.MANE_SELECT:
+        return 2
+    if description.transcript_priority == TranscriptPriority.MANE_PLUS_CLINICAL:
+        return 1
+
+    # should be unreachable.
+    _logger.warning(
+        "Unrecognized transcript priority value %s for transcript description of %s",
+        description.transcript_priority,
+        description.refseq_nuc,
+    )
+    return 0
+
+
+def _mane_row_to_description(row: dict[str, Any]) -> ManeDescription:
+    """Build a ``ManeDescription`` from a row of the MANE summary dataframe.
+
+    Both the transcript-keyed and gene-keyed lookups read the same dataframe
+    (``ManeTranscriptMappings.df``), so they share column names.
+    """
+    return ManeDescription(
+        ncbi_gene_id=row["#NCBI_GeneID"],
+        ensembl_gene_id=row["Ensembl_Gene"],
+        hgnc_gene_id=row["HGNC_ID"],
+        symbol=row["symbol"],
+        name=row["name"],
+        refseq_nuc=row["RefSeq_nuc"],
+        refseq_prot=row["RefSeq_prot"],
+        ensembl_nuc=row["Ensembl_nuc"],
+        ensembl_prot=row["Ensembl_prot"],
+        transcript_priority=TranscriptPriority(
+            "_".join(row["MANE_status"].lower().split())
+        ),
+        grch38_chr=row["GRCh38_chr"],
+        chr_start=row["chr_start"],
+        chr_end=row["chr_end"],
+        chr_strand=row["chr_strand"],
+    )
 
 
 def get_mane_transcripts(transcripts: list[str]) -> list[ManeDescription]:
@@ -714,44 +971,27 @@ def get_mane_transcripts(transcripts: list[str]) -> list[ManeDescription]:
     :param transcripts: candidate transcripts list
     :return: complete MANE descriptions
     """
-
-    def _sort_mane_result(description: ManeDescription) -> int:
-        if description.transcript_priority == TranscriptPriority.MANE_SELECT:
-            return 2
-        if description.transcript_priority == TranscriptPriority.MANE_PLUS_CLINICAL:
-            return 1
-        # should be impossible
-        _logger.warning(
-            "Unrecognized transcript priority value %s for transcript description of %s",
-            description.transcript_priority,
-            description.refseq_nuc,
-        )
-        return 0
-
     mane_df = CoolSeqToolBuilder().mane_transcript_mappings.df
     mane_results = mane_df.filter(pl.col("RefSeq_nuc").is_in(transcripts))
-    mane_data = []
-    for row in mane_results.rows(named=True):
-        mane_data.append(
-            ManeDescription(
-                ncbi_gene_id=row["#NCBI_GeneID"],
-                ensembl_gene_id=row["Ensembl_Gene"],
-                hgnc_gene_id=row["HGNC_ID"],
-                symbol=row["symbol"],
-                name=row["name"],
-                refseq_nuc=row["RefSeq_nuc"],
-                refseq_prot=row["RefSeq_prot"],
-                ensembl_nuc=row["Ensembl_nuc"],
-                ensembl_prot=row["Ensembl_prot"],
-                transcript_priority=TranscriptPriority(
-                    "_".join(row["MANE_status"].lower().split())
-                ),
-                grch38_chr=row["GRCh38_chr"],
-                chr_start=row["chr_start"],
-                chr_end=row["chr_end"],
-                chr_strand=row["chr_strand"],
-            )
-        )
+    mane_data = [_mane_row_to_description(row) for row in mane_results.rows(named=True)]
+    mane_data.sort(key=_sort_mane_result)
+    return mane_data
+
+
+def get_mane_transcripts_for_gene(gene_symbol: str) -> list[ManeDescription]:
+    """Get MANE transcript(s) for a gene symbol directly, without a prior alignment.
+
+    Uses cool-seq-tool's gene-keyed MANE lookup. Unlike ``get_mane_transcripts``
+    (which filters by candidate transcript accessions seeded from a genomic
+    alignment), this resolves the gene's MANE transcript straight from the gene
+    symbol -- the path needed for accession-based genomic (``NC_``) targets that
+    have no BLAT alignment to seed candidate transcripts.
+
+    :param gene_symbol: HGNC gene symbol
+    :return: MANE descriptions, MANE Select first then MANE Plus Clinical
+    """
+    rows = CoolSeqToolBuilder().mane_transcript_mappings.get_gene_mane_data(gene_symbol)
+    mane_data = [_mane_row_to_description(row) for row in rows]
     mane_data.sort(key=_sort_mane_result)
     return mane_data
 

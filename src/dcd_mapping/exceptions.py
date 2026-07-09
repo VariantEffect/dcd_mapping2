@@ -57,3 +57,16 @@ class ResourceAcquisitionError(ValueError):
 
 class TxSelectError(ValueError):
     """Raise for transcript selection failure."""
+
+
+class NoCodingTranscriptError(TxSelectError):
+    """Raise when a protein-coding target has no resolvable coding transcript.
+
+    Distinct from the regulatory/non-coding case (which returns ``None`` from
+    transcript selection because no coding transcript is expected): this signals
+    a coding target for which selection *should* have produced a transcript but
+    could not -- no resolvable gene symbol, no MANE/compatible transcript for the
+    gene, or a projection that does not land cleanly on the selected transcript.
+    Downstream records this as a recoverable skip, distinct from "no protein
+    consequence exists."
+    """

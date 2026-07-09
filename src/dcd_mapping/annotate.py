@@ -44,6 +44,7 @@ from dcd_mapping.schemas import (
     GeneInfo,
     MappedReferenceSequence,
     MappedScore,
+    MappingOutcome,
     ScoreAnnotation,
     ScoresetMapping,
     ScoresetMetadata,
@@ -520,7 +521,11 @@ def _iter_genomic_spans_from_mapped_scores(
             )
             if refget_chrom:
                 spans.append(
-                    (get_ucsc_chromosome_name(refget_chrom), loc.start, loc.end)
+                    (
+                        get_ucsc_chromosome_name(refget_chrom),
+                        loc.start,
+                        loc.end,
+                    )
                 )
 
         elif isinstance(ms.post_mapped, Haplotype):
@@ -531,7 +536,11 @@ def _iter_genomic_spans_from_mapped_scores(
                 )
                 if refget_chrom:
                     spans.append(
-                        (get_ucsc_chromosome_name(refget_chrom), loc.start, loc.end)
+                        (
+                            get_ucsc_chromosome_name(refget_chrom),
+                            loc.start,
+                            loc.end,
+                        )
                     )
 
     return spans
@@ -741,6 +750,52 @@ def _get_hgvs_string(allele: Allele, accession: str) -> tuple[str, Syntax]:
     return var, syntax
 
 
+def _resolve_outcome(mapped_score: MappedScore) -> MappingOutcome:
+    """Resolve the typed :class:`MappingOutcome` for an emitted annotation.
+
+    Projected records arrive with an explicit outcome (``MAPPED`` / ``INTRONIC`` /
+    ``NO_PROTEIN_CONSEQUENCE`` / ``FAILED``) -- keep it. Measured records (and any legacy
+    record) carry none, so derive it so *every* emitted annotation is typed uniformly:
+    ``MAPPED`` when a post-mapped allele was produced, else ``FAILED``.
+    """
+    if mapped_score.outcome is not None:
+        return mapped_score.outcome
+
+    return (
+        MappingOutcome.MAPPED
+        if mapped_score.post_mapped is not None
+        else MappingOutcome.FAILED
+    )
+
+
+def _resolve_postmapped_accession(
+    alignment_level: AnnotationLayer | None,
+    representative_allele: Allele,
+    metadata: TargetGene,
+    tx_results: TxSelectResult | TxSelectError | None,
+) -> str | None:
+    """Resolve the accession to reconstruct a post-mapped HGVS against: the contig for
+    genomic, the transcript's protein for protein or coding for cdna.
+    ``representative_allele`` is any member for a haplotype. ``None`` if unresolvable
+    (the caller surfaces that as an annotation error).
+    """
+    if alignment_level == AnnotationLayer.GENOMIC:
+        sequence_id = (
+            f"ga4gh:{representative_allele.location.sequenceReference.refgetAccession}"
+        )
+        accession = get_chromosome_identifier_from_vrs_id(sequence_id)
+        if accession is not None and accession.startswith("refseq:"):
+            return accession[len("refseq:") :]
+        return accession
+    if alignment_level == AnnotationLayer.CDNA:
+        return _resolve_cdna_accession(metadata, tx_results, None)
+
+    if tx_results is None or isinstance(tx_results, TxSelectError):
+        return None
+
+    return tx_results.np
+
+
 def _annotate_allele_mapping(
     mapped_score: MappedScore,
     tx_results: TxSelectResult | TxSelectError | None,
@@ -764,22 +819,6 @@ def _annotate_allele_mapping(
             pre_mapped.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
-        # Determine reference sequence
-        if mapped_score.alignment_level == AnnotationLayer.GENOMIC:
-            sequence_id = f"ga4gh:{mapped_score.post_mapped.location.sequenceReference.refgetAccession}"
-            accession = get_chromosome_identifier_from_vrs_id(sequence_id)
-            if accession is None:
-                accession = None
-                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
-            elif accession.startswith("refseq:"):
-                accession = accession[7:]
-        else:
-            if tx_results is None or isinstance(tx_results, TxSelectError):
-                accession = None
-                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
-            else:
-                accession = tx_results.np
-
         sr = get_seqrepo()
         loc = mapped_score.post_mapped.location
         sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
@@ -791,9 +830,16 @@ def _annotate_allele_mapping(
                 Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
             ]
 
-        if accession:
-            hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
-            post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
+        # Trust a carried HGVS (coding records carry their c.); else reconstruct (g./p. only).
+        if not post_mapped.expressions:
+            accession = _resolve_postmapped_accession(
+                mapped_score.alignment_level, post_mapped, metadata, tx_results
+            )
+            if accession is None:
+                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
+            else:
+                hgvs_string, syntax = _get_hgvs_string(post_mapped, accession)
+                post_mapped.expressions = [Expression(syntax=syntax, value=hgvs_string)]
 
     if vrs_version == VrsVersion.V_1_3:
         pre_mapped = _allele_to_vod(pre_mapped)
@@ -807,6 +853,7 @@ def _annotate_allele_mapping(
         score=float(mapped_score.score) if mapped_score.score is not None else None,
         error_message=mapped_score.error_message,
         alignment_level=mapped_score.alignment_level,
+        outcome=_resolve_outcome(mapped_score),
     )
 
 
@@ -831,22 +878,10 @@ def _annotate_haplotype_mapping(
                 allele.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
-        # Determine reference sequence
-        if mapped_score.alignment_level == AnnotationLayer.GENOMIC:
-            sequence_id = f"ga4gh:{post_mapped.members[0].location.sequenceReference.refgetAccession}"
-            accession = get_chromosome_identifier_from_vrs_id(sequence_id)
-            if accession is None:
-                accession = None
-                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
-            elif accession.startswith("refseq:"):
-                accession = accession[7:]
-        else:
-            if tx_results is None or isinstance(tx_results, TxSelectError):
-                # impossible by definition
-                accession = None
-                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
-            else:
-                accession = tx_results.np
+        # Members share one reference; resolve the reconstruction accession once.
+        accession = _resolve_postmapped_accession(
+            mapped_score.alignment_level, post_mapped.members[0], metadata, tx_results
+        )
 
         sr = get_seqrepo()
         for allele in post_mapped.members:
@@ -862,7 +897,11 @@ def _annotate_haplotype_mapping(
                     Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
                 ]
 
-            if accession:
+            if allele.expressions:
+                continue
+            if accession is None:
+                mapped_score.error_message = "Could not determine accession for this annotation. No allele expression is available."
+            else:
                 hgvs, syntax = _get_hgvs_string(allele, accession)
                 allele.expressions = [Expression(syntax=syntax, value=hgvs)]
 
@@ -878,6 +917,7 @@ def _annotate_haplotype_mapping(
         score=float(mapped_score.score) if mapped_score.score is not None else None,
         error_message=mapped_score.error_message,
         alignment_level=mapped_score.alignment_level,
+        outcome=_resolve_outcome(mapped_score),
     )
 
 
@@ -917,6 +957,7 @@ def annotate(
                     vrs_version=vrs_version,
                     error_message=mapped_score.error_message,
                     alignment_level=mapped_score.alignment_level,
+                    outcome=_resolve_outcome(mapped_score),
                 )
             )
         elif isinstance(mapped_score.pre_mapped, Haplotype) and (
@@ -949,6 +990,7 @@ def annotate(
                     else None,
                     error_message=f"Multiple issues with annotation: Inconsistent variant structure (Allele and Haplotype mix).{' ' + mapped_score.error_message if mapped_score.error_message else ''}",
                     alignment_level=mapped_score.alignment_level,
+                    outcome=_resolve_outcome(mapped_score),
                 )
             )
 
@@ -1032,6 +1074,24 @@ def _get_mapped_reference_sequence(
             sequence_id=vrs_id,
             sequence_accessions=[tx_output.np],
         )
+    if layer == AnnotationLayer.CDNA:
+        nm_accession: str | None = None
+        if isinstance(tx_output, TxSelectResult) and tx_output.nm:
+            nm_accession = tx_output.nm
+        elif metadata.target_accession_id and metadata.target_accession_id.startswith(
+            ("NM", "ENST")
+        ):
+            nm_accession = metadata.target_accession_id
+        if nm_accession is None:
+            return None
+        vrs_id = get_vrs_id_from_identifier(nm_accession)
+        if vrs_id is None:
+            return None
+        return MappedReferenceSequence(
+            sequence_type=TargetSequenceType.DNA,
+            sequence_id=vrs_id,
+            sequence_accessions=[nm_accession],
+        )
     # accession-based score sets with genomic accession do not have alignment results
     if (
         align_result is None
@@ -1073,18 +1133,47 @@ def _align_result_for_target(
     return result
 
 
-def _pick_preferred_genomic_or_protein_layer(
+def _pick_preferred_layer(
+    target_meta: TargetGene,
     mappings: list[ScoreAnnotation],
 ) -> AnnotationLayer:
-    """Return GENOMIC if any annotation has that layer, else PROTEIN.
+    """Return the preferred (assay) layer: the least-derived standard frame the target's
+    input lets us assert.
 
-    Precondition: ``mappings`` must contain at least one annotation with
-    ``alignment_level`` in {GENOMIC, PROTEIN}. CDNA-only score sets are not
-    currently supported (``vrs_map`` does not emit CDNA-layer scores); this
-    function will silently return PROTEIN for them, which would then drop
-    every CDNA score from the output. Update this function if CDNA scores
-    become emittable.
+    A variant is most faithfully represented in the coordinate system its assay natively
+    *described* it in. Every other layer is a projection -- a transform that can lose or
+    distort information -- so the assay layer is the one record we did not have to derive,
+    and the one carried as preferred (``preferred_layer_only=True`` keeps exactly this
+    layer and suppresses the projected forms). Two qualifiers sharpen "least-derived":
+
+    * *standard frame* -- a target's bespoke sequence coordinates are not a shareable
+      reference, so they never count; we express against g./c./p. references only.
+    * *we can assert* -- the frame must actually be reachable for this target; an
+      unreachable native frame falls through to the next-best reachable one.
+
+    Accession-based targets name their frame in the accession, and it is always assertable
+    (the accession *is* the reference), so selection is deterministic:
+
+    * ``NP_``/``ENSP`` -> PROTEIN  (variants described as protein consequences)
+    * ``NM_``/``ENST`` -> CDNA     (variants already coding on the transcript)
+    * ``NC_``          -> GENOMIC  (variants described against the contig)
+
+    Sequence-based targets have no standard native frame, so we fall to the nearest one
+    reachable by alignment: genomic -- the universal anchor -- when the genome alignment
+    succeeded (the common case, hence the reachability check against ``mappings``), else
+    protein (e.g. a construct that does not place on the genome but aligns to a reference
+    protein). This is why ``mappings`` is consulted only here, never for accessions.
     """
+    accession = target_meta.target_accession_id
+    if accession is not None:
+        if accession.startswith(("NP", "ENSP")):
+            return AnnotationLayer.PROTEIN
+        if accession.startswith(("NM", "ENST")):
+            return AnnotationLayer.CDNA
+        if accession.startswith("NC"):
+            return AnnotationLayer.GENOMIC
+
+    # Sequence-based: prefer the genomic anchor when it was reachable, else protein.
     for mapping in mappings:
         if mapping.alignment_level == AnnotationLayer.GENOMIC:
             return AnnotationLayer.GENOMIC
@@ -1217,11 +1306,10 @@ def _build_target_mapping(
     ``align_result.alignment_qc`` for GENOMIC rows or
     ``protein_align_result.alignment_qc`` for PROTEIN rows.
 
-    Note: CDNA ``TargetMapping`` rows are **not** emitted today — no
-    ``mapped_score`` carries ``alignment_level=CDNA`` (``vrs_map`` only
-    produces GENOMIC and PROTEIN scores).  The CDNA entry added to
-    ``reference_sequences`` in ``build_scoreset_mapping`` is purely a
-    reference-sequence accession record, not a scored layer.
+    CDNA rows are scored here for cdna-source (``NM_``/``ENST``) targets and, in
+    all-layers mode, for projected cdna. They carry no alignment QC -- there is no
+    cdna-frame alignment, so ``qc_source`` stays ``None``. Reference-only cdna/protein
+    layers (no variants) come from ``_build_identity_target_mapping`` instead.
     """
     reference_accession = _reference_accession_for_target_level(
         alignment_level, target_meta, tx_result, align_result
@@ -1237,9 +1325,7 @@ def _build_target_mapping(
 
     # Pick the alignment that lives in this row's coordinate frame:
     # GENOMIC -> BLAT genomic alignment; PROTEIN -> target-protein-to-reference
-    # alignment from vrs_map.
-    # No CDNA branch: vrs_map never emits CDNA-layer scores, so this function
-    # is never called with alignment_level=CDNA in practice.
+    # alignment from vrs_map. CDNA has no own-frame alignment, so qc_source stays None.
     qc_source: AlignmentResult | None = None
     if alignment_level == AnnotationLayer.GENOMIC:
         qc_source = align_result
@@ -1351,6 +1437,46 @@ def _build_target_mapping(
     )
 
 
+def _build_identity_target_mapping(
+    target_gene_identifier: str,
+    alignment_level: AnnotationLayer,
+    reference_accession: str,
+    vrs_version: VrsVersion,
+) -> TargetMapping:
+    """Assemble an identity ``target_mappings[]`` row for a coding layer that
+    produced no per-variant mappings this run.
+
+    A coding target's coding transcript (and protein reference) is known/selected
+    by the mapper even when it does not emit per-variant cdna/protein mappings --
+    the genomic-accession (``NC_``) path projects onto a gene-selected MANE
+    transcript, and sequence-based / ``NM_`` targets carry the transcript trivially.
+    This row surfaces that reference identity as target metadata so the API/RT can
+    resolve the projection transcript without re-deriving it. It carries **null QC
+    and null counts**: no ``mapped_score`` joins it (the
+    ``mapped_score -> TargetGeneMapping`` join guarantee applies only to scored
+    layers), so there is nothing to tally.
+    """
+    reference_sequence_id: str | None = None
+    try:
+        reference_sequence_id = get_vrs_id_from_identifier(reference_accession)
+    except Exception:
+        _logger.exception(
+            "Could not resolve VRS sequence id for %s", reference_accession
+        )
+
+    return TargetMapping(
+        target_gene_identifier=target_gene_identifier,
+        alignment_level=alignment_level,
+        preferred=False,
+        tool_name="dcd-mapping",
+        tool_version=dcd_mapping_version,
+        tool_parameters={"aligner": "transcript_identity"},
+        reference_accession=reference_accession,
+        reference_sequence_id=reference_sequence_id,
+        vrs_version=vrs_version,
+    )
+
+
 def build_scoreset_mapping(
     metadata: ScoresetMetadata,
     raw_metadata: dict,
@@ -1413,12 +1539,8 @@ def build_scoreset_mapping(
             near_gap_window,
         )
 
-        # preferred_layer_for_target is the single "best" layer for this target
-        # (GENOMIC when available, else PROTEIN).  It drives both which
-        # TargetMapping row gets preferred=True and where completely-failed
-        # variants (annotation_layer=None) are attributed.
-        preferred_layer_for_target = _pick_preferred_genomic_or_protein_layer(
-            mappings[target_gene]
+        preferred_layer_for_target = _pick_preferred_layer(
+            metadata.target_genes[target_gene], mappings[target_gene]
         )
         if preferred_layer_only:
             preferred_layers = {preferred_layer_for_target}
@@ -1433,6 +1555,13 @@ def build_scoreset_mapping(
         # sometimes Nonetype layers show up in preferred layers dict; remove these
         # before constructing TargetAnnotation (which requires valid AnnotationLayer keys).
         preferred_layers.discard(None)
+
+        _logger.info(
+            "For target %s, preferred layer is %s and layers seen are %s",
+            target_gene_name,
+            preferred_layer_for_target,
+            preferred_layers,
+        )
 
         reference_sequences[target_gene_name] = TargetAnnotation(
             gene_info=gene_info.get(target_gene),
@@ -1459,12 +1588,16 @@ def build_scoreset_mapping(
                 genomic_align_for_target,
             )
 
-        # if genomic layer, not accession-based, and target gene type is coding, add cdna entry (just the sequence accession) to reference_sequences dict
+        # If genomic layer and coding target, add a cdna entry (just the sequence
+        # accession) to the reference_sequences dict. Covers both sequence-based
+        # targets and genomic-accession (NC_) coding targets -- both carry the
+        # selected coding transcript on tx_output[...].nm. NM_/ENST and NP_ accession
+        # targets do not qualify (no TxSelectResult with nm), so the tx checks below
+        # are the gate rather than an explicit accession-prefix test.
         if (
             AnnotationLayer.GENOMIC in reference_sequences[target_gene_name].layers
             and metadata.target_genes[target_gene].target_gene_category
             == TargetType.PROTEIN_CODING
-            and metadata.target_genes[target_gene].target_accession_id is None
             and tx_output[target_gene] is not None
             and isinstance(tx_output[target_gene], TxSelectResult)
             and tx_output[target_gene].nm is not None
@@ -1476,62 +1609,75 @@ def build_scoreset_mapping(
                 },
             }
 
-        for m in mappings[target_gene]:
-            if m.alignment_level is None and m.pre_mapped is None:
-                # Completely-failed variant — vrs_map could not determine a layer.
-                # Re-attribute to the preferred layer so every mapped_score has a
-                # parent TargetMapping row (the API joins on alignment_level).
-                score_dict = m.model_dump()
-                score_dict["alignment_level"] = preferred_layer_for_target
-                score_dict["target_gene_identifier"] = target_gene_name
-                mapped_scores.append(ScoreAnnotation(**score_dict))
-            elif m.alignment_level in preferred_layers:
-                score_dict = m.model_dump()
-                score_dict["target_gene_identifier"] = target_gene_name
-                mapped_scores.append(ScoreAnnotation(**score_dict))
-
-        # Provenance/QC: emit one TargetMapping per (target, alignment_level) that
-        # actually produced variants in this run. The (target_gene_identifier,
-        # alignment_level) pair must be unique per run; the API uses it to attribute
-        # each mapped_variant to its source row via target_gene_mapping_id.
-        #
-        # Completely-failed variants (annotation_layer=None) were re-attributed to
-        # preferred_layer_for_target in mapped_scores above; include them in that
-        # layer's TargetMapping count so total_variants is accurate.
-        null_failures = [
-            m
-            for m in mappings[target_gene]
-            if m.alignment_level is None and m.pre_mapped is None
-        ]
-        align_result_for_target = genomic_align_for_target
-        emitted_mappings = [
+        # Every input variant must yield exactly one record at the preferred layer.
+        # Records already at a preferred layer are emitted directly. A variant with none
+        # gets a single re-attributed failure there: its own null-layer failure if it has
+        # one, else a synthesized failure (it mapped only at non-preferred layers -- e.g. a
+        # wild-type p.= on a genomic-preferred target). A variant already represented is
+        # never also re-attributed, so a dead attempt can't duplicate its real record.
+        preferred_mappings = [
             m for m in mappings[target_gene] if m.alignment_level in preferred_layers
         ]
+        represented_ids = {m.mavedb_id for m in preferred_mappings}
 
-        # Group by alignment_level.
-        layers_seen: dict = {}
-        for m in emitted_mappings:
+        records_by_id: dict[str, list[ScoreAnnotation]] = {}
+        for m in mappings[target_gene]:
+            records_by_id.setdefault(m.mavedb_id, []).append(m)
+
+        reattributed: list[ScoreAnnotation] = []
+        for variant_id, recs in records_by_id.items():
+            if variant_id in represented_ids:
+                continue
+            null_failure = next(
+                (m for m in recs if m.alignment_level is None and m.pre_mapped is None),
+                None,
+            )
+            if null_failure is not None:
+                score_dict = null_failure.model_dump()
+            else:
+                # Mapped only at non-preferred layers; synthesize a failure there.
+                mapped_layers = sorted(
+                    {
+                        m.alignment_level.value
+                        for m in recs
+                        if m.alignment_level is not None
+                    }
+                )
+                score_dict = recs[0].model_dump()
+                score_dict["pre_mapped"] = None
+                score_dict["post_mapped"] = None
+                score_dict["outcome"] = MappingOutcome.FAILED
+                score_dict["error_message"] = (
+                    f"No representation at preferred layer {preferred_layer_for_target.value}"
+                    + (
+                        f"; mapped only at: {', '.join(mapped_layers)}"
+                        if mapped_layers
+                        else ""
+                    )
+                )
+            score_dict["alignment_level"] = preferred_layer_for_target
+            score_dict["target_gene_identifier"] = target_gene_name
+            reattributed.append(ScoreAnnotation(**score_dict))
+
+        for m in preferred_mappings:
+            score_dict = m.model_dump()
+            score_dict["target_gene_identifier"] = target_gene_name
+            mapped_scores.append(ScoreAnnotation(**score_dict))
+        mapped_scores.extend(reattributed)
+
+        # One TargetMapping per preferred layer that produced records. The
+        # (target_gene_identifier, alignment_level) key must be unique per run and
+        # cover every mapped_score, so the preferred layer also gets a row whenever
+        # failures were re-attributed to it. Re-attributed failures count toward its totals.
+        layers_seen: dict[AnnotationLayer, list[ScoreAnnotation]] = {}
+        for m in preferred_mappings:
             layers_seen.setdefault(m.alignment_level, []).append(m)
+        if reattributed:
+            layers_seen.setdefault(preferred_layer_for_target, [])
 
         for layer, layer_annotations in layers_seen.items():
-            if layer is None:
-                continue
-
-            # Defensive: coerce raw string values (e.g. "g") to AnnotationLayer.
-            if not isinstance(layer, AnnotationLayer):
-                try:
-                    layer = AnnotationLayer(layer)
-                except ValueError:
-                    _logger.warning(
-                        "Skipping target_mappings row for unknown annotation layer %r",
-                        layer,
-                    )
-                    continue
-
-            # Null-layer failures are attributed to the preferred layer; fold them
-            # into that layer's annotation list so variant counts are correct.
             annotations_for_tm = (
-                list(layer_annotations) + null_failures
+                layer_annotations + reattributed
                 if layer == preferred_layer_for_target
                 else layer_annotations
             )
@@ -1542,13 +1688,46 @@ def build_scoreset_mapping(
                     alignment_level=layer,
                     preferred=(layer == preferred_layer_for_target),
                     tx_result=tx_output.get(target_gene),
-                    align_result=align_result_for_target,
+                    align_result=genomic_align_for_target,
                     vrs_version=vrs_version,
                     annotations=annotations_for_tm,
                     protein_align_result=protein_align_for_target,
                     near_gap_window=near_gap_window,
                 )
             )
+
+        # Identity target_mappings for coding layers that produced no per-variant
+        # mappings this run. A coding target's coding transcript (and protein
+        # reference) may be known to the mapper even when it emits no per-variant
+        # cdna/protein mappings: the genomic-accession (NC_) path projects onto a
+        # gene-selected MANE transcript; sequence-based and NM_/ENST targets carry
+        # it trivially. Surfacing it as a cdna (and protein) identity row lets consumers
+        # prefer the mapper-selected transcript over the NP_->NM_ fallback.
+        # Decoupled from layers_seen on purpose -- the cdna/protein per-variant
+        # forms are filtered, so those layers never appear in layers_seen.
+        target_meta = metadata.target_genes[target_gene]
+        if target_meta.target_gene_category == TargetType.PROTEIN_CODING:
+            scored_levels = {m.alignment_level for m in preferred_mappings}
+            scored_levels.discard(None)
+            for identity_level in (AnnotationLayer.CDNA, AnnotationLayer.PROTEIN):
+                if identity_level in scored_levels:
+                    continue
+                identity_accession = _reference_accession_for_target_level(
+                    identity_level,
+                    target_meta,
+                    tx_output.get(target_gene),
+                    genomic_align_for_target,
+                )
+                if identity_accession is None:
+                    continue
+                target_mappings.append(
+                    _build_identity_target_mapping(
+                        target_gene_identifier=target_gene_name,
+                        alignment_level=identity_level,
+                        reference_accession=identity_accession,
+                        vrs_version=vrs_version,
+                    )
+                )
 
     # Drop layers where both reference sequence entries are None, and any None-keyed
     # layers. Moved outside the per-target loop to avoid O(n²) scans and eliminate
