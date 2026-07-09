@@ -438,7 +438,7 @@ async def select_transcripts(
                 target_gene
             ].target_accession_id
             # TODO create full list of possible protein accession prefixes
-            if accession_id.startswith(("NP_", "ENSP_")):
+            if accession_id.startswith(("NP_", "ENSP")):
                 # TODO make sequence field optional instead of leaving blank here?
                 selected_transcripts[target_gene] = TxSelectResult(
                     np=accession_id,
