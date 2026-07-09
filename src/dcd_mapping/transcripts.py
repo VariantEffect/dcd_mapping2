@@ -555,17 +555,14 @@ async def select_transcripts(
         str, TxSelectResult | TxSelectError | KeyError | None
     ] = {}
     for target_gene in scoreset_metadata.target_genes:
-        target = scoreset_metadata.target_genes[target_gene]
-        if target.target_accession_id:
-            accession_id = target.target_accession_id
-            # Passthrough for targets with NP_ or ENSP_ accessions -- skip selection
-            # and just use the provided protein accession as the reference.
-            if accession_id.startswith(
-                (
-                    "NP_",
-                    "ENSP_",
-                )
-            ):  # TODO create full list of possible protein accession prefixes
+        if scoreset_metadata.target_genes[target_gene].target_accession_id:
+            # for accession-based targets, create tx select objects for protein sequence accessions only
+            accession_id = scoreset_metadata.target_genes[
+                target_gene
+            ].target_accession_id
+            # TODO create full list of possible protein accession prefixes
+            if accession_id.startswith(("NP_", "ENSP")):
+                # TODO make sequence field optional instead of leaving blank here?
                 selected_transcripts[target_gene] = TxSelectResult(
                     np=accession_id,
                     start=0,
