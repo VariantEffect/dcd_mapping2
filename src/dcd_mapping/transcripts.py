@@ -560,6 +560,7 @@ async def select_transcripts(
             accession_id = scoreset_metadata.target_genes[
                 target_gene
             ].target_accession_id
+            target = scoreset_metadata.target_genes[target_gene]
             # TODO create full list of possible protein accession prefixes
             if accession_id.startswith(("NP_", "ENSP")):
                 # TODO make sequence field optional instead of leaving blank here?
