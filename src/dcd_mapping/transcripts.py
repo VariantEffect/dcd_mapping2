@@ -15,6 +15,8 @@ from dcd_mapping.exceptions import NoCodingTranscriptError, TxSelectError
 from dcd_mapping.lookup import (
     get_chromosome_identifier,
     get_gene_symbol,
+    get_gene_symbol_from_ensembl_protein,
+    get_gene_symbol_from_ensembl_transcript,
     get_mane_transcripts,
     get_mane_transcripts_for_gene,
     get_protein_accession,
@@ -503,6 +505,61 @@ def _select_genomic_accession_reference(
     )
 
 
+def _mane_counterpart_for_gene(gene_symbol: str | None) -> TxSelectResult | None:
+    """Build a ``TxSelectResult`` from a gene's best MANE transcript, if any.
+
+    Shared by the Ensembl protein/transcript counterpart lookups below: once a
+    non-RefSeq accession has been resolved to a gene symbol, selecting its RefSeq
+    counterpart is the same MANE lookup used for genomic-accession targets (see
+    ``_select_genomic_accession_reference``).
+
+    :param gene_symbol: HGNC gene symbol, or ``None`` if unresolved
+    :return: MANE-selected RefSeq transcript, or ``None`` if no counterpart resolves
+    """
+    if not gene_symbol:
+        return None
+
+    best_tx = _choose_best_mane_transcript(get_mane_transcripts_for_gene(gene_symbol))
+    if not best_tx:
+        return None
+
+    return TxSelectResult(
+        nm=best_tx.refseq_nuc,
+        np=best_tx.refseq_prot,
+        start=0,
+        is_full_match=True,
+        sequence="",
+        transcript_mode=best_tx.transcript_priority,
+        hgnc_symbol=best_tx.symbol,
+    )
+
+
+def _select_refseq_protein_counterpart(accession_id: str) -> TxSelectResult | None:
+    """Map a non-RefSeq protein accession (e.g. Ensembl) to its RefSeq MANE
+    counterpart, so accession-based transcript selection output is consistent
+    with the RefSeq accessions used elsewhere in the pipeline.
+
+    :param accession_id: declared target accession, e.g. ``"ENSP00000350283.4"``
+    :return: MANE-selected RefSeq transcript, or ``None`` if no counterpart resolves
+    """
+    return _mane_counterpart_for_gene(
+        get_gene_symbol_from_ensembl_protein(accession_id)
+    )
+
+
+def _select_refseq_cdna_counterpart(accession_id: str) -> TxSelectResult | None:
+    """Map a non-RefSeq cDNA accession (e.g. Ensembl) to its RefSeq MANE
+    counterpart, so accession-based transcript selection output is consistent
+    with the RefSeq accessions used elsewhere in the pipeline.
+
+    :param accession_id: declared target accession, e.g. ``"ENST00000646891.2"``
+    :return: MANE-selected RefSeq transcript, or ``None`` if no counterpart resolves
+    """
+    return _mane_counterpart_for_gene(
+        get_gene_symbol_from_ensembl_transcript(accession_id)
+    )
+
+
 async def select_transcript(
     scoreset_urn: str,
     target_gene: TargetGene,
@@ -556,21 +613,47 @@ async def select_transcripts(
     ] = {}
     for target_gene in scoreset_metadata.target_genes:
         if scoreset_metadata.target_genes[target_gene].target_accession_id:
-            # for accession-based targets, create tx select objects for protein sequence accessions only
+            # for accession-based targets, non-RefSeq (Ensembl) accessions are mapped
+            # to a RefSeq MANE counterpart where possible, so output stays consistent
             accession_id = scoreset_metadata.target_genes[
                 target_gene
             ].target_accession_id
             target = scoreset_metadata.target_genes[target_gene]
+
             # TODO create full list of possible protein accession prefixes
             if accession_id.startswith(("NP_", "ENSP")):
+                refseq_preferred_tx = None
+                # Non-RefSeq (e.g. Ensembl) protein accession: prefer its RefSeq
+                # MANE counterpart.
+                if not accession_id.startswith("NP_"):
+                    refseq_preferred_tx = _select_refseq_protein_counterpart(
+                        accession_id
+                    )
+
                 # TODO make sequence field optional instead of leaving blank here?
-                selected_transcripts[target_gene] = TxSelectResult(
-                    np=accession_id,
-                    start=0,
-                    is_full_match=True,
-                    sequence="",
-                    transcript_mode=None,
-                )  # TODO make sequence field optional instead of leaving blank here?
+                selected_transcripts[target_gene] = (
+                    refseq_preferred_tx
+                    or TxSelectResult(
+                        np=accession_id,
+                        start=0,
+                        is_full_match=True,
+                        sequence="",
+                        transcript_mode=None,
+                    )
+                )
+
+            # Non-RefSeq cDNA accession (ENST): prefer its RefSeq MANE counterpart.
+            # ``np`` is a required TxSelectResult field, so unlike the protein case
+            # above there's no bare-accession object to fall back to when no
+            # counterpart resolves -- leave it unset, as for a declared NM_
+            # accession, and let annotation fall back to the declared accession
+            # (see ``_get_mapped_reference_sequence``).
+            elif accession_id.startswith(("NM_", "ENST")):
+                selected_transcripts[target_gene] = (
+                    _select_refseq_cdna_counterpart(accession_id)
+                    if not accession_id.startswith("NM_")
+                    else None
+                )
 
             # Genomic accession targets (variants submitted as NC_:g.) are handled by a
             # special path in transcript selection because they have no BLAT alignment.

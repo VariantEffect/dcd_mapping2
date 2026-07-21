@@ -1177,7 +1177,7 @@ def build_alignment_result(
     if score_set_type == "sequence":
         try:
             alignment_result = align(metadata, silent)
-        except AlignmentError as e:
+        except AlignmentError:
             failed_at_nucleotide_level = any(
                 target_gene.target_sequence_type == TargetSequenceType.DNA
                 for target_gene in metadata.target_genes.values()
@@ -1187,7 +1187,7 @@ def build_alignment_result(
                 msg = f"BLAT alignment failed for {metadata.urn} at the nucleotide level. This alignment will be retried at the protein level."
                 _logger.warning(msg)
             else:
-                raise AlignmentError from e
+                raise
 
             # So long as force=True, the content of the records dict is irrelevant.
             try:
@@ -1200,10 +1200,10 @@ def build_alignment_result(
                     metadata.urn,
                 )
 
-            except AlignmentError as e2:
+            except AlignmentError as e:
                 msg = f"BLAT alignment failed for {metadata.urn} at the protein level after failing at the nucleotide level."
                 _logger.error(msg)
-                raise AlignmentError(msg) from e2
+                raise AlignmentError(msg) from e
 
     else:
         alignment_result = fetch_alignment(metadata, silent)

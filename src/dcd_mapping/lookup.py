@@ -68,6 +68,8 @@ __all__ = [
     "get_chromosome_identifier_from_vrs_id",
     "get_gene_location",
     "get_gene_symbol",
+    "get_gene_symbol_from_ensembl_protein",
+    "get_gene_symbol_from_ensembl_transcript",
     "get_mane_transcripts",
     "get_protein_accession",
     "get_seqrepo",
@@ -389,6 +391,36 @@ def get_gene_symbol(target_gene: TargetGene) -> str | None:
                 return result
 
     return None
+
+
+def get_gene_symbol_from_ensembl_protein(accession: str) -> str | None:
+    """Resolve the HGNC gene symbol for an Ensembl protein accession.
+
+    Used to find a RefSeq counterpart for a non-RefSeq accession-based target: the
+    gene symbol is the bridge to ``get_mane_transcripts_for_gene``.
+
+    :param accession: Ensembl protein accession, e.g. ``"ENSP00000350283.4"``
+    :return: gene symbol if resolvable
+    """
+    return (
+        CoolSeqToolBuilder().transcript_mappings.get_gene_symbol_from_ensembl_protein(
+            accession
+        )
+    )
+
+
+def get_gene_symbol_from_ensembl_transcript(accession: str) -> str | None:
+    """Resolve the HGNC gene symbol for an Ensembl transcript accession.
+
+    Used to find a RefSeq counterpart for a non-RefSeq accession-based target: the
+    gene symbol is the bridge to ``get_mane_transcripts_for_gene``.
+
+    :param accession: Ensembl transcript accession, e.g. ``"ENST00000646891.2"``
+    :return: gene symbol if resolvable
+    """
+    return CoolSeqToolBuilder().transcript_mappings.get_gene_symbol_from_ensembl_transcript(
+        accession
+    )
 
 
 def _normalize_gene(term: str) -> Gene | None:

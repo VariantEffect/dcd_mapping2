@@ -24,6 +24,8 @@ from dcd_mapping.schemas import (
 from dcd_mapping.transcripts import (
     _genomic_positions_from_records,
     _select_genomic_accession_reference,
+    _select_refseq_cdna_counterpart,
+    _select_refseq_protein_counterpart,
     select_transcripts,
 )
 
@@ -68,6 +70,84 @@ def _nc_coding_target(
 
 def _row(hgvs_nt: str) -> ScoreRow:
     return ScoreRow(hgvs_nt=hgvs_nt, hgvs_pro="_wt", score="1.0", accession="urn#1")
+
+
+def _accession_target(accession: str) -> TargetGene:
+    return TargetGene(
+        target_gene_name="BRAF",
+        target_gene_category=TargetType.PROTEIN_CODING,
+        target_accession_id=accession,
+    )
+
+
+class TestSelectRefseqProteinCounterpart:
+    def test_maps_ensembl_protein_to_mane_refseq(self):
+        with (
+            patch(
+                f"{MODULE}.get_gene_symbol_from_ensembl_protein", return_value="BRAF"
+            ) as symbol,
+            patch(
+                f"{MODULE}.get_mane_transcripts_for_gene", return_value=[_mane()]
+            ) as mane,
+        ):
+            result = _select_refseq_protein_counterpart("ENSP00000493543.1")
+
+        assert isinstance(result, TxSelectResult)
+        assert result.nm == "NM_004333.6"
+        assert result.np == "NP_004324.2"
+        assert result.hgnc_symbol == "BRAF"
+        assert result.transcript_mode == TranscriptPriority.MANE_SELECT
+        symbol.assert_called_once_with("ENSP00000493543.1")
+        mane.assert_called_once_with("BRAF")
+
+    def test_returns_none_when_gene_symbol_unresolved(self):
+        with patch(f"{MODULE}.get_gene_symbol_from_ensembl_protein", return_value=None):
+            assert _select_refseq_protein_counterpart("ENSP00000000000.1") is None
+
+    def test_returns_none_when_no_mane_transcript(self):
+        with (
+            patch(
+                f"{MODULE}.get_gene_symbol_from_ensembl_protein", return_value="BRAF"
+            ),
+            patch(f"{MODULE}.get_mane_transcripts_for_gene", return_value=[]),
+        ):
+            assert _select_refseq_protein_counterpart("ENSP00000493543.1") is None
+
+
+class TestSelectRefseqCdnaCounterpart:
+    def test_maps_ensembl_transcript_to_mane_refseq(self):
+        with (
+            patch(
+                f"{MODULE}.get_gene_symbol_from_ensembl_transcript", return_value="BRAF"
+            ) as symbol,
+            patch(
+                f"{MODULE}.get_mane_transcripts_for_gene", return_value=[_mane()]
+            ) as mane,
+        ):
+            result = _select_refseq_cdna_counterpart("ENST00000646891.2")
+
+        assert isinstance(result, TxSelectResult)
+        assert result.nm == "NM_004333.6"
+        assert result.np == "NP_004324.2"
+        assert result.hgnc_symbol == "BRAF"
+        assert result.transcript_mode == TranscriptPriority.MANE_SELECT
+        symbol.assert_called_once_with("ENST00000646891.2")
+        mane.assert_called_once_with("BRAF")
+
+    def test_returns_none_when_gene_symbol_unresolved(self):
+        with patch(
+            f"{MODULE}.get_gene_symbol_from_ensembl_transcript", return_value=None
+        ):
+            assert _select_refseq_cdna_counterpart("ENST00000000000.1") is None
+
+    def test_returns_none_when_no_mane_transcript(self):
+        with (
+            patch(
+                f"{MODULE}.get_gene_symbol_from_ensembl_transcript", return_value="BRAF"
+            ),
+            patch(f"{MODULE}.get_mane_transcripts_for_gene", return_value=[]),
+        ):
+            assert _select_refseq_cdna_counterpart("ENST00000646891.2") is None
 
 
 class TestSelectGenomicAccessionReference:
@@ -337,3 +417,84 @@ class TestSelectTranscriptsRouting:
                 metadata, {"T": [_row("g.123A>G")]}, {"T": None}
             )
         assert isinstance(result["T"], NoCodingTranscriptError)
+
+    @pytest.mark.asyncio
+    async def test_ensembl_protein_target_maps_to_refseq_counterpart(self):
+        target = _accession_target("ENSP00000493543.1")
+        metadata = self._metadata(target)
+        with patch(
+            f"{MODULE}._select_refseq_protein_counterpart",
+            return_value=TxSelectResult(
+                nm="NM_004333.6",
+                np="NP_004324.2",
+                start=0,
+                is_full_match=True,
+                sequence="",
+                transcript_mode=TranscriptPriority.MANE_SELECT,
+                hgnc_symbol="BRAF",
+            ),
+        ) as sel:
+            result = await select_transcripts(metadata, {"T": []}, {"T": None})
+        assert result["T"].nm == "NM_004333.6"
+        assert result["T"].np == "NP_004324.2"
+        sel.assert_called_once_with("ENSP00000493543.1")
+
+    @pytest.mark.asyncio
+    async def test_ensembl_protein_target_falls_back_when_no_counterpart(self):
+        target = _accession_target("ENSP00000493543.1")
+        metadata = self._metadata(target)
+        with patch(f"{MODULE}._select_refseq_protein_counterpart", return_value=None):
+            result = await select_transcripts(metadata, {"T": []}, {"T": None})
+        # No RefSeq counterpart found: falls through to the bare accession passthrough.
+        assert result["T"].nm is None
+        assert result["T"].np == "ENSP00000493543.1"
+
+    @pytest.mark.asyncio
+    async def test_refseq_protein_target_skips_counterpart_lookup(self):
+        target = _accession_target("NP_004324.2")
+        metadata = self._metadata(target)
+        with patch(f"{MODULE}._select_refseq_protein_counterpart") as sel:
+            result = await select_transcripts(metadata, {"T": []}, {"T": None})
+        assert result["T"].np == "NP_004324.2"
+        sel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ensembl_transcript_target_maps_to_refseq_counterpart(self):
+        target = _accession_target("ENST00000646891.2")
+        metadata = self._metadata(target)
+        with patch(
+            f"{MODULE}._select_refseq_cdna_counterpart",
+            return_value=TxSelectResult(
+                nm="NM_004333.6",
+                np="NP_004324.2",
+                start=0,
+                is_full_match=True,
+                sequence="",
+                transcript_mode=TranscriptPriority.MANE_SELECT,
+                hgnc_symbol="BRAF",
+            ),
+        ) as sel:
+            result = await select_transcripts(metadata, {"T": []}, {"T": None})
+        assert result["T"].nm == "NM_004333.6"
+        assert result["T"].np == "NP_004324.2"
+        sel.assert_called_once_with("ENST00000646891.2")
+
+    @pytest.mark.asyncio
+    async def test_ensembl_transcript_target_none_when_no_counterpart(self):
+        target = _accession_target("ENST00000646891.2")
+        metadata = self._metadata(target)
+        with patch(f"{MODULE}._select_refseq_cdna_counterpart", return_value=None):
+            result = await select_transcripts(metadata, {"T": []}, {"T": None})
+        # No RefSeq counterpart found: np is a required TxSelectResult field, so
+        # there's no bare-accession object to fall back to -- left None, same as a
+        # declared NM_ accession, letting annotation use the declared accession.
+        assert result["T"] is None
+
+    @pytest.mark.asyncio
+    async def test_refseq_cdna_target_skips_counterpart_lookup(self):
+        target = _accession_target("NM_004333.6")
+        metadata = self._metadata(target)
+        with patch(f"{MODULE}._select_refseq_cdna_counterpart") as sel:
+            result = await select_transcripts(metadata, {"T": []}, {"T": None})
+        assert result["T"] is None
+        sel.assert_not_called()
