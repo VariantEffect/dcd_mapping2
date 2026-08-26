@@ -108,3 +108,70 @@ def test_identify_allele_raises_when_digest_unobtainable(mocker):
     mocker.patch("dcd_mapping.vrs_utils.ga4gh_identify", return_value=None)
     with pytest.raises(ValueError, match="Failed to compute GA4GH identifier"):
         identify_allele(_make_allele())
+
+
+def test_identify_allele_recomputes_an_id_the_allele_already_carries():
+    """Clearing the digests isn't enough once an ``id`` is already present.
+
+    ``ga4gh_identify``'s default ``in_place`` only fills an *empty* id, so an already-stamped
+    allele is handed its stale value back and the cleared digests go unused. Every allele
+    reaching this helper is in that state: ``AlleleTranslator`` defaults to ``identify=True``,
+    so the id is minted at translation time before the mapper mutates the allele.
+    """
+    allele = _make_allele(start=5, end=6)
+    allele.id = identify_allele(_make_allele(start=99, end=100))
+
+    identifier = identify_allele(allele)
+
+    assert identifier == identify_allele(_make_allele(start=5, end=6))
+    assert allele.id == identifier
+
+
+def test_normalize_and_identify_survives_a_span_widening_normalize(mocker):
+    """The production failure, reproduced: a del/dup whose normalized span moves.
+
+    Normalization expands a deletion leftward across its ambiguous repeat region. An id minted
+    before that step describes the narrower span; without forced recomputation it's silently
+    preserved — how mapped deletions ended up with identifiers that don't match their own
+    coordinates. Substitutions normalize to themselves, so they never exposed this.
+    """
+
+    def widen(allele, **_):
+        allele.location.start = 5
+        return allele
+
+    mocker.patch("dcd_mapping.vrs_utils.normalize", side_effect=widen)
+    mocker.patch("dcd_mapping.vrs_utils.get_seqrepo", return_value=mocker.MagicMock())
+
+    allele = _make_allele(start=10, end=11)
+    allele.id = identify_allele(_make_allele(start=10, end=11))
+    pre_normalization_id = allele.id
+
+    result = normalize_and_identify(allele)
+
+    assert result.id != pre_normalization_id
+    assert result.id == identify_allele(_make_allele(start=5, end=11))
+
+
+def test_identify_allele_reidentifies_the_nested_location():
+    """The allele id being correct does not make the location id correct.
+
+    ``ga4gh_identify`` writes only the ``id`` of the object handed to it. For sub-objects it
+    calls ``get_or_create_digest``, never ``get_or_create_ga4gh_identifier``, so a location
+    stamped by ``AlleleTranslator`` before normalization keeps that id while the allele above
+    it is recomputed correctly. The result is an allele pointing at a location that claims the
+    digest of a span it no longer has.
+    """
+    allele = _make_allele(start=10, end=11)
+    identify_allele(allele)
+    pre_mutation_location_id = allele.location.id
+
+    allele.location.start = 5
+
+    identify_allele(allele)
+
+    assert allele.location.id != pre_mutation_location_id
+    # The location must digest its own current coordinates.
+    fresh = _make_allele(start=5, end=11)
+    identify_allele(fresh)
+    assert allele.location.id == fresh.location.id

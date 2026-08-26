@@ -5,6 +5,7 @@ from unittest import mock
 import pytest
 from ga4gh.vrs._internal.models import (
     Allele,
+    Extension,
     LiteralSequenceExpression,
     SequenceLocation,
     SequenceReference,
@@ -12,11 +13,13 @@ from ga4gh.vrs._internal.models import (
 
 from dcd_mapping import vrs_v1_schemas
 from dcd_mapping.annotate import (
+    _annotate_allele_mapping,
     _compute_target_gene_info_from_alignment,
     _compute_target_gene_info_from_mapped_variant_spans,
     _covered_bases_from_overlapping_genes_of_chromosomal_intervals,
     _get_mapped_reference_sequence,
     _stamp_alignment_locus_flags,
+    _vrs_ref_allele_seq_of,
     compute_target_gene_info,
 )
 from dcd_mapping.schemas import (
@@ -26,6 +29,7 @@ from dcd_mapping.schemas import (
     GeneInfo,
     MappedReferenceSequence,
     MappedScore,
+    MappingOutcome,
     ScoreAnnotation,
     ScoresetMetadata,
     SequenceRange,
@@ -33,6 +37,7 @@ from dcd_mapping.schemas import (
     TargetSequenceType,
     TargetType,
     TxSelectResult,
+    VrsVersion,
 )
 
 
@@ -562,3 +567,94 @@ class TestGetMappedReferenceSequence:
         assert isinstance(result, MappedReferenceSequence)
         assert result.sequence_accessions == ["NP_009225.1"]
         assert result.sequence_type == TargetSequenceType.PROTEIN
+
+
+# ---------------------------------------------------------------------------
+# Tests for vrs_ref_allele_seq gating: the extension exists only for VRS 1.3's
+# required VariationDescriptor.vrs_ref_allele_seq. VRS 2.x recovers the
+# reference from refgetAccession + start/end, so 2.0 objects must not carry it.
+# ---------------------------------------------------------------------------
+
+
+def _ref_seq_allele(sequence: str = "T") -> Allele:
+    return Allele(
+        location=SequenceLocation(
+            sequenceReference=SequenceReference(
+                refgetAccession="SQ.0123456789abcdef0123456789abcdef"
+            ),
+            start=5,
+            end=6,
+        ),
+        state=LiteralSequenceExpression(sequence=sequence),
+    )
+
+
+def test_vrs_ref_allele_seq_is_read_by_name_not_position():
+    """Positional ``extensions[0]`` took whatever happened to be first; a second extension
+    would have silently supplied the wrong reference sequence.
+    """
+    allele = _ref_seq_allele()
+    allele.extensions = [
+        Extension(type="Extension", name="unrelated", value="noise"),
+        Extension(type="Extension", name="vrs_ref_allele_seq", value="A"),
+    ]
+
+    assert _vrs_ref_allele_seq_of(allele) == "A"
+
+
+def test_missing_vrs_ref_allele_seq_raises_a_named_error():
+    """VRS 1.3 requires the field, so its absence must be diagnosable rather than an IndexError."""
+    with pytest.raises(ValueError, match="vrs_ref_allele_seq"):
+        _vrs_ref_allele_seq_of(_ref_seq_allele())
+
+
+def test_v2_annotation_does_not_attach_the_extension(mocker):
+    """The point of the gating: a 2.0 allele carries no field VRS 2.x has no place for."""
+    mocker.patch(
+        "dcd_mapping.annotate._resolve_outcome", return_value=MappingOutcome.MAPPED
+    )
+    get_ref = mocker.patch("dcd_mapping.annotate._get_vrs_ref_allele_seq")
+    seqrepo = mocker.patch("dcd_mapping.annotate.get_seqrepo")
+    mapped = mocker.MagicMock(
+        pre_mapped=_ref_seq_allele(),
+        post_mapped=None,
+        score=None,
+        error_message=None,
+        accession_id="urn:mavedb:00000001-a-1#1",
+        alignment_level=AnnotationLayer.GENOMIC,
+    )
+
+    result = _annotate_allele_mapping(
+        mapped, None, mocker.MagicMock(), "urn:mavedb:00000001-a-1", VrsVersion.V_2
+    )
+
+    get_ref.assert_not_called()
+    seqrepo.assert_not_called()
+    assert not result.pre_mapped.extensions
+
+
+def test_v1_3_annotation_still_computes_the_extension(mocker):
+    """And the point of gating rather than deleting: the 1.3 path is unchanged."""
+    mocker.patch(
+        "dcd_mapping.annotate._get_vrs_ref_allele_seq",
+        return_value=Extension(type="Extension", name="vrs_ref_allele_seq", value="T"),
+    )
+    mocker.patch("dcd_mapping.annotate.get_seqrepo")
+    mocker.patch(
+        "dcd_mapping.annotate._resolve_outcome", return_value=MappingOutcome.MAPPED
+    )
+    mapped = mocker.MagicMock(
+        pre_mapped=_ref_seq_allele(),
+        post_mapped=None,
+        score=None,
+        error_message=None,
+        accession_id="urn:mavedb:00000001-a-1#1",
+        alignment_level=AnnotationLayer.GENOMIC,
+    )
+
+    result = _annotate_allele_mapping(
+        mapped, None, mocker.MagicMock(), "urn:mavedb:00000001-a-1", VrsVersion.V_1_3
+    )
+
+    assert result.pre_mapped.vrs_ref_allele_seq == "T"
+    assert isinstance(result.pre_mapped, vrs_v1_schemas.VariationDescriptor)

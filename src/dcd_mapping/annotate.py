@@ -575,6 +575,28 @@ def _allele_to_v1_allele(allele: Allele) -> vrs_v1_schemas.Allele:
     )
 
 
+def _vrs_ref_allele_seq_of(allele: Allele) -> str:
+    """Return the allele's ``vrs_ref_allele_seq`` extension value, looked up by name.
+
+    The previous ``extensions[0]`` indexing worked only because this was the sole extension
+    ever attached; it would have silently returned the wrong value once a second one existed.
+
+    Raises rather than returning ``None``: ``VariationDescriptor.vrs_ref_allele_seq`` is
+    required in VRS 1.3, so a missing extension — as with reference-identical alleles, which
+    skip it by design (see :func:`_annotate_allele_mapping`) — must surface as a clear error,
+    not an ``IndexError``.
+    """
+    for extension in allele.extensions or []:
+        if extension.name == "vrs_ref_allele_seq":
+            return extension.value
+
+    msg = (
+        f"Allele {allele.id} carries no vrs_ref_allele_seq extension, which VRS 1.3 "
+        "VariationDescriptor requires. Reference-identical alleles skip it by design."
+    )
+    raise ValueError(msg)
+
+
 def _allele_to_vod(allele: Allele) -> vrs_v1_schemas.VariationDescriptor:
     """Convert VRS 2.0 allele to comparable VRSATILE VariationDescriptor.
 
@@ -598,7 +620,7 @@ def _allele_to_vod(allele: Allele) -> vrs_v1_schemas.VariationDescriptor:
         variation=allele_v1,
         type="VariationDescriptor",
         expressions=expressions,
-        vrs_ref_allele_seq=allele.extensions[0].value,
+        vrs_ref_allele_seq=_vrs_ref_allele_seq_of(allele),
         extensions=[],
     )
 
@@ -807,11 +829,15 @@ def _annotate_allele_mapping(
     pre_mapped: Allele = mapped_score.pre_mapped
     post_mapped: Allele = mapped_score.post_mapped
 
-    # get vrs_ref_allele_seq for pre-mapped variants if they aren't reference-identical variants, which have a ReferenceLengthExpression state
-    # and for which the vrs_ref_allele_seq would be redundant with the length and sequence reference information already present in the allele.
-    # We also want to avoid fetching the reference sequence for long reference-identical variants, as this can cause performance issues and the
-    # vrs_ref_allele_seq doesn't add much value in these cases.
-    if not isinstance(pre_mapped.state, ReferenceLengthExpression):
+    # vrs_ref_allele_seq only feeds the VRS 1.3 VariationDescriptor field of the same name; VRS
+    # 2.x recovers the reference from refgetAccession + start/end, so computing it for 2.0
+    # alleles just cost a seqrepo fetch per allele for a field nothing reads. It's skipped for
+    # reference-identical variants (ReferenceLengthExpression state) regardless of version: the
+    # sequence is redundant with the length/reference already present, and fetching it for long
+    # ones is a performance problem.
+    if vrs_version == VrsVersion.V_1_3 and not isinstance(
+        pre_mapped.state, ReferenceLengthExpression
+    ):
         ref_allele_seq_extension = _get_vrs_ref_allele_seq(
             pre_mapped, metadata, urn, tx_results
         )
@@ -819,13 +845,14 @@ def _annotate_allele_mapping(
             pre_mapped.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
-        sr = get_seqrepo()
-        loc = mapped_score.post_mapped.location
-        sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
-
-        # Skip getting refereence sequence for RLE Alleles, see above for pre-mapped alleles.
-        if not isinstance(post_mapped.state, ReferenceLengthExpression):
-            ref = sr.get_sequence(sequence_id, loc.start, loc.end)
+        # Skip getting reference sequence for RLE Alleles, see above for pre-mapped alleles.
+        if vrs_version == VrsVersion.V_1_3 and not isinstance(
+            post_mapped.state, ReferenceLengthExpression
+        ):
+            loc = post_mapped.location
+            ref = get_seqrepo().get_sequence(
+                f"ga4gh:{loc.sequenceReference.refgetAccession}", loc.start, loc.end
+            )
             post_mapped.extensions = [
                 Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
             ]
@@ -868,14 +895,16 @@ def _annotate_haplotype_mapping(
     pre_mapped: Haplotype = mapped_score.pre_mapped  # type: ignore
     post_mapped: Haplotype = mapped_score.post_mapped  # type: ignore
 
-    # see comment in _annotate_allele_mapping regarding why we skip getting vrs_ref_allele_seq for reference-identical variants.
-    for allele in pre_mapped.members:
-        if not isinstance(allele.state, ReferenceLengthExpression):
-            ref_allele_seq_extension = _get_vrs_ref_allele_seq(
-                allele, metadata, urn, tx_results
-            )
-            if ref_allele_seq_extension is not None:
-                allele.extensions = [ref_allele_seq_extension]
+    # see _annotate_allele_mapping for why vrs_ref_allele_seq is computed only on the 1.3 path, and
+    # why it is skipped for reference-identical variants regardless.
+    if vrs_version == VrsVersion.V_1_3:
+        for allele in pre_mapped.members:
+            if not isinstance(allele.state, ReferenceLengthExpression):
+                ref_allele_seq_extension = _get_vrs_ref_allele_seq(
+                    allele, metadata, urn, tx_results
+                )
+                if ref_allele_seq_extension is not None:
+                    allele.extensions = [ref_allele_seq_extension]
 
     if post_mapped:
         # Members share one reference; resolve the reconstruction accession once.
@@ -885,14 +914,14 @@ def _annotate_haplotype_mapping(
 
         sr = get_seqrepo()
         for allele in post_mapped.members:
-            loc = allele.location
-            sequence_id = f"ga4gh:{loc.sequenceReference.refgetAccession}"
-
             # Again, skip getting reference sequence for RLE Alleles.
-            if not isinstance(allele.state, ReferenceLengthExpression):
+            if vrs_version == VrsVersion.V_1_3 and not isinstance(
+                allele.state, ReferenceLengthExpression
+            ):
+                loc = allele.location
                 ref = sr.get_sequence(
-                    sequence_id, loc.start, loc.end
-                )  # TODO type issues??
+                    f"ga4gh:{loc.sequenceReference.refgetAccession}", loc.start, loc.end
+                )
                 allele.extensions = [
                     Extension(type="Extension", name="vrs_ref_allele_seq", value=ref)
                 ]
