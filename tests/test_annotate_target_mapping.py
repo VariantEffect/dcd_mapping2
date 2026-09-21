@@ -1,12 +1,23 @@
 """Tests for annotate._reference_accession_for_target_level and build_scoreset_mapping."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from cool_seq_tool.schemas import AnnotationLayer
+from ga4gh.vrs._internal.models import (
+    Allele,
+    Expression,
+    LiteralSequenceExpression,
+    SequenceLocation,
+    SequenceReference,
+    Syntax,
+)
 
 from dcd_mapping.annotate import (
     _align_result_for_target,
+    _annotate_allele_mapping,
+    _pick_preferred_layer,
     _reference_accession_for_target_level,
+    _resolve_outcome,
     _stamp_alignment_locus_flags,
     build_scoreset_mapping,
 )
@@ -14,6 +25,8 @@ from dcd_mapping.schemas import (
     AlignmentQc,
     AlignmentResult,
     GeneInfo,
+    MappedScore,
+    MappingOutcome,
     ScoreAnnotation,
     ScoresetMapping,
     ScoresetMetadata,
@@ -165,16 +178,248 @@ def _make_annotation(
     layer: AnnotationLayer | None,
     post_mapped=None,
     error_message: str | None = None,
+    mavedb_id: str = "urn:mavedb:00000001-a-1#1",
 ) -> ScoreAnnotation:
     """Minimal ScoreAnnotation for golden test."""
     return ScoreAnnotation(
-        mavedb_id="urn:mavedb:00000001-a-1#1",
+        mavedb_id=mavedb_id,
         alignment_level=layer,
         pre_mapped=None,
         post_mapped=post_mapped,
         error_message=error_message,
         score=None,
     )
+
+
+class TestResolveOutcome:
+    """Every emitted annotation is typed uniformly.
+
+    Projected records keep their explicit outcome; measured/legacy records derive one so
+    consumers can treat all levels alike.
+    """
+
+    def _ms(self, *, post_mapped=None, outcome=None) -> MappedScore:
+        return MappedScore(
+            accession_id="urn:mavedb:00000001-a-1#1",
+            score=None,
+            post_mapped=post_mapped,
+            outcome=outcome,
+        )
+
+    def _allele(self) -> Allele:
+        return Allele(
+            location=SequenceLocation(
+                sequenceReference=SequenceReference(refgetAccession="SQ." + "A" * 32),
+                start=0,
+                end=1,
+            ),
+            state=LiteralSequenceExpression(sequence="A"),
+        )
+
+    def test_explicit_projected_outcome_preserved(self):
+        for outcome in (
+            MappingOutcome.INTRONIC,
+            MappingOutcome.NO_PROTEIN_CONSEQUENCE,
+            MappingOutcome.FAILED,
+            MappingOutcome.MAPPED,
+        ):
+            assert _resolve_outcome(self._ms(outcome=outcome)) == outcome
+
+    def test_measured_success_derives_mapped(self):
+        assert (
+            _resolve_outcome(self._ms(post_mapped=self._allele()))
+            == MappingOutcome.MAPPED
+        )
+
+    def test_measured_failure_derives_failed(self):
+        assert _resolve_outcome(self._ms()) == MappingOutcome.FAILED
+
+
+class TestCarriedCodingExpression:
+    """Coding records keep their carried c. HGVS; annotate must not reconstruct it (the
+    reconstructor handles only g./p. and would emit ``NM_…:g.<pos>delins…``).
+    """
+
+    def _allele(self, *, layer_expr: str | None) -> Allele:
+        allele = Allele(
+            location=SequenceLocation(
+                sequenceReference=SequenceReference(refgetAccession="SQ." + "B" * 32),
+                start=7006,
+                end=7007,
+            ),
+            state=LiteralSequenceExpression(sequence="T"),
+        )
+        if layer_expr is not None:
+            allele.expressions = [Expression(syntax=Syntax.HGVS_C, value=layer_expr)]
+        return allele
+
+    def _ms(self, allele: Allele, layer: AnnotationLayer) -> MappedScore:
+        return MappedScore(
+            accession_id="urn:mavedb:00000001-a-1#1",
+            score=None,
+            alignment_level=layer,
+            pre_mapped=allele,
+            post_mapped=allele,
+        )
+
+    def test_cdna_keeps_carried_expression_without_reconstructing(self):
+        allele = self._allele(layer_expr="NM_000059.4:c.7007G>T")
+        mapped_score = self._ms(allele, AnnotationLayer.CDNA)
+        seqrepo = MagicMock()
+        seqrepo.get_sequence.return_value = "G"
+        with (
+            patch("dcd_mapping.annotate.get_seqrepo", return_value=seqrepo),
+            patch("dcd_mapping.annotate._get_vrs_ref_allele_seq", return_value=None),
+            # If reconstruction were attempted for a coding record, that is the bug.
+            patch(
+                "dcd_mapping.annotate._get_hgvs_string",
+                side_effect=AssertionError("coding records must not be reconstructed"),
+            ),
+        ):
+            annotation = _annotate_allele_mapping(
+                mapped_score,
+                None,
+                _make_acc_target("NM_000059.4"),
+                "urn:mavedb:00000001-a-1",
+            )
+        expr = annotation.post_mapped.expressions[0]
+        assert expr.value == "NM_000059.4:c.7007G>T"
+        assert expr.syntax == Syntax.HGVS_C.value
+
+    def test_genomic_without_expression_is_reconstructed(self):
+        allele = self._allele(layer_expr=None)
+        mapped_score = self._ms(allele, AnnotationLayer.GENOMIC)
+        seqrepo = MagicMock()
+        seqrepo.get_sequence.return_value = "G"
+        with (
+            patch("dcd_mapping.annotate.get_seqrepo", return_value=seqrepo),
+            patch("dcd_mapping.annotate._get_vrs_ref_allele_seq", return_value=None),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier_from_vrs_id",
+                return_value="NC_000013.11",
+            ),
+            patch(
+                "dcd_mapping.annotate._get_hgvs_string",
+                return_value=("NC_000013.11:g.32346896G>T", Syntax.HGVS_G),
+            ) as get_hgvs,
+        ):
+            annotation = _annotate_allele_mapping(
+                mapped_score,
+                None,
+                _make_acc_target("NC_000013.11"),
+                "urn:mavedb:00000001-a-1",
+            )
+        get_hgvs.assert_called_once()
+        assert (
+            annotation.post_mapped.expressions[0].value == "NC_000013.11:g.32346896G>T"
+        )
+
+
+class TestPickPreferredLayer:
+    """The preferred layer is the assay level, derived from the target's input form."""
+
+    def test_nc_accession_is_genomic(self):
+        target = _make_acc_target("NC_000001.11")
+        assert _pick_preferred_layer(target, []) == AnnotationLayer.GENOMIC
+
+    def test_nm_accession_is_cdna(self):
+        target = _make_acc_target("NM_000001.1")
+        assert _pick_preferred_layer(target, []) == AnnotationLayer.CDNA
+
+    def test_enst_accession_is_cdna(self):
+        target = _make_acc_target("ENST00000123456.1")
+        assert _pick_preferred_layer(target, []) == AnnotationLayer.CDNA
+
+    def test_np_accession_is_protein(self):
+        target = _make_acc_target("NP_000001.1")
+        assert _pick_preferred_layer(target, []) == AnnotationLayer.PROTEIN
+
+    def test_sequence_based_genomic_when_genomic_mapping_present(self):
+        target = _make_seq_target()
+        mappings = [
+            _make_annotation(AnnotationLayer.GENOMIC),
+            _make_annotation(AnnotationLayer.PROTEIN),
+        ]
+        assert _pick_preferred_layer(target, mappings) == AnnotationLayer.GENOMIC
+
+    def test_sequence_based_protein_when_no_genomic_mapping(self):
+        target = _make_seq_target()
+        mappings = [_make_annotation(AnnotationLayer.PROTEIN)]
+        assert _pick_preferred_layer(target, mappings) == AnnotationLayer.PROTEIN
+
+
+class TestProjectedLayerRouting:
+    """The deterministic projected layers are routed by ``preferred_layer_only``.
+
+    A single input variant projected to g./c./p. is suppressed down to its assay layer
+    for the API (one mapped score per variant) and emitted in full for the CLI.
+    """
+
+    def _run(self, *, preferred_layer_only: bool):
+        # One NC_ (genomic-assay) variant present at all three deterministic layers.
+        metadata = ScoresetMetadata(
+            urn="urn:mavedb:00000001-a-1",
+            target_genes={"GENE1": _make_acc_target("NC_000001.11")},
+        )
+        mappings = {
+            "GENE1": [
+                _make_annotation(AnnotationLayer.GENOMIC),
+                _make_annotation(AnnotationLayer.CDNA),
+                _make_annotation(AnnotationLayer.PROTEIN),
+            ]
+        }
+        with (
+            patch(
+                "dcd_mapping.annotate.get_vrs_id_from_identifier",
+                return_value="ga4gh:SQ.test",
+            ),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="NC_000001.11",
+            ),
+            patch(
+                "dcd_mapping.annotate._get_computed_reference_sequence",
+                return_value=None,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_mapped_reference_sequence", return_value=None
+            ),
+        ):
+            return build_scoreset_mapping(
+                metadata=metadata,
+                raw_metadata={},
+                mappings=mappings,
+                align_results={"GENE1": _make_align()},
+                tx_output={"GENE1": _make_tx()},
+                gene_info={"GENE1": GeneInfo(hgnc_symbol="GENE1")},
+                preferred_layer_only=preferred_layer_only,
+                vrs_version=VrsVersion.V_2,
+            )
+
+    def test_api_keeps_only_the_assay_layer(self):
+        result = self._run(preferred_layer_only=True)
+        levels = [ms.alignment_level for ms in result.mapped_scores]
+        # Exactly one mapped score, at the assay (genomic) level -- the projected
+        # cdna/protein layers are suppressed as variants.
+        assert levels == [AnnotationLayer.GENOMIC]
+
+    def test_cli_emits_every_deterministic_layer(self):
+        result = self._run(preferred_layer_only=False)
+        levels = {ms.alignment_level for ms in result.mapped_scores}
+        assert levels == {
+            AnnotationLayer.GENOMIC,
+            AnnotationLayer.CDNA,
+            AnnotationLayer.PROTEIN,
+        }
+        # Every mapped score still resolves to a TargetMapping (orphan invariant).
+        tm_keys = {
+            (tm.target_gene_identifier, tm.alignment_level)
+            for tm in result.target_mappings
+        }
+        assert all(
+            (ms.target_gene_identifier, ms.alignment_level) in tm_keys
+            for ms in result.mapped_scores
+        )
 
 
 class TestBuildScoresetMapping:
@@ -201,7 +446,7 @@ class TestBuildScoresetMapping:
                 return_value="NC_000001.11",
             ),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.GENOMIC,
             ),
             patch(
@@ -228,8 +473,125 @@ class TestBuildScoresetMapping:
         layers_seen = {tm.alignment_level for tm in result.target_mappings}
         assert AnnotationLayer.GENOMIC in layers_seen
         assert AnnotationLayer.PROTEIN in layers_seen
-        # Exactly one mapping per layer
-        assert len(result.target_mappings) == 2
+        # A coding target with a selected transcript also emits an identity cdna
+        # TargetMapping for the unscored cdna layer (carrying the transcript's nm),
+        # so the response surfaces the coding transcript even though no per-variant
+        # cdna mappings were produced.
+        assert AnnotationLayer.CDNA in layers_seen
+        assert len(result.target_mappings) == 3
+        cdna_tm = next(
+            tm
+            for tm in result.target_mappings
+            if tm.alignment_level == AnnotationLayer.CDNA
+        )
+        assert cdna_tm.reference_accession == "NM_000001.1"
+        assert cdna_tm.preferred is False
+        # Identity row: no mapped_scores join it, so QC/counts are null.
+        assert cdna_tm.total_variants is None
+        assert cdna_tm.variants_mapped_cleanly is None
+        assert cdna_tm.percent_identity is None
+
+    def test_nc_coding_target_emits_identity_cdna_and_protein_rows(self):
+        """A genomic-accession (NC_) coding target emits its genomic scored layer plus
+        identity cdna and protein TargetMappings (carrying the selected transcript's
+        nm/np with null QC), so the projection transcript is surfaced for RT.
+        """
+        metadata = ScoresetMetadata(
+            urn="urn:mavedb:00000001-a-1",
+            target_genes={"GENE1": _make_acc_target("NC_000007.14")},
+        )
+        # NC_ coding targets emit only genomic per-variant mappings; the cdna/protein
+        # projection forms are filtered, so those layers never appear in layers_seen.
+        mappings = {"GENE1": [_make_annotation(AnnotationLayer.GENOMIC)]}
+
+        with (
+            patch(
+                "dcd_mapping.annotate.get_vrs_id_from_identifier",
+                return_value="ga4gh:SQ.test",
+            ),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="refseq:NC_000007.14",
+            ),
+            patch(
+                "dcd_mapping.annotate._pick_preferred_layer",
+                return_value=AnnotationLayer.GENOMIC,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_computed_reference_sequence",
+                return_value=None,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_mapped_reference_sequence", return_value=None
+            ),
+        ):
+            result = build_scoreset_mapping(
+                metadata=metadata,
+                raw_metadata={},
+                mappings=mappings,
+                align_results={"GENE1": None},
+                tx_output={"GENE1": _make_tx(nm="NM_004333.6", np="NP_004324.2")},
+                gene_info={"GENE1": GeneInfo(hgnc_symbol="BRAF")},
+                preferred_layer_only=False,
+                vrs_version=VrsVersion.V_2,
+            )
+
+        by_level = {tm.alignment_level: tm for tm in result.target_mappings}
+        assert AnnotationLayer.GENOMIC in by_level  # scored, assay-level
+        assert AnnotationLayer.CDNA in by_level
+        assert AnnotationLayer.PROTEIN in by_level
+
+        cdna_tm = by_level[AnnotationLayer.CDNA]
+        assert cdna_tm.reference_accession == "NM_004333.6"
+        assert cdna_tm.preferred is False
+        assert cdna_tm.total_variants is None  # identity row: no scores join it
+        assert cdna_tm.percent_identity is None
+
+        protein_tm = by_level[AnnotationLayer.PROTEIN]
+        assert protein_tm.reference_accession == "NP_004324.2"
+        assert protein_tm.total_variants is None
+
+    def test_regulatory_nc_target_emits_no_identity_rows(self):
+        """A non-coding (regulatory) target gets no cdna/protein identity rows."""
+        target = _make_acc_target("NC_000007.14")
+        target.target_gene_category = TargetType.REGULATORY
+        metadata = ScoresetMetadata(
+            urn="urn:mavedb:00000001-a-1", target_genes={"GENE1": target}
+        )
+        mappings = {"GENE1": [_make_annotation(AnnotationLayer.GENOMIC)]}
+
+        with (
+            patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="refseq:NC_000007.14",
+            ),
+            patch(
+                "dcd_mapping.annotate._pick_preferred_layer",
+                return_value=AnnotationLayer.GENOMIC,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_computed_reference_sequence",
+                return_value=None,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_mapped_reference_sequence", return_value=None
+            ),
+        ):
+            result = build_scoreset_mapping(
+                metadata=metadata,
+                raw_metadata={},
+                mappings=mappings,
+                align_results={"GENE1": None},
+                tx_output={"GENE1": None},
+                gene_info={"GENE1": GeneInfo(hgnc_symbol=None)},
+                preferred_layer_only=False,
+                vrs_version=VrsVersion.V_2,
+            )
+
+        levels = {tm.alignment_level for tm in result.target_mappings}
+        assert AnnotationLayer.CDNA not in levels
+        assert AnnotationLayer.PROTEIN not in levels
 
     def test_preferred_flag_on_exactly_one_row_per_target(self):
         """preferred=True must appear on exactly one TargetMapping per target."""
@@ -247,7 +609,7 @@ class TestBuildScoresetMapping:
                 return_value="NC_000001.11",
             ),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.GENOMIC,
             ),
             patch(
@@ -273,8 +635,14 @@ class TestBuildScoresetMapping:
         assert len(preferred) == 1
         assert preferred[0].alignment_level == AnnotationLayer.GENOMIC
 
-    def test_annotation_qc_counts_sum_correctly(self):
-        """total_variants == clean + warnings + failed."""
+    def test_annotation_qc_counts_relate_correctly(self):
+        """Clean + failed == total; alignment warnings are a sub-count of clean.
+
+        ``variants_mapped_cleanly``/``variants_failed`` partition on whether a
+        ``post_mapped`` allele exists. ``variants_with_alignment_warnings`` is a separate,
+        overlapping sub-count driven by alignment-locus flags (near_gap /
+        at_mismatched_locus) -- a mapped variant can be both clean and flagged.
+        """
         from ga4gh.vrs._internal.models import (
             Allele,
             LiteralSequenceExpression,
@@ -299,10 +667,23 @@ class TestBuildScoresetMapping:
         annotations = [
             _make_annotation(AnnotationLayer.GENOMIC, post_mapped=allele),  # clean
             _make_annotation(
-                AnnotationLayer.GENOMIC, post_mapped=allele, error_message="warn"
-            ),  # warning
-            _make_annotation(AnnotationLayer.GENOMIC),  # failed
+                AnnotationLayer.GENOMIC, post_mapped=allele
+            ),  # clean + flag
+            _make_annotation(AnnotationLayer.GENOMIC),  # failed (no post_mapped)
         ]
+
+        # Warnings come from alignment-locus flags, not error_message. Stamp exactly one
+        # mapped variant as near a gap so we can assert it counts as both clean and warned.
+        def _stamp_one_near_gap(
+            anns: list[ScoreAnnotation], *_args: object, **_kwargs: object
+        ) -> None:
+            marked = False
+            for ann in anns:
+                ann.at_mismatched_locus = False
+                ann.near_gap = False
+                if ann.post_mapped is not None and not marked:
+                    ann.near_gap = True
+                    marked = True
 
         with (
             patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
@@ -311,7 +692,7 @@ class TestBuildScoresetMapping:
                 return_value="NC_000001.11",
             ),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.GENOMIC,
             ),
             patch(
@@ -320,6 +701,10 @@ class TestBuildScoresetMapping:
             ),
             patch(
                 "dcd_mapping.annotate._get_mapped_reference_sequence", return_value=None
+            ),
+            patch(
+                "dcd_mapping.annotate._stamp_alignment_locus_flags",
+                _stamp_one_near_gap,
             ),
         ):
             result = build_scoreset_mapping(
@@ -336,14 +721,18 @@ class TestBuildScoresetMapping:
         assert result.target_mappings
         tm = result.target_mappings[0]
         assert tm.total_variants == 3
-        assert tm.variants_mapped_cleanly == 1
-        assert tm.variants_with_mapping_warnings == 1
-        assert tm.variants_failed == 1
+        assert tm.variants_failed == 1  # only the row without a post_mapped allele
+        assert tm.variants_mapped_cleanly == 2  # both mapped rows, flagged or not
+        assert tm.variants_with_alignment_warnings == 1  # the near_gap row
+        # clean and failed partition the total; warnings overlap clean, not the total.
         assert (
-            (tm.variants_mapped_cleanly or 0)
-            + (tm.variants_with_mapping_warnings or 0)
-            + (tm.variants_failed or 0)
+            (tm.variants_mapped_cleanly or 0) + (tm.variants_failed or 0)
         ) == tm.total_variants
+        assert (
+            0
+            <= (tm.variants_with_alignment_warnings or 0)
+            <= (tm.variants_mapped_cleanly or 0)
+        )
 
     def test_tool_parameters_for_sequence_based_target(self):
         """tool_parameters should contain BLAT aligner key for sequence-based targets."""
@@ -360,7 +749,7 @@ class TestBuildScoresetMapping:
                 return_value="NC_000001.11",
             ),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.GENOMIC,
             ),
             patch(
@@ -398,7 +787,7 @@ class TestBuildScoresetMapping:
         with (
             patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.CDNA,
             ),
             patch(
@@ -436,7 +825,7 @@ class TestBuildScoresetMapping:
         with (
             patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.GENOMIC,
             ),
             patch(
@@ -491,7 +880,7 @@ class TestBuildScoresetMapping:
                 return_value="NC_000001.11",
             ),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.GENOMIC,
             ),
             patch(
@@ -532,8 +921,12 @@ class TestBuildScoresetMapping:
             urn="urn:mavedb:00000001-a-1",
             target_genes={"GENE1": _make_seq_target("GENE1")},
         )
-        g_ann = _make_annotation(AnnotationLayer.GENOMIC)
-        null_ann = _make_annotation(None)  # completely failed
+        g_ann = _make_annotation(
+            AnnotationLayer.GENOMIC, mavedb_id="urn:mavedb:00000001-a-1#1"
+        )
+        null_ann = _make_annotation(
+            None, mavedb_id="urn:mavedb:00000001-a-1#2"
+        )  # completely failed, distinct variant
 
         with (
             patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
@@ -542,7 +935,7 @@ class TestBuildScoresetMapping:
                 return_value="NC_000001.11",
             ),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.GENOMIC,
             ),
             patch(
@@ -586,9 +979,17 @@ class TestBuildScoresetMapping:
             urn="urn:mavedb:00000001-a-1",
             target_genes={"GENE1": _make_seq_target("GENE1")},
         )
-        # 3 genomic successes + 2 completely-failed variants
-        g_anns = [_make_annotation(AnnotationLayer.GENOMIC) for _ in range(3)]
-        null_anns = [_make_annotation(None) for _ in range(2)]
+        # 3 genomic successes + 2 completely-failed variants, each a distinct variant
+        g_anns = [
+            _make_annotation(
+                AnnotationLayer.GENOMIC, mavedb_id=f"urn:mavedb:00000001-a-1#{i}"
+            )
+            for i in range(1, 4)
+        ]
+        null_anns = [
+            _make_annotation(None, mavedb_id=f"urn:mavedb:00000001-a-1#{i}")
+            for i in range(4, 6)
+        ]
 
         with (
             patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
@@ -597,7 +998,7 @@ class TestBuildScoresetMapping:
                 return_value="NC_000001.11",
             ),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.GENOMIC,
             ),
             patch(
@@ -828,7 +1229,7 @@ class TestCdotDataVersionPropagation:
         with (
             patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
             patch(
-                "dcd_mapping.annotate._pick_preferred_genomic_or_protein_layer",
+                "dcd_mapping.annotate._pick_preferred_layer",
                 return_value=AnnotationLayer.CDNA,
             ),
             patch(
@@ -854,3 +1255,181 @@ class TestCdotDataVersionPropagation:
         assert tm.tool_parameters is not None
         assert "cdot_data_version" in tm.tool_parameters
         assert tm.tool_parameters["cdot_data_version"] == "0.2.26"
+
+
+class TestNullFailureDedup:
+    """A completely-failed (null-layer) record is re-attributed to the preferred layer
+    only when the variant is not already represented there.
+
+    The motivating case is a codon-optimized (e.g. yeast-expressed) target: its genomic
+    mapping fails wholesale, the preferred layer falls back to PROTEIN, and a variant's
+    dead genomic attempt must not duplicate its measured protein record -- which would
+    emit two mapped_scores for one input variant (and over-count the protein QC row).
+    """
+
+    def _protein_allele(self) -> Allele:
+        return Allele(
+            location=SequenceLocation(
+                sequenceReference=SequenceReference(refgetAccession="SQ." + "A" * 32),
+                start=0,
+                end=1,
+            ),
+            state=LiteralSequenceExpression(sequence="A"),
+        )
+
+    def _run(self, mappings: dict[str, list[ScoreAnnotation]]):
+        metadata = ScoresetMetadata(
+            urn="urn:mavedb:00000001-a-1",
+            target_genes={"GENE1": _make_seq_target("GENE1")},
+        )
+        with (
+            patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="NC_000001.11",
+            ),
+            patch(
+                "dcd_mapping.annotate._pick_preferred_layer",
+                return_value=AnnotationLayer.PROTEIN,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_computed_reference_sequence",
+                return_value=None,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_mapped_reference_sequence", return_value=None
+            ),
+        ):
+            return build_scoreset_mapping(
+                metadata=metadata,
+                raw_metadata={},
+                mappings=mappings,
+                align_results={"GENE1": _make_align()},
+                tx_output={"GENE1": None},
+                gene_info={"GENE1": None},
+                preferred_layer_only=True,
+                vrs_version=VrsVersion.V_2,
+            )
+
+    def test_failing_genomic_does_not_duplicate_measured_protein(self):
+        variant = "urn:mavedb:00000001-a-1#1"
+        mappings = {
+            "GENE1": [
+                # Dead genomic attempt (null layer) and the measured protein record,
+                # same input variant.
+                _make_annotation(None, mavedb_id=variant),
+                _make_annotation(
+                    AnnotationLayer.PROTEIN,
+                    post_mapped=self._protein_allele(),
+                    mavedb_id=variant,
+                ),
+            ]
+        }
+        result = self._run(mappings)
+
+        # Exactly one mapped_score, the protein record -- not the re-attributed failure.
+        assert len(result.mapped_scores) == 1
+        assert result.mapped_scores[0].alignment_level == AnnotationLayer.PROTEIN
+
+        protein_tm = next(
+            tm
+            for tm in result.target_mappings
+            if tm.alignment_level == AnnotationLayer.PROTEIN
+        )
+        # The variant counts once, as a clean map -- the dead genomic attempt is not
+        # folded back in as a phantom failure.
+        assert protein_tm.total_variants == 1
+        assert protein_tm.variants_failed == 0
+        assert protein_tm.variants_mapped_cleanly == 1
+
+    def test_completely_failed_variant_reattributed_without_orphan(self):
+        variant = "urn:mavedb:00000001-a-1#1"
+        # Only a null-layer failure: nothing represents the variant at the preferred
+        # layer, so it must be re-attributed there and still get a parent TargetMapping.
+        mappings = {"GENE1": [_make_annotation(None, mavedb_id=variant)]}
+        result = self._run(mappings)
+
+        assert len(result.mapped_scores) == 1
+        assert result.mapped_scores[0].alignment_level == AnnotationLayer.PROTEIN
+
+        protein_tm = next(
+            tm
+            for tm in result.target_mappings
+            if tm.alignment_level == AnnotationLayer.PROTEIN
+        )
+        assert protein_tm.total_variants == 1
+        assert protein_tm.variants_failed == 1
+
+        # Orphan invariant: the re-attributed score resolves to a TargetMapping.
+        tm_keys = {
+            (tm.target_gene_identifier, tm.alignment_level)
+            for tm in result.target_mappings
+        }
+        assert (
+            result.mapped_scores[0].target_gene_identifier,
+            result.mapped_scores[0].alignment_level,
+        ) in tm_keys
+
+    def test_non_preferred_success_synthesizes_preferred_failure(self):
+        """A variant whose only record is a success at a non-preferred layer (a wild-type
+        p.= on a genomic-preferred target) still needs one preferred-layer record. It gets
+        a synthesized failure there; the off-layer success survives only in CLI output.
+        """
+        variant = "urn:mavedb:00000001-a-1#1"
+        mappings = {
+            "GENE1": [
+                _make_annotation(
+                    AnnotationLayer.PROTEIN,
+                    post_mapped=self._protein_allele(),
+                    mavedb_id=variant,
+                )
+            ]
+        }
+        metadata = ScoresetMetadata(
+            urn="urn:mavedb:00000001-a-1",
+            target_genes={"GENE1": _make_seq_target("GENE1")},
+        )
+        with (
+            patch("dcd_mapping.annotate.get_vrs_id_from_identifier", return_value=None),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="NC_000001.11",
+            ),
+            patch(
+                "dcd_mapping.annotate._pick_preferred_layer",
+                return_value=AnnotationLayer.GENOMIC,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_computed_reference_sequence",
+                return_value=None,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_mapped_reference_sequence", return_value=None
+            ),
+        ):
+            result = build_scoreset_mapping(
+                metadata=metadata,
+                raw_metadata={},
+                mappings=mappings,
+                align_results={"GENE1": _make_align()},
+                tx_output={"GENE1": None},
+                gene_info={"GENE1": None},
+                preferred_layer_only=True,
+                vrs_version=VrsVersion.V_2,
+            )
+
+        # Exactly one mapped_score: a synthesized failure at the preferred (genomic) layer.
+        assert len(result.mapped_scores) == 1
+        synth = result.mapped_scores[0]
+        assert synth.alignment_level == AnnotationLayer.GENOMIC
+        assert synth.post_mapped is None
+        assert synth.error_message is not None
+        assert "preferred layer" in synth.error_message
+
+        genomic_tm = next(
+            tm
+            for tm in result.target_mappings
+            if tm.alignment_level == AnnotationLayer.GENOMIC
+        )
+        assert genomic_tm.total_variants == 1
+        assert genomic_tm.variants_failed == 1

@@ -95,6 +95,17 @@
       "title": "MappedReferenceSequence",
       "type": "object"
     },
+    "MappingOutcome": {
+      "description": "Per-record outcome for one (variant, annotation level) pair.\n\nThe mapper's output is a complete accounting: for every variant and every\nannotation level in that variant's deterministically-reachable set, there is one\nrecord carrying its outcome -- never a silent omission. This field is uniform across\nmeasured (assay-level) and projected (deterministic non-assay) records so the two can\nbe treated identically by consumers; it distinguishes a benign absence from a genuine\nfailure, which a populated ``error_message`` alone cannot.\n\n- ``MAPPED`` -- a VRS allele was produced (``pre_mapped``/``post_mapped`` populated).\n- ``INTRONIC`` -- the variant's coding projection is intronic: no VRS-representable\n  coding form and no protein consequence. Benign (``error_message`` is ``None``).\n- ``NO_PROTEIN_CONSEQUENCE`` -- the protein layer was reachable but yields no\n  projectable protein change (e.g. UTR). Benign (``error_message`` is ``None``).\n- ``FAILED`` -- the mapping/projection genuinely failed (mis-selected transcript,\n  projection error, unresolvable reference contig). ``error_message`` carries detail.",
+      "enum": [
+        "mapped",
+        "intronic",
+        "no_protein_consequence",
+        "failed"
+      ],
+      "title": "MappingOutcome",
+      "type": "string"
+    },
     "Number": {
       "description": "Define VRS 1.3 Number.",
       "properties": {
@@ -294,6 +305,17 @@
           ],
           "default": null,
           "title": "Near Gap"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MappingOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "post_mapped": {
           "anyOf": [
