@@ -126,10 +126,23 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
     protein_align_results: dict[str, AlignmentResult | None] = {}
     try:
         for target_gene in metadata.target_genes:
+            target_records = records.get(target_gene)
+
+            # e.g. base-editor score sets that declare separate protein and
+            # cDNA accession targets for the same variant: every row's hgvs_nt
+            # prefix groups under the cDNA target, so the protein target has no
+            # record group of its own and contributes nothing independently.
+            if target_records is None:
+                _logger.info(
+                    "No score records reference target %s directly; skipping standalone VRS mapping for this target.",
+                    target_gene,
+                )
+                continue
+
             vrs_map_result = vrs_map(
                 metadata=metadata.target_genes[target_gene],
                 align_result=alignment_results[target_gene],
-                records=records[target_gene],
+                records=target_records,
                 transcript=transcripts[target_gene],
                 silent=True,
             )
