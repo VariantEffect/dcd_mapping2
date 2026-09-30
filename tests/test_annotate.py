@@ -3,9 +3,9 @@
 from unittest import mock
 
 import pytest
+from ga4gh.core._internal.models import Extension
 from ga4gh.vrs._internal.models import (
     Allele,
-    Extension,
     LiteralSequenceExpression,
     SequenceLocation,
     SequenceReference,
