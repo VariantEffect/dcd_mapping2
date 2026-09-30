@@ -18,7 +18,12 @@ import httpx
 import polars as pl
 from biocommons.seqrepo import SeqRepo
 from biocommons.seqrepo.seqaliasdb.seqaliasdb import sqlite3
-from cdot.hgvs.dataproviders import ChainedSeqFetcher, FastaSeqFetcher, RESTDataProvider
+from cdot.hgvs.dataproviders import (
+    ChainedSeqFetcher,
+    FastaSeqFetcher,
+    RESTDataProvider,
+    SeqFetcher,
+)
 from cool_seq_tool.app import (
     LRG_REFSEQGENE_PATH,
     MANE_SUMMARY_PATH,
@@ -51,8 +56,14 @@ from ga4gh.vrs.utils.hgvs_tools import HgvsTools
 from gene.database import create_db
 from gene.query import QueryHandler
 from gene.schemas import MatchType, SourceName
+from hgvs.exceptions import HGVSDataNotAvailableError
 
-from dcd_mapping.exceptions import DataLookupError
+from dcd_mapping.exceptions import (
+    AmbiguousReferenceSequenceError,
+    DataLookupError,
+    ReferenceSequenceNotFoundError,
+    ReferenceSequenceProvisioningError,
+)
 from dcd_mapping.resource_utils import CDOT_URL, ENSEMBL_API_URL, request_with_backoff
 from dcd_mapping.schemas import (
     GeneLocation,
@@ -61,9 +72,12 @@ from dcd_mapping.schemas import (
 )
 
 __all__ = [
+    "ENSEMBL_TRANSCRIPT_PREFIX",
     "CoolSeqToolBuilder",
     "GeneNormalizerBuilder",
     "build_ref_identical_allele",
+    "commit_seqrepo_write",
+    "configure_seqrepo_for_shared_writes",
     "get_chromosome_identifier",
     "get_chromosome_identifier_from_vrs_id",
     "get_gene_location",
@@ -77,6 +91,8 @@ __all__ = [
     "get_transcripts",
     "get_ucsc_chromosome_name",
     "get_uniprot_sequence",
+    "provision_ensembl_transcript",
+    "resolve_refget",
     "translate_hgvs_to_vrs",
     "translate_ref_identical_to_vrs",
 ]
@@ -92,7 +108,18 @@ GENOMIC_FASTA_FILES = [
 
 
 def seqfetcher() -> ChainedSeqFetcher:
-    return ChainedSeqFetcher(*[FastaSeqFetcher(file) for file in GENOMIC_FASTA_FILES])
+    """Build the sequence fetcher handed to cdot's hgvs data provider.
+
+    SeqRepo (via hgvs's ``SeqFetcher``, which reads ``HGVS_SEQREPO_DIR``) must come first so transcript
+    and protein sequences are the NCBI records. ``FastaSeqFetcher`` assembles a transcript from the
+    genome and exon alignment, which is not necessarily identical to the record and yields a different refget.
+    It is only a fallback for contigs.
+
+    **Keep this chain identical to ``mavedb.data_providers.services.seqfetcher`` in the API repo.**
+    """
+    return ChainedSeqFetcher(
+        SeqFetcher(), *[FastaSeqFetcher(file) for file in GENOMIC_FASTA_FILES]
+    )
 
 
 def cdot_rest() -> RESTDataProvider:
@@ -209,15 +236,150 @@ class CoolSeqToolBuilder:
                 "SEQREPO_ROOT_DIR", "/usr/local/share/seqrepo/latest"
             )
             sr = SeqRepo(root_dir, writeable=True)
+            configure_seqrepo_for_shared_writes(sr)
             cls.instance = _AugmentedCoolSeqTool(sr=sr)
 
         return cls.instance
+
+
+SEQREPO_BUSY_TIMEOUT_MS = 60_000
+
+
+def configure_seqrepo_for_shared_writes(sr: SeqRepo) -> None:
+    """Make a writeable SeqRepo safe to share between concurrent jobs.
+
+    SeqRepo keeps its alias and sequence indexes in SQLite, whose default wait for a write lock is
+    five seconds. Writers commit immediately (see :func:`commit_seqrepo_write`), so a lock is only ever
+    held briefly; a longer wait lets parallel jobs queue behind one another instead of failing.
+    """
+    for db in (sr.aliases._db, sr.sequences._db):
+        db.execute(f"PRAGMA busy_timeout = {SEQREPO_BUSY_TIMEOUT_MS}")
+
+
+def commit_seqrepo_write(sr: SeqRepo) -> None:
+    """Commit a SeqRepo write now.
+
+    An uncommitted write leaves a SQLite transaction open, which holds the write lock on the shared
+    SeqRepo for the life of the process and blocks every other writer. Every write path commits before
+    returning.
+    """
+    sr.commit()
 
 
 def get_seqrepo() -> SeqRepoAccess:
     """Retrieve SeqRepo access instance."""
     cst = CoolSeqToolBuilder()
     return cst.seqrepo_access
+
+
+def resolve_refget(accession: str, seqrepo: SeqRepoAccess | None = None) -> str:
+    """Return the single GA4GH refget (``SQ.…``) SeqRepo holds for an accession.
+
+    Read-only. The shared SeqRepo is the only authority for what an accession's sequence is; the mapper
+    and reverse translation must agree on it for their allele digests to deduplicate. More than one
+    live ``ga4gh:`` alias is an error rather than a pick, because the upstream lookup returns them in
+    set order.
+
+    :param accession: e.g. ``NM_007294.3`` or ``refseq:NM_007294.3``
+    :param seqrepo: SeqRepo access to query; defaults to the mapper's instance
+    :raise ReferenceSequenceNotFoundError: if SeqRepo has no sequence for the accession
+    :raise AmbiguousReferenceSequenceError: if it has more than one distinct refget
+    """
+    sr = seqrepo if seqrepo is not None else get_seqrepo()
+    identifier = accession if ":" in accession[1:] else coerce_namespace(accession)
+    try:
+        aliases = sr.translate_sequence_identifier(identifier, namespace="ga4gh")
+    except KeyError:
+        aliases = []
+
+    refgets = sorted(
+        {
+            alias.split("ga4gh:", 1)[-1]
+            for alias in aliases
+            if alias.startswith("ga4gh:SQ.")
+        }
+    )
+    if not refgets:
+        msg = f"SeqRepo has no sequence for accession {accession}."
+        raise ReferenceSequenceNotFoundError(msg)
+    if len(refgets) > 1:
+        msg = f"SeqRepo holds {len(refgets)} sequences for accession {accession}: {', '.join(refgets)}."
+        raise AmbiguousReferenceSequenceError(msg)
+
+    return refgets[0]
+
+
+ENSEMBL_TRANSCRIPT_PREFIX = "ENST"
+
+
+def _assemble_ensembl_transcript(accession: str) -> dict[str, str]:
+    """Assemble an Ensembl transcript from each genome build that carries it.
+
+    An Ensembl transcript is by definition its exons spliced from the genome, so assembly is exact for
+    these accessions (it is not for RefSeq records, which can differ from the genome). Each build is
+    assembled on its own so a disagreement between builds is visible instead of resolved by whichever
+    contig matches first.
+
+    :return: assembled sequence keyed by the genomic FASTA file it came from
+    """
+    provider = cdot_rest()
+    assembled: dict[str, str] = {}
+    for fasta in GENOMIC_FASTA_FILES:
+        fetcher = FastaSeqFetcher(fasta)
+        fetcher.set_data_provider(provider)
+        try:
+            assembled[fasta] = fetcher.fetch_seq(accession).upper()
+        except HGVSDataNotAvailableError:
+            continue
+    return assembled
+
+
+def provision_ensembl_transcript(accession: str) -> str:
+    """Add a missing Ensembl transcript to the shared SeqRepo and return its refget.
+
+    SeqRepo is the one place sequence identity lives, so a sequence the mapper needs must be stored
+    where reverse translation and every other reader will find it, not held in this process. Safe
+    because the alias is only ever added when absent (never reassigned), the write commits immediately,
+    and refuses unless every build that carries the transcript assembles the same sequence.
+
+    :raise ReferenceSequenceProvisioningError: if no build carries the transcript, the builds disagree,
+        or the sequence is not plain nucleotides
+    """
+    if not accession.startswith(ENSEMBL_TRANSCRIPT_PREFIX):
+        msg = f"Only Ensembl transcripts (ENST) are provisioned automatically, not {accession}."
+        raise ReferenceSequenceProvisioningError(msg)
+
+    assembled = _assemble_ensembl_transcript(accession)
+    distinct = set(assembled.values())
+    if not distinct:
+        msg = f"No genome build carries {accession}, so it cannot be assembled."
+        raise ReferenceSequenceProvisioningError(msg)
+    if len(distinct) > 1:
+        msg = f"Genome builds assemble different sequences for {accession}; not storing any."
+        raise ReferenceSequenceProvisioningError(msg)
+
+    sequence = distinct.pop()
+    if not sequence or set(sequence) - set("ACGTN"):
+        msg = f"Assembled sequence for {accession} is empty or not plain nucleotides."
+        raise ReferenceSequenceProvisioningError(msg)
+
+    sr = get_seqrepo()
+    try:  # another job may have provisioned it since the caller checked
+        return resolve_refget(accession, sr)
+    except ReferenceSequenceNotFoundError:
+        pass
+
+    sr.sr.store(sequence, [{"namespace": "ensembl", "alias": accession}])
+    commit_seqrepo_write(sr.sr)
+    refget = resolve_refget(accession, sr)
+    _logger.info(
+        "Provisioned %s into SeqRepo from genome assembly (%d nt, %d build(s) agreeing): %s",
+        accession,
+        len(sequence),
+        len(assembled),
+        refget,
+    )
+    return refget
 
 
 class GeneNormalizerBuilder:

@@ -16,6 +16,22 @@ class MissingSequenceIdError(ValueError):
     """Raised when a sequence ID is not provided."""
 
 
+class ReferenceSequenceNotFoundError(VrsMapError):
+    """Raised when an accession has no sequence in SeqRepo.
+
+    SeqRepo is the only source of sequence identity. The mapper never substitutes a sequence assembled
+    from another source, because that would mint a refget no other writer reproduces.
+    """
+
+
+class ReferenceSequenceProvisioningError(VrsMapError):
+    """Raised when a missing accession's sequence cannot be safely added to SeqRepo."""
+
+
+class AmbiguousReferenceSequenceError(VrsMapError):
+    """Raised when an accession resolves to more than one refget in SeqRepo."""
+
+
 class UnsupportedReferenceSequencePrefixError(ValueError):
     """Raised when a reference sequence prefix is not supported."""
 

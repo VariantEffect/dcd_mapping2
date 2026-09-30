@@ -28,19 +28,23 @@ from mavehgvs.variant import Variant
 from dcd_mapping.align import align_target_to_protein
 from dcd_mapping.exceptions import (
     MissingSequenceIdError,
+    ReferenceSequenceNotFoundError,
     UnsupportedReferenceSequenceNameSpaceError,
     UnsupportedReferenceSequencePrefixError,
 )
 from dcd_mapping.lookup import (
+    ENSEMBL_TRANSCRIPT_PREFIX,
     build_ref_identical_allele,
-    cdot_rest,
     coding_hgvs_is_intronic,
+    commit_seqrepo_write,
     get_chromosome_identifier,
     get_genomic_accession_for_transcript,
     get_seqrepo,
     project_coding_hgvs_to_genomic,
     project_coding_hgvs_to_protein,
     project_genomic_hgvs_to_coding,
+    provision_ensembl_transcript,
+    resolve_refget,
     translate_hgvs_to_vrs,
     translate_ref_identical_to_vrs,
 )
@@ -834,7 +838,11 @@ def _get_allele_sequence(allele: Allele) -> str:
 
 
 def store_sequence(sequence: str) -> str:
-    """Store sequence in SeqRepo.
+    """Store sequence in SeqRepo and commit.
+
+    The write commits immediately so the shared SeqRepo's write lock is held only briefly and parallel
+    mapping jobs can interleave. Stored sequences are persistent, which lets the refget endpoint resolve
+    the refgets carried by published VRS objects.
 
     :param sequence: raw sequence (ie nucleotides or amino acids)
     :return: sequence ID (sans prefix, which is ``"ga4gh"``)
@@ -843,6 +851,7 @@ def store_sequence(sequence: str) -> str:
     alias_dict_list = [{"namespace": "ga4gh", "alias": sequence_id}]
     sr = get_seqrepo()
     sr.sr.store(sequence, alias_dict_list)
+    commit_seqrepo_write(sr.sr)
     return sequence_id
 
 
@@ -1033,15 +1042,26 @@ def _map_regulatory_noncoding(
     return variations
 
 
-def store_accession(
-    accession_id: str,
-) -> None:
-    namespace = infer_namespace(accession_id)
-    alias_dict_list = [{"namespace": namespace, "alias": accession_id}]
-    cd = cdot_rest()
-    sequence = cd.get_seq(accession_id)
-    sr = get_seqrepo()
-    sr.sr.store(sequence, alias_dict_list)
+def ensure_accession_in_seqrepo(accession_id: str) -> None:
+    """Make sure SeqRepo holds the accession's sequence, adding it only where that is exact.
+
+    RefSeq accessions are read from SeqRepo and never written: a sequence from another source (e.g.
+    cdot's genome-assembled transcript) stored under the accession would make the mapper mint a refget
+    reverse translation cannot reproduce. A missing RefSeq accession fails; load the NCBI record into
+    SeqRepo first. Ensembl transcripts are the exception, because an Ensembl transcript is defined by
+    its exons on the genome; a missing one is assembled, checked across genome builds, and stored in
+    the shared SeqRepo so every other reader resolves the same sequence.
+
+    :raise ReferenceSequenceNotFoundError: if a non-Ensembl-transcript accession is absent
+    :raise ReferenceSequenceProvisioningError: if an Ensembl transcript cannot be safely assembled
+    :raise AmbiguousReferenceSequenceError: if SeqRepo has more than one sequence for it
+    """
+    try:
+        resolve_refget(accession_id)
+    except ReferenceSequenceNotFoundError:
+        if not accession_id.startswith(ENSEMBL_TRANSCRIPT_PREFIX):
+            raise
+        provision_ensembl_transcript(accession_id)
 
 
 def _coding_pivot_hgvs_strings(
@@ -1344,7 +1364,7 @@ def _map_accession(
         msg = " No target_accession_id was provided by target gene metadata. Target gene metadata must have a target_accession_id to map to VRS."
         raise MissingSequenceIdError(msg)
 
-    store_accession(sequence_id)
+    ensure_accession_in_seqrepo(sequence_id)
 
     if metadata.target_accession_id.startswith(
         (

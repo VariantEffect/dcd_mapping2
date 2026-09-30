@@ -499,7 +499,7 @@ class TestNmAccessionMeasuredProtein:
         )
         allele = _allele()
         with (
-            patch(f"{VRS_MAP}.store_accession"),
+            patch(f"{VRS_MAP}.ensure_accession_in_seqrepo"),
             patch(f"{VRS_MAP}.get_genomic_accession_for_transcript", return_value=NC),
             patch(f"{VRS_MAP}._map_genomic") as mock_genomic,
             patch(
@@ -571,7 +571,7 @@ class TestNmAccessionMeasuredProtein:
             accession="urn:mavedb:00000001-a-1#1",
         )
         with (
-            patch(f"{VRS_MAP}.store_accession"),
+            patch(f"{VRS_MAP}.ensure_accession_in_seqrepo"),
             patch(f"{VRS_MAP}.get_genomic_accession_for_transcript", return_value=NC),
             patch(f"{VRS_MAP}._map_genomic") as mock_genomic,
             patch(
