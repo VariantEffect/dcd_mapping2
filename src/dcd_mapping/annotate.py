@@ -1618,24 +1618,24 @@ def build_scoreset_mapping(
             )
 
         # If genomic layer and coding target, add a cdna entry (just the sequence
-        # accession) to the reference_sequences dict. Covers both sequence-based
-        # targets and genomic-accession (NC_) coding targets -- both carry the
-        # selected coding transcript on tx_output[...].nm. NM_/ENST and NP_ accession
-        # targets do not qualify (no TxSelectResult with nm), so the tx checks below
-        # are the gate rather than an explicit accession-prefix test.
+        # accession) to the reference_sequences dict, so consumers such as MaveDB's
+        # UniProt ID mapping see the coding transcript. Resolved the same way as the
+        # cdna identity target_mapping: the selected transcript's nm, else a declared
+        # NM_/ENST accession.
+        target_layers = reference_sequences[target_gene_name].layers
+        cdna_accession = _resolve_cdna_accession(
+            metadata.target_genes[target_gene], tx_output[target_gene], None
+        )
         if (
-            AnnotationLayer.GENOMIC in reference_sequences[target_gene_name].layers
+            AnnotationLayer.GENOMIC in target_layers
+            and AnnotationLayer.CDNA not in target_layers
             and metadata.target_genes[target_gene].target_gene_category
             == TargetType.PROTEIN_CODING
-            and tx_output[target_gene] is not None
-            and isinstance(tx_output[target_gene], TxSelectResult)
-            and tx_output[target_gene].nm is not None
+            and cdna_accession is not None
         ):
-            reference_sequences[target_gene_name].layers[AnnotationLayer.CDNA] = {
+            target_layers[AnnotationLayer.CDNA] = {
                 "computed_reference_sequence": None,
-                "mapped_reference_sequence": {
-                    "sequence_accessions": [tx_output[target_gene].nm]
-                },
+                "mapped_reference_sequence": {"sequence_accessions": [cdna_accession]},
             }
 
         # Every input variant must yield exactly one record at the preferred layer.

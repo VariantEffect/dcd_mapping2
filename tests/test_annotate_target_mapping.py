@@ -1433,3 +1433,81 @@ class TestNullFailureDedup:
         )
         assert genomic_tm.total_variants == 1
         assert genomic_tm.variants_failed == 1
+
+
+class TestReferenceSequencesCdnaEntry:
+    """The cdna reference_sequences entry carries the coding transcript accession."""
+
+    def _build(self, target: TargetGene, tx: TxSelectResult | None):
+        metadata = ScoresetMetadata(
+            urn="urn:mavedb:00000001-a-1", target_genes={"GENE1": target}
+        )
+        with (
+            patch(
+                "dcd_mapping.annotate.get_vrs_id_from_identifier",
+                return_value="ga4gh:SQ.test",
+            ),
+            patch(
+                "dcd_mapping.annotate.get_chromosome_identifier",
+                return_value="refseq:NC_000017.11",
+            ),
+            patch(
+                "dcd_mapping.annotate._pick_preferred_layer",
+                return_value=AnnotationLayer.GENOMIC,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_computed_reference_sequence",
+                return_value=None,
+            ),
+            patch(
+                "dcd_mapping.annotate._get_mapped_reference_sequence",
+                return_value={"sequence_accessions": ["NC_000017.11"]},
+            ),
+        ):
+            result = build_scoreset_mapping(
+                metadata=metadata,
+                raw_metadata={},
+                mappings={"GENE1": [_make_annotation(AnnotationLayer.GENOMIC)]},
+                align_results={"GENE1": _make_align()},
+                tx_output={"GENE1": tx},
+                gene_info={"GENE1": GeneInfo(hgnc_symbol="GENE1")},
+                preferred_layer_only=False,
+                vrs_version=VrsVersion.V_2,
+            )
+        return result.reference_sequences["GENE1"].layers
+
+    def test_declared_nm_target_without_tx_selection(self):
+        """A declared NM_ accession target has no transcript selection; its cdna entry
+        falls back to the declared accession.
+        """
+        layers = self._build(_make_acc_target("NM_002878.4"), None)
+        assert layers[AnnotationLayer.CDNA]["mapped_reference_sequence"] == {
+            "sequence_accessions": ["NM_002878.4"]
+        }
+
+    def test_selected_transcript_preferred_over_declared_accession(self):
+        """An ENST target with a RefSeq MANE counterpart reports the counterpart nm."""
+        layers = self._build(
+            _make_acc_target("ENST00000345365.11"), _make_tx(nm="NM_002878.4")
+        )
+        assert layers[AnnotationLayer.CDNA]["mapped_reference_sequence"] == {
+            "sequence_accessions": ["NM_002878.4"]
+        }
+
+    def test_nc_coding_target_uses_selected_transcript(self):
+        layers = self._build(
+            _make_acc_target("NC_000017.11"), _make_tx(nm="NM_002878.4")
+        )
+        assert layers[AnnotationLayer.CDNA]["mapped_reference_sequence"] == {
+            "sequence_accessions": ["NM_002878.4"]
+        }
+
+    def test_declared_np_target_without_tx_selection_has_no_cdna_entry(self):
+        layers = self._build(_make_acc_target("NP_002869.3"), None)
+        assert AnnotationLayer.CDNA not in layers
+
+    def test_regulatory_target_has_no_cdna_entry(self):
+        target = _make_acc_target("NM_002878.4")
+        target.target_gene_category = TargetType.REGULATORY
+        layers = self._build(target, None)
+        assert AnnotationLayer.CDNA not in layers

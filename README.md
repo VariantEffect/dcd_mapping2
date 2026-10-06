@@ -65,7 +65,7 @@ The verbatim MaveDB API scoreset response. Stored unchanged so downstream consum
 A `dict[target_gene_name, TargetAnnotation]` describing the reference sequences each target was mapped against, organized by annotation layer. Each `TargetAnnotation` carries:
 
 * `gene_info` — `hgnc_symbol` plus the `selection_method` that picked it (transcript-derived, alignment-overlap-derived, variant-overlap-derived, or metadata fallback).
-* `layers` — a `dict[AnnotationLayer, {computed_reference_sequence, mapped_reference_sequence}]` populated only for layers that actually produced mappings. `computed_reference_sequence` is the in-pipeline sequence (e.g. translated protein); `mapped_reference_sequence` lists the canonical accession(s) the variants were ultimately grounded in. Layers with no usable reference are pruned, not emitted as `null`.
+* `layers` — a `dict[AnnotationLayer, {computed_reference_sequence, mapped_reference_sequence}]` populated for layers that actually produced mappings. Protein-coding targets mapped at the genomic layer also get a `cdna` entry whose `mapped_reference_sequence` carries only `sequence_accessions` — the selected coding transcript, or the declared `NM_`/`ENST` accession. `computed_reference_sequence` is the in-pipeline sequence (e.g. translated protein); `mapped_reference_sequence` lists the canonical accession(s) the variants were ultimately grounded in. Layers with no usable reference are pruned, not emitted as `null`.
 
 This block is the human-readable "what was used as reference" view; programmatic auditing should use `target_mappings` instead.
 
