@@ -88,6 +88,7 @@ __all__ = [
     "get_protein_accession",
     "get_seqrepo",
     "get_sequence",
+    "get_transcript_protein_accession",
     "get_transcripts",
     "get_ucsc_chromosome_name",
     "get_uniprot_sequence",
@@ -569,6 +570,21 @@ def get_gene_symbol_from_ensembl_protein(accession: str) -> str | None:
             accession
         )
     )
+
+
+def get_transcript_protein_accession(accession: str) -> str | None:
+    """Resolve the versioned protein accession a transcript encodes, from cdot.
+
+    Unlike :func:`get_protein_accession` (UTA), cdot carries Ensembl transcripts with their versioned
+    protein ids, e.g. ``ENST00000460680.5`` -> ``ENSP00000417132.1``.
+
+    :param accession: transcript accession, e.g. ``"ENST00000460680.5"``
+    :return: protein accession, or ``None`` if cdot has no such transcript or it is non-coding
+    """
+    try:
+        return cdot_rest().get_pro_ac_for_tx_ac(accession)
+    except HGVSDataNotAvailableError:
+        return None
 
 
 def get_gene_symbol_from_ensembl_transcript(accession: str) -> str | None:

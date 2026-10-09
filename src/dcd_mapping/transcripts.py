@@ -22,6 +22,7 @@ from dcd_mapping.lookup import (
     get_protein_accession,
     get_seqrepo,
     get_sequence,
+    get_transcript_protein_accession,
     get_transcripts,
     get_uniprot_sequence,
     infer_hgnc_symbol_from_genomic_loci,
@@ -505,22 +506,40 @@ def _select_genomic_accession_reference(
     )
 
 
-def _mane_counterpart_for_gene(gene_symbol: str | None) -> TxSelectResult | None:
-    """Build a ``TxSelectResult`` from a gene's best MANE transcript, if any.
+def _mane_counterpart_for_gene(
+    gene_symbol: str | None, declared_accession: str, declared_protein: str | None
+) -> TxSelectResult | None:
+    """Build a ``TxSelectResult`` from a gene's best MANE transcript, if it is the declared isoform.
 
-    Shared by the Ensembl protein/transcript counterpart lookups below: once a
-    non-RefSeq accession has been resolved to a gene symbol, selecting its RefSeq
-    counterpart is the same MANE lookup used for genomic-accession targets (see
-    ``_select_genomic_accession_reference``).
+    Shared by the Ensembl protein/transcript counterpart lookups below. Coordinates are isoform-specific,
+    so the RefSeq counterpart replaces the declared accession only when MANE's Ensembl protein is exactly
+    the declared isoform's protein. Ensembl bumps a protein's version only when its sequence changes, so
+    an exact, versioned match means an identical protein, and identical codons on the MANE transcript; a
+    UTR-only transcript version bump still matches.
 
     :param gene_symbol: HGNC gene symbol, or ``None`` if unresolved
-    :return: MANE-selected RefSeq transcript, or ``None`` if no counterpart resolves
+    :param declared_accession: declared target accession, for logging
+    :param declared_protein: versioned Ensembl protein accession of the declared isoform, or ``None``
+    :return: MANE-selected RefSeq transcript, or ``None`` if no counterpart is the declared isoform
     """
     if not gene_symbol:
         return None
 
     best_tx = _choose_best_mane_transcript(get_mane_transcripts_for_gene(gene_symbol))
     if not best_tx:
+        return None
+
+    if declared_protein is None or declared_protein != best_tx.ensembl_prot:
+        _logger.warning(
+            "Declared accession %s (protein %s) is not the MANE isoform of %s (%s, protein %s); "
+            "mapping on the declared accession instead of %s.",
+            declared_accession,
+            declared_protein,
+            gene_symbol,
+            best_tx.ensembl_nuc,
+            best_tx.ensembl_prot,
+            best_tx.refseq_nuc,
+        )
         return None
 
     return TxSelectResult(
@@ -540,10 +559,10 @@ def _select_refseq_protein_counterpart(accession_id: str) -> TxSelectResult | No
     with the RefSeq accessions used elsewhere in the pipeline.
 
     :param accession_id: declared target accession, e.g. ``"ENSP00000350283.4"``
-    :return: MANE-selected RefSeq transcript, or ``None`` if no counterpart resolves
+    :return: MANE-selected RefSeq transcript, or ``None`` if the declared protein is not MANE's
     """
     return _mane_counterpart_for_gene(
-        get_gene_symbol_from_ensembl_protein(accession_id)
+        get_gene_symbol_from_ensembl_protein(accession_id), accession_id, accession_id
     )
 
 
@@ -553,10 +572,14 @@ def _select_refseq_cdna_counterpart(accession_id: str) -> TxSelectResult | None:
     with the RefSeq accessions used elsewhere in the pipeline.
 
     :param accession_id: declared target accession, e.g. ``"ENST00000646891.2"``
-    :return: MANE-selected RefSeq transcript, or ``None`` if no counterpart resolves
+    :return: MANE-selected RefSeq transcript, or ``None`` if the declared isoform's protein is not MANE's
     """
+    gene_symbol = get_gene_symbol_from_ensembl_transcript(accession_id)
+    if not gene_symbol:
+        return None
+
     return _mane_counterpart_for_gene(
-        get_gene_symbol_from_ensembl_transcript(accession_id)
+        gene_symbol, accession_id, get_transcript_protein_accession(accession_id)
     )
 
 

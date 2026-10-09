@@ -597,3 +597,43 @@ class TestNmAccessionMeasuredProtein:
         # project_protein must still be False so no projected protein is emitted
         _, kwargs = mock_proj.call_args
         assert kwargs.get("project_protein") is False
+
+
+class TestProteinAccessionTarget:
+    """NP_/ENSP accession targets map each measured ``hgvs_pro`` directly on the selected protein.
+
+    The target is the reference protein, so there is no protein alignment and no positional offset.
+    """
+
+    NP = "NP_004324.2"
+
+    def test_measured_protein_maps_on_the_reference_without_an_alignment(self):
+        metadata = TargetGene(
+            target_gene_name="BRAF",
+            target_gene_category=TargetType.PROTEIN_CODING,
+            target_sequence=None,
+            target_sequence_type=None,
+            target_accession_id=self.NP,
+        )
+        row = ScoreRow(
+            hgvs_nt="_wt",
+            hgvs_pro="p.Val600Glu",
+            score="1.0",
+            accession="urn:mavedb:00000001-a-1#1",
+        )
+        transcript = TxSelectResult(
+            np=self.NP, start=0, is_full_match=True, sequence="", transcript_mode=None
+        )
+        allele = _allele()
+        with (
+            patch(f"{VRS_MAP}.ensure_accession_in_seqrepo"),
+            patch(f"{VRS_MAP}._construct_vrs_allele", return_value=allele) as construct,
+        ):
+            result = _map_accession(metadata, [row], None, transcript)
+
+        assert len(result) == 1
+        assert result[0].alignment_level == AnnotationLayer.PROTEIN
+        assert result[0].error_message is None
+        assert result[0].post_mapped is allele
+        post_mapped_hgvs = construct.call_args_list[-1].args[0]
+        assert post_mapped_hgvs == [f"{self.NP}:p.Val600Glu"]

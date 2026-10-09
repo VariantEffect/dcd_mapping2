@@ -274,7 +274,9 @@ def _create_post_mapped_hgvs_strings(
         if layer is AnnotationLayer.PROTEIN:
             assert tx  # noqa: S101  # mypy help
 
-            variant = _adjust_protein_variant_to_ref(variant, protein_alignment)
+            # Accession targets have no protein alignment: their variants are already on the reference.
+            if protein_alignment is not None:
+                variant = _adjust_protein_variant_to_ref(variant, protein_alignment)
             hgvs_strings.append(tx.np + ":" + str(variant))
         elif layer is AnnotationLayer.GENOMIC:
             if accession_id:
@@ -458,7 +460,7 @@ def _map_protein_coding_pro(
     row: ScoreRow,
     sequence_id: str,
     transcript: TxSelectResult,
-    protein_align_result: AlignmentResult,
+    protein_align_result: AlignmentResult | None,
 ) -> MappedScore:
     """Construct VRS object mapping for ``hgvs_pro`` variant column entry
 
@@ -467,7 +469,8 @@ def _map_protein_coding_pro(
     :param row: A row of output from a MaveDB score set
     :param sequence_id: The GA4GH accession for the provided sequence
     :param transcript: The transcript selection information for a target
-    :param protein_align_result: The protein-protein alignment result for a target against its selected protein reference
+    :param protein_align_result: The protein-protein alignment result for a target against its selected protein
+        reference, or ``None`` for an accession target, whose variants are already in reference coordinates
     :return: VRS mapping object if mapping succeeds
     """
     if row.hgvs_pro in {"_wt", "_sy"} or is_missing_value(row.hgvs_pro):
@@ -1377,6 +1380,7 @@ def _map_accession(
                 row,
                 sequence_id,
                 transcript,
+                None,
             )
             variations.append(hgvs_pro_mappings)
 

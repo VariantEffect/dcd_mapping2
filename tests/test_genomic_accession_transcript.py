@@ -113,6 +113,22 @@ class TestSelectRefseqProteinCounterpart:
         ):
             assert _select_refseq_protein_counterpart("ENSP00000493543.1") is None
 
+    @pytest.mark.parametrize(
+        "declared",
+        [
+            "ENSP00000496776.1",  # another isoform of the gene
+            "ENSP00000493543.2",  # MANE's protein at a different version: a different sequence
+        ],
+    )
+    def test_keeps_declared_protein_that_is_not_manes(self, declared):
+        with (
+            patch(
+                f"{MODULE}.get_gene_symbol_from_ensembl_protein", return_value="BRAF"
+            ),
+            patch(f"{MODULE}.get_mane_transcripts_for_gene", return_value=[_mane()]),
+        ):
+            assert _select_refseq_protein_counterpart(declared) is None
+
 
 class TestSelectRefseqCdnaCounterpart:
     def test_maps_ensembl_transcript_to_mane_refseq(self):
@@ -123,6 +139,10 @@ class TestSelectRefseqCdnaCounterpart:
             patch(
                 f"{MODULE}.get_mane_transcripts_for_gene", return_value=[_mane()]
             ) as mane,
+            patch(
+                f"{MODULE}.get_transcript_protein_accession",
+                return_value="ENSP00000493543.1",
+            ),
         ):
             result = _select_refseq_cdna_counterpart("ENST00000646891.2")
 
@@ -146,8 +166,53 @@ class TestSelectRefseqCdnaCounterpart:
                 f"{MODULE}.get_gene_symbol_from_ensembl_transcript", return_value="BRAF"
             ),
             patch(f"{MODULE}.get_mane_transcripts_for_gene", return_value=[]),
+            patch(
+                f"{MODULE}.get_transcript_protein_accession",
+                return_value="ENSP00000493543.1",
+            ),
         ):
             assert _select_refseq_cdna_counterpart("ENST00000646891.2") is None
+
+    def test_maps_utr_only_version_bump_of_manes_transcript(self):
+        """A transcript version whose protein is MANE's (e.g. BAP1 ENST00000460680.5 vs MANE's .6, a UTR-only
+        change) carries identical codons, so it maps to the RefSeq counterpart.
+        """
+        with (
+            patch(
+                f"{MODULE}.get_gene_symbol_from_ensembl_transcript", return_value="BRAF"
+            ),
+            patch(f"{MODULE}.get_mane_transcripts_for_gene", return_value=[_mane()]),
+            patch(
+                f"{MODULE}.get_transcript_protein_accession",
+                return_value="ENSP00000493543.1",
+            ),
+        ):
+            result = _select_refseq_cdna_counterpart("ENST00000646891.1")
+
+        assert isinstance(result, TxSelectResult)
+        assert result.nm == "NM_004333.6"
+
+    @pytest.mark.parametrize(
+        "declared_protein",
+        [
+            "ENSP00000496776.1",  # another isoform: its coordinates are not MANE's
+            None,  # non-coding, or unknown to cdot
+        ],
+    )
+    def test_keeps_declared_transcript_whose_protein_is_not_manes(
+        self, declared_protein
+    ):
+        with (
+            patch(
+                f"{MODULE}.get_gene_symbol_from_ensembl_transcript", return_value="BRAF"
+            ),
+            patch(f"{MODULE}.get_mane_transcripts_for_gene", return_value=[_mane()]),
+            patch(
+                f"{MODULE}.get_transcript_protein_accession",
+                return_value=declared_protein,
+            ),
+        ):
+            assert _select_refseq_cdna_counterpart("ENST00000479537.6") is None
 
 
 class TestSelectGenomicAccessionReference:
