@@ -7,6 +7,7 @@ Todo:
 
 """
 
+import subprocess
 from unittest.mock import patch
 
 import numpy as np
@@ -16,10 +17,12 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
 from dcd_mapping.align import (
+    BLAT_TIMEOUT_SECONDS,
     _blat_score,
     _build_alignment_qc,
     _compact_alignment_string,
     _get_best_hsp,
+    _run_blat,
     align,
 )
 from dcd_mapping.exceptions import AlignmentError
@@ -449,3 +452,26 @@ def test_align_raises_on_ambiguous_blat_id():
         pytest.raises(AlignmentError, match="matches multiple target gene names"),
     ):
         align(metadata)
+
+
+def test_run_blat_stops_after_the_configured_timeout(tmp_path):
+    with (
+        patch(
+            "dcd_mapping.align.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(
+                cmd="blat", timeout=BLAT_TIMEOUT_SECONDS
+            ),
+        ) as run,
+        pytest.raises(
+            AlignmentError, match=f"BLAT timed out after {BLAT_TIMEOUT_SECONDS} s"
+        ),
+    ):
+        _run_blat(
+            "-q=prot -t=dnax",
+            tmp_path / "query.fa",
+            tmp_path / "hg38.2bit",
+            "/dev/stdout",
+            silent=True,
+        )
+
+    assert run.call_args.kwargs["timeout"] == BLAT_TIMEOUT_SECONDS

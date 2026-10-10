@@ -50,6 +50,10 @@ REFERENCE_GENOME_ASSEMBLY = "GRCh38"
 # BLAT invocation parameters
 BLAT_MIN_SCORE = 20
 BLAT_OUT_FORMAT = "pslx"
+# A protein query against the translated genome (-q=prot -t=dnax) is the slowest search, and slower
+# still when several mapping jobs share the host. MaveDB's mapping budget for the whole call must stay
+# above two of these, since a failed parse retries BLAT once.
+BLAT_TIMEOUT_SECONDS = int(os.environ.get("BLAT_TIMEOUT_SECONDS", "1200"))
 
 
 @functools.lru_cache
@@ -177,7 +181,12 @@ def _run_blat(
         cmd.extend(shlex.split(target_args))
 
     cmd.extend(
-        [f"-minScore={min_score}", f"-out={out_format}", str(query_file), out_file]
+        [
+            f"-minScore={min_score}",
+            f"-out={out_format}",
+            str(query_file),
+            out_file,
+        ]
     )
     _logger.debug("Running BLAT command: %s", " ".join(cmd))
 
@@ -186,10 +195,10 @@ def _run_blat(
             cmd,
             shell=False,
             capture_output=True,
-            timeout=600,
+            timeout=BLAT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as e:
-        msg = f"BLAT timed out after 600 s: {target_args} {query_file} {out_file}"
+        msg = f"BLAT timed out after {BLAT_TIMEOUT_SECONDS} s: {target_args} {query_file} {out_file}"
         raise AlignmentError(msg) from e
     except FileNotFoundError as e:
         raise BlatNotFoundError from e
@@ -914,7 +923,22 @@ def _get_best_match(
     tcoords = coords[0]
     qcoords = coords[1]
 
-    strand = Strand.POSITIVE if int(qcoords[0]) <= int(qcoords[-1]) else Strand.NEGATIVE
+    protein_vs_dna = "-q=prot" in blat_params.get("target_args", "")
+
+    # For cDNA queries the strand is read from qcoords direction: cDNA on the
+    # negative strand is reverse-complemented, so its qcoords decrease.
+    # For protein queries qcoords always increase (protein reads N→C regardless
+    # of genome strand), so qcoords direction is uninformative — use tcoords
+    # instead (they decrease when the gene is on the minus strand).
+    if protein_vs_dna:
+        strand = (
+            Strand.POSITIVE if int(tcoords[0]) <= int(tcoords[-1]) else Strand.NEGATIVE
+        )
+    else:
+        strand = (
+            Strand.POSITIVE if int(qcoords[0]) <= int(qcoords[-1]) else Strand.NEGATIVE
+        )
+
     q_start = int(qcoords.min())
     q_end = int(qcoords.max())
 
@@ -938,10 +962,9 @@ def _get_best_match(
         if ts == te or qs == qe:
             continue
 
-        hit_subranges.append(SequenceRange(start=ts, end=te))
+        hit_subranges.append(SequenceRange(start=min(ts, te), end=max(ts, te)))
         query_subranges.append(SequenceRange(start=min(qs, qe), end=max(qs, qe)))
 
-    protein_vs_dna = "-q=prot" in blat_params.get("target_args", "")
     alignment_qc = _build_alignment_qc(best_aln, protein_vs_dna=protein_vs_dna)
 
     return AlignmentResult(
@@ -953,7 +976,10 @@ def _get_best_match(
         coverage=coverage,
         query_range=SequenceRange(start=q_start, end=q_end),
         query_subranges=query_subranges,
-        hit_range=SequenceRange(start=int(tcoords[0]), end=int(tcoords[-1])),
+        hit_range=SequenceRange(
+            start=min(int(tcoords[0]), int(tcoords[-1])),
+            end=max(int(tcoords[0]), int(tcoords[-1])),
+        ),
         hit_subranges=hit_subranges,
         score=float(_scores[id(best_aln)]),
         next_best_score=next_best,
@@ -1155,7 +1181,7 @@ def build_alignment_result(
     if score_set_type == "sequence":
         try:
             alignment_result = align(metadata, silent)
-        except AlignmentError as e:
+        except AlignmentError:
             failed_at_nucleotide_level = any(
                 target_gene.target_sequence_type == TargetSequenceType.DNA
                 for target_gene in metadata.target_genes.values()
@@ -1165,7 +1191,7 @@ def build_alignment_result(
                 msg = f"BLAT alignment failed for {metadata.urn} at the nucleotide level. This alignment will be retried at the protein level."
                 _logger.warning(msg)
             else:
-                raise AlignmentError from e
+                raise
 
             # So long as force=True, the content of the records dict is irrelevant.
             try:
@@ -1178,10 +1204,10 @@ def build_alignment_result(
                     metadata.urn,
                 )
 
-            except AlignmentError as e2:
+            except AlignmentError as e:
                 msg = f"BLAT alignment failed for {metadata.urn} at the protein level after failing at the nucleotide level."
                 _logger.error(msg)
-                raise AlignmentError(msg) from e2
+                raise AlignmentError(msg) from e
 
     else:
         alignment_result = fetch_alignment(metadata, silent)
@@ -1246,7 +1272,7 @@ def align_target_to_protein(
         qs, qe = int(qcoords[i]), int(qcoords[i + 1])
         if ts == te or qs == qe:
             continue
-        hit_subranges.append(SequenceRange(start=ts, end=te))
+        hit_subranges.append(SequenceRange(start=min(ts, te), end=max(ts, te)))
         query_subranges.append(SequenceRange(start=min(qs, qe), end=max(qs, qe)))
 
     # Attach full sequences so _build_alignment_qc can do per-base mismatch
@@ -1260,7 +1286,10 @@ def align_target_to_protein(
     result = AlignmentResult(
         query_range=SequenceRange(start=int(qcoords.min()), end=int(qcoords.max())),
         query_subranges=query_subranges,
-        hit_range=SequenceRange(start=int(tcoords[0]), end=int(tcoords[-1])),
+        hit_range=SequenceRange(
+            start=min(int(tcoords[0]), int(tcoords[-1])),
+            end=max(int(tcoords[0]), int(tcoords[-1])),
+        ),
         hit_subranges=hit_subranges,
         percent_identity=_blat_style_identity(
             best_counts.identities,

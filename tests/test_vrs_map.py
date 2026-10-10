@@ -19,10 +19,13 @@ from dcd_mapping.mavedb_data import _load_scoreset_records
 from dcd_mapping.schemas import (
     AlignmentResult,
     MappedScore,
+    ScoreRow,
     ScoresetMetadata,
+    SequenceRange,
     TxSelectResult,
 )
-from dcd_mapping.vrs_map import vrs_map
+from dcd_mapping.transcripts import TxSelectError
+from dcd_mapping.vrs_map import _map_protein_layer, vrs_map
 
 
 def _assert_correct_vrs_map(
@@ -398,3 +401,61 @@ def test_1_b_2(
     for call in store_calls:
         mock_seqrepo_access.sr.store.assert_any_call(*call)
     assert len(store_calls) == len(mock_seqrepo_access.sr.store.call_args_list)
+
+
+class TestMapProteinLayerReason:
+    """``_map_protein_layer`` returns ``(mapping, reason)``: no mapping plus a specific
+    reason when there is no protein layer to map. A row that maps at no layer is failed
+    once, layer-agnostically, carrying this detailed reason rather than a failure
+    arbitrarily tagged to the protein layer.
+    """
+
+    def _row(self, hgvs_pro: str) -> ScoreRow:
+        return ScoreRow(
+            hgvs_nt="_wt",
+            hgvs_pro=hgvs_pro,
+            score="1.0",
+            accession="urn:mavedb:00000001-a-2#1",
+        )
+
+    def _tx(self) -> TxSelectResult:
+        return TxSelectResult(
+            nm="NM_000001.1",
+            np="NP_000001.1",
+            start=0,
+            is_full_match=True,
+            sequence="MAA",
+            hgnc_symbol="GENE1",
+        )
+
+    def _align(self) -> AlignmentResult:
+        return AlignmentResult(
+            chrom="chr1",
+            query_range=SequenceRange(start=0, end=9),
+            query_subranges=[SequenceRange(start=0, end=9)],
+            hit_range=SequenceRange(start=1000, end=1009),
+            hit_subranges=[SequenceRange(start=1000, end=1009)],
+            aligner_parameters={"aligner": "blat"},
+        )
+
+    def test_transcript_error_surfaces_its_message(self):
+        err = TxSelectError("no transcript selected for GENE1")
+        mapping, reason = _map_protein_layer(self._row("p.Ala2Val"), "SQ.x", err, None)
+        assert mapping is None
+        assert reason == "no transcript selected for GENE1"
+
+    @pytest.mark.parametrize("hgvs_pro", ["_wt", "_sy"])
+    def test_invalid_protein_variant_names_inputs(self, hgvs_pro):
+        mapping, reason = _map_protein_layer(
+            self._row(hgvs_pro), "SQ.x", self._tx(), self._align()
+        )
+        assert mapping is None
+        assert "Can't process variant syntax" in reason
+        assert hgvs_pro in reason  # names the actual input, not a layer
+
+    def test_valid_protein_without_alignment_reports_alignment_failure(self):
+        mapping, reason = _map_protein_layer(
+            self._row("p.Ala2Val"), "SQ.x", self._tx(), None
+        )
+        assert mapping is None
+        assert "could not be aligned" in reason

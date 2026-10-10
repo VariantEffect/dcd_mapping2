@@ -16,6 +16,22 @@ class MissingSequenceIdError(ValueError):
     """Raised when a sequence ID is not provided."""
 
 
+class ReferenceSequenceNotFoundError(VrsMapError):
+    """Raised when an accession has no sequence in SeqRepo.
+
+    SeqRepo is the only source of sequence identity. The mapper never substitutes a sequence assembled
+    from another source, because that would mint a refget no other writer reproduces.
+    """
+
+
+class ReferenceSequenceProvisioningError(VrsMapError):
+    """Raised when a missing accession's sequence cannot be safely added to SeqRepo."""
+
+
+class AmbiguousReferenceSequenceError(VrsMapError):
+    """Raised when an accession resolves to more than one refget in SeqRepo."""
+
+
 class UnsupportedReferenceSequencePrefixError(ValueError):
     """Raised when a reference sequence prefix is not supported."""
 
@@ -57,3 +73,16 @@ class ResourceAcquisitionError(ValueError):
 
 class TxSelectError(ValueError):
     """Raise for transcript selection failure."""
+
+
+class NoCodingTranscriptError(TxSelectError):
+    """Raise when a protein-coding target has no resolvable coding transcript.
+
+    Distinct from the regulatory/non-coding case (which returns ``None`` from
+    transcript selection because no coding transcript is expected): this signals
+    a coding target for which selection *should* have produced a transcript but
+    could not -- no resolvable gene symbol, no MANE/compatible transcript for the
+    gene, or a projection that does not land cleanly on the selected transcript.
+    Downstream records this as a recoverable skip, distinct from "no protein
+    consequence exists."
+    """
