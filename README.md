@@ -22,7 +22,7 @@ This library implements a novel method for mapping [MaveDB scoreset data](https:
   * Submitted target sequences are stored in SeqRepo so the refget endpoint can resolve the refgets in the VRS objects MaveDB publishes.
   * Set `HGVS_SEQREPO_DIR` to the same SeqRepo instance as `SEQREPO_ROOT_DIR` so hgvs sequence fetching reads it too.
 * Gene Normalizer: see [documentation](https://gene-normalizer.readthedocs.io/0.3.0-dev1/install.html) for data setup instructions.
-* blat: Must be available on the local PATH and executable by the user. Otherwise, its location can be set manually with the `BLAT_BIN_PATH` env var. See the [UCSC Genome Browser FAQ](https://genome.ucsc.edu/FAQ/FAQblat.html#blat3) for download instructions.
+* blat: Must be available on the local PATH and executable by the user. Otherwise, its location can be set manually with the `BLAT_BIN_PATH` env var. A BLAT run is stopped after `BLAT_TIMEOUT_SECONDS` (default 1200). See the [UCSC Genome Browser FAQ](https://genome.ucsc.edu/FAQ/FAQblat.html#blat3) for download instructions.
 
 
 ## Installation

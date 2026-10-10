@@ -50,6 +50,10 @@ REFERENCE_GENOME_ASSEMBLY = "GRCh38"
 # BLAT invocation parameters
 BLAT_MIN_SCORE = 20
 BLAT_OUT_FORMAT = "pslx"
+# A protein query against the translated genome (-q=prot -t=dnax) is the slowest search, and slower
+# still when several mapping jobs share the host. MaveDB's mapping budget for the whole call must stay
+# above two of these, since a failed parse retries BLAT once.
+BLAT_TIMEOUT_SECONDS = int(os.environ.get("BLAT_TIMEOUT_SECONDS", "1200"))
 
 
 @functools.lru_cache
@@ -191,10 +195,10 @@ def _run_blat(
             cmd,
             shell=False,
             capture_output=True,
-            timeout=600,
+            timeout=BLAT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as e:
-        msg = f"BLAT timed out after 600 s: {target_args} {query_file} {out_file}"
+        msg = f"BLAT timed out after {BLAT_TIMEOUT_SECONDS} s: {target_args} {query_file} {out_file}"
         raise AlignmentError(msg) from e
     except FileNotFoundError as e:
         raise BlatNotFoundError from e
