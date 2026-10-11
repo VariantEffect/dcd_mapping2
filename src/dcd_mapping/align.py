@@ -842,10 +842,71 @@ def _get_best_hit(
     return [a for a in alignments if str(a.target.id) == best_chrom]
 
 
+def _hit_bounds(aln: "BioAlign.Alignment") -> tuple[int, int]:
+    """Return a hit's lower and upper genomic bounds, whichever strand it is on."""
+    first, last = int(aln.coordinates[0][0]), int(aln.coordinates[0][-1])
+    return min(first, last), max(first, last)
+
+
+def _aligned_query_length(aln: "BioAlign.Alignment") -> int:
+    """Count query positions aligned to the target, excluding gaps on either side."""
+    coords = aln.coordinates
+    total = 0
+    for i in range(coords.shape[1] - 1):
+        target_step = int(coords[0][i + 1]) - int(coords[0][i])
+        query_step = int(coords[1][i + 1]) - int(coords[1][i])
+        if target_step and query_step:
+            total += abs(query_step)
+    return total
+
+
+def _warn_if_better_covered_hit(
+    best: "BioAlign.Alignment",
+    alignments: "list[BioAlign.Alignment]",
+    gene_location: GeneLocation,
+    label: str | None,
+) -> None:
+    """Log when a hit overlapping the gene aligns more of the query than the proximity pick.
+
+    Proximity to the gene start can choose a fragment over a hit covering the whole target.
+    Selecting by aligned query length instead is the intended rule; until then, each
+    disagreement is logged so the score sets it would change can be found.
+    """
+
+    def overlaps_gene(aln: "BioAlign.Alignment") -> bool:
+        lower, upper = _hit_bounds(aln)
+        gene_end = (
+            gene_location.end if gene_location.end is not None else gene_location.start
+        )
+        return lower <= gene_end and upper >= gene_location.start
+
+    chosen_length = _aligned_query_length(best)
+    better = [
+        a
+        for a in alignments
+        if overlaps_gene(a) and _aligned_query_length(a) > chosen_length
+    ]
+    if not better:
+        return
+
+    widest = max(better, key=_aligned_query_length)
+    _logger.warning(
+        "HSP chosen by proximity for %s aligns %d query positions at %d-%d; %d other hit(s) overlapping "
+        "the gene align more, up to %d at %d-%d.",
+        label or "target",
+        chosen_length,
+        *_hit_bounds(best),
+        len(better),
+        _aligned_query_length(widest),
+        *_hit_bounds(widest),
+    )
+
+
 def _get_best_hsp(
     alignments: "list[BioAlign.Alignment]",
     gene_location: GeneLocation | None = None,
     scores: dict[int, int] | None = None,
+    label: str | None = None,
 ) -> "BioAlign.Alignment":
     """Retrieve the preferred alignment from a list filtered to one chromosome.
 
@@ -857,6 +918,7 @@ def _get_best_hsp(
     :param gene_location: location data acquired by normalising scoreset metadata
     :param scores: optional pre-computed ``{id(aln): score}`` cache; when
         provided avoids redundant ``aln.counts()`` walks.
+    :param label: target gene name, for log messages
     :return: preferred alignment
     :raise AlignmentError: if the list is empty
     """
@@ -864,18 +926,20 @@ def _get_best_hsp(
         msg = f"Empty alignment list passed to _get_best_hsp for gene location {gene_location or 'N/A'}."
         raise AlignmentError(msg)
 
+    # A minus-strand hit's target coordinates run high to low, so its first coordinate is its
+    # 3' genomic end. The gene start is the lower genomic bound, so compare against the hit's.
     if gene_location and gene_location.start is not None:
         best = min(
-            alignments,
-            key=lambda a: abs(int(a.coordinates[0][0]) - gene_location.start),
+            alignments, key=lambda a: abs(_hit_bounds(a)[0] - gene_location.start)
         )
 
         _logger.info(
             "Selected HSP by gene-location proximity (gene start: %d, hit start: %d, %d candidate(s)).",
             gene_location.start,
-            int(best.coordinates[0][0]),
+            _hit_bounds(best)[0],
             len(alignments),
         )
+        _warn_if_better_covered_hit(best, alignments, gene_location, label)
         return best
 
     best = max(
@@ -913,7 +977,9 @@ def _get_best_match(
     # when the same alignments are ranked by multiple selection helpers.
     _scores: dict[int, int] = {id(a): _blat_score(a) for a in alignments}
     chrom_alns = _get_best_hit(alignments, chromosome, _scores)
-    best_aln = _get_best_hsp(chrom_alns, location, _scores)
+    best_aln = _get_best_hsp(
+        chrom_alns, location, _scores, label=target_gene.target_gene_name
+    )
 
     best_counts = best_aln.counts()
     others = [_scores[id(a)] for a in alignments if a is not best_aln]

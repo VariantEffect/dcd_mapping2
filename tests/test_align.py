@@ -7,6 +7,7 @@ Todo:
 
 """
 
+import logging
 import subprocess
 from unittest.mock import patch
 
@@ -29,6 +30,7 @@ from dcd_mapping.exceptions import AlignmentError
 from dcd_mapping.schemas import (
     AlignmentQc,
     AlignmentResult,
+    GeneLocation,
     ScoresetMetadata,
     TargetGene,
     TargetType,
@@ -475,3 +477,47 @@ def test_run_blat_stops_after_the_configured_timeout(tmp_path):
         )
 
     assert run.call_args.kwargs["timeout"] == BLAT_TIMEOUT_SECONDS
+
+
+def test_get_best_hsp_measures_a_minus_strand_hit_from_its_lower_bound():
+    # Minus-strand hits list target coordinates high to low. The full-length hit spans 100-130 and
+    # starts at the gene; the fragment spans 85-115, so its high end is the one nearer the gene start.
+    query = "M" * 30
+    full_length = _make_aln(query, "N" * 140, coords=np.array([[130, 100], [0, 30]]))
+    fragment = _make_aln(query, "N" * 140, coords=np.array([[115, 85], [0, 30]]))
+
+    best = _get_best_hsp(
+        [fragment, full_length],
+        gene_location=GeneLocation(chromosome="NC_000003.12", start=100, end=200),
+    )
+
+    assert best is full_length
+
+
+def test_get_best_hsp_warns_when_another_overlapping_hit_aligns_more(caplog):
+    # The proximity pick starts at the gene but aligns 10 positions; a hit further along aligns 30.
+    short = _make_aln("M" * 10, "N" * 200, coords=np.array([[100, 130], [0, 10]]))
+    long = _make_aln("M" * 30, "N" * 200, coords=np.array([[120, 210], [0, 30]]))
+
+    with caplog.at_level(logging.WARNING, logger="dcd_mapping.align"):
+        best = _get_best_hsp(
+            [short, long],
+            gene_location=GeneLocation(chromosome="NC_000003.12", start=100, end=250),
+            label="SCN5A",
+        )
+
+    assert best is short
+    assert "HSP chosen by proximity for SCN5A aligns 10 query positions" in caplog.text
+
+
+def test_get_best_hsp_does_not_warn_when_the_proximity_pick_aligns_most(caplog):
+    long = _make_aln("M" * 30, "N" * 200, coords=np.array([[100, 190], [0, 30]]))
+    short = _make_aln("M" * 10, "N" * 200, coords=np.array([[150, 180], [0, 10]]))
+
+    with caplog.at_level(logging.WARNING, logger="dcd_mapping.align"):
+        _get_best_hsp(
+            [short, long],
+            gene_location=GeneLocation(chromosome="NC_000003.12", start=100, end=250),
+        )
+
+    assert "HSP chosen by proximity" not in caplog.text
