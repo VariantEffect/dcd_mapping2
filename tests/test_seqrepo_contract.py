@@ -287,3 +287,25 @@ def test_a_missing_refseq_transcript_is_never_assembled(seqrepo_dir):
     ):
         vrs_map.ensure_accession_in_seqrepo("NM_000000.1")
     assemble.assert_not_called()
+
+
+def test_store_sequence_names_a_stop_terminated_protein_by_its_stored_digest(
+    seqrepo_dir,
+):
+    """SeqRepo strips a trailing stop ``*`` before hashing. The returned ID and the only ``ga4gh`` alias on
+    the stored sequence must both be that digest, not the digest of the raw string.
+    """
+    protein = "MAEQVALSRT"
+    mapper = _shared_writer(seqrepo_dir)
+    with patch.object(vrs_map, "get_seqrepo", return_value=mapper):
+        sequence_id = vrs_map.store_sequence(protein + "*")
+
+    expected = f"SQ.{sha512t24u(protein.encode())}"
+    assert sequence_id == expected
+    reader = SeqRepo(str(seqrepo_dir))
+    ga4gh_aliases = {
+        a["alias"]
+        for a in reader.aliases.find_aliases(seq_id=expected[3:])
+        if a["namespace"] == "ga4gh"
+    }
+    assert ga4gh_aliases == {expected}

@@ -9,8 +9,8 @@ from itertools import cycle
 
 from Bio.Seq import Seq
 from bioutils.accessions import infer_namespace
+from bioutils.digests import seq_seqhash
 from cool_seq_tool.schemas import AnnotationLayer, Strand
-from ga4gh.core import sha512t24u
 from ga4gh.vrs._internal.models import (
     Allele,
     Expression,
@@ -847,10 +847,15 @@ def store_sequence(sequence: str) -> str:
     mapping jobs can interleave. Stored sequences are persistent, which lets the refget endpoint resolve
     the refgets carried by published VRS objects.
 
+    The ID is SeqRepo's own digest, which it computes over the normalized sequence (uppercased, ``*`` and
+    whitespace removed). Hashing the raw string instead gives a protein target ending in a stop ``*`` an
+    alias that names no stored sequence, attached as a second ``ga4gh`` alias of the stop-free sequence,
+    and every lookup of that sequence's refget then returns either one.
+
     :param sequence: raw sequence (ie nucleotides or amino acids)
     :return: sequence ID (sans prefix, which is ``"ga4gh"``)
     """
-    sequence_id = f"SQ.{sha512t24u(sequence.encode('ascii'))}"
+    sequence_id = f"SQ.{seq_seqhash(sequence)}"
     alias_dict_list = [{"namespace": "ga4gh", "alias": sequence_id}]
     sr = get_seqrepo()
     sr.sr.store(sequence, alias_dict_list)
