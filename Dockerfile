@@ -19,13 +19,16 @@ RUN apt-get clean && apt-get update && apt-get install -y \
 
 # download and install blat executable
 WORKDIR /usr/bin
-RUN wget http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/blat/blat
+RUN wget https://hgdownload.soe.ucsc.edu/admin/exe/linux.x86_64/blat/blat
 RUN chmod +x blat
 
 # set dcd_mapping resources directory and download reference file
 WORKDIR /home/.local/share/dcd_mapping
 ENV DCD_MAPPING_RESOURCES_DIR=/home/.local/share/dcd_mapping
-RUN curl -LJO https://hgdownload.cse.ucsc.edu/goldenpath/hg38/bigZips/hg38.2bit
+# hgdownload.cse.ucsc.edu is a legacy alias whose TLS certificate only covers
+# hgdownload.soe.ucsc.edu. Checksum from the same directory's md5sum.txt.
+RUN curl -fLJO https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.2bit && \
+    echo "dcc3ea27079aa6dc3f9deccd7275e0f8  hg38.2bit" | md5sum -c -
 
 # Install samtools and htslib.
 ARG htsversion=1.19

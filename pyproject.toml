@@ -45,7 +45,7 @@ dependencies = [
     "setuptools>=68.0",  # tmp -- ensure 3.12 compatibility
     "mavehgvs~=0.8.1",
     "fastapi",
-    "starlette",
+    "starlette>=1.3.1",
     "uvicorn",
     "polars<1.38.0",
     "pandas==2.2.1"

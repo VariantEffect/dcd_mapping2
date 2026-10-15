@@ -118,13 +118,13 @@ def get_human_urns() -> list[str]:
     return human_scoresets
 
 
-def _get_uniprot_ref(scoreset_json: dict[str, Any]) -> UniProtRef | None:
-    """Extract UniProt reference from scoreset metadata if available.
+def _get_uniprot_ref(target_gene_json: dict[str, Any]) -> UniProtRef | None:
+    """Extract UniProt reference from a target gene's metadata if available.
 
-    :param scoreset_json: parsed JSON from scoresets API
+    :param target_gene_json: one entry of ``targetGenes`` from the score sets API
     :return: UniProt ID if available
     """
-    ext_ids = scoreset_json["targetGenes"][0].get("externalIdentifiers")
+    ext_ids = target_gene_json.get("externalIdentifiers")
     if not ext_ids:
         return None
     for ext_id in ext_ids:
@@ -214,7 +214,7 @@ def get_scoreset_metadata(
                     target_sequence=target_gene_sequence["sequence"],
                     target_sequence_type=target_gene_sequence["sequenceType"],
                     target_sequence_label=target_sequence_label,
-                    target_uniprot_ref=_get_uniprot_ref(metadata),
+                    target_uniprot_ref=_get_uniprot_ref(gene),
                 )
             elif target_gene_accession:
                 target_accession_id = target_gene_accession["accession"]

@@ -1,5 +1,6 @@
 """Test `dcd_mapping.resources` module."""
 
+import copy
 import json
 import shutil
 from pathlib import Path
@@ -55,6 +56,36 @@ def test_get_scoreset_metadata(
             ].target_uniprot_ref.offset
             == 0
         )
+
+
+def test_get_scoreset_metadata_multi_target_uniprot_refs(
+    resources_data_dir: Path, scoreset_metadata_response: dict
+):
+    """Each target in a multi-target score set keeps its own UniProt reference."""
+    urn = "urn:mavedb:00000093-a-1"
+    response = copy.deepcopy(scoreset_metadata_response[urn])
+    first = response["targetGenes"][0]
+    first["targetSequence"]["label"] = "first"
+    second = copy.deepcopy(first)
+    second["targetSequence"]["label"] = "second"
+    for ext_id in second["externalIdentifiers"]:
+        if ext_id["identifier"]["dbName"] == "UniProt":
+            ext_id["identifier"]["identifier"] = "P15056"
+            ext_id["offset"] = 5
+    response["targetGenes"].append(second)
+
+    with respx.mock:
+        respx.get(f"https://api.mavedb.org/api/v1/score-sets/{urn}").mock(
+            return_value=httpx.Response(200, json=response)
+        )
+        scoreset_metadata = get_scoreset_metadata(
+            urn, dcd_mapping_dir=resources_data_dir
+        )
+
+    first_ref = scoreset_metadata.target_genes["first"].target_uniprot_ref
+    second_ref = scoreset_metadata.target_genes["second"].target_uniprot_ref
+    assert (first_ref.id, first_ref.offset) == ("uniprot:P38398", 0)
+    assert (second_ref.id, second_ref.offset) == ("uniprot:P15056", 5)
 
 
 def test_get_scoreset_records(

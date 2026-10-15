@@ -42,6 +42,31 @@ class VrsVersion(StrEnum):
     V_2 = "2"
 
 
+class MappingOutcome(StrEnum):
+    """Per-record outcome for one (variant, annotation level) pair.
+
+    The mapper's output is a complete accounting: for every variant and every
+    annotation level in that variant's deterministically-reachable set, there is one
+    record carrying its outcome -- never a silent omission. This field is uniform across
+    measured (assay-level) and projected (deterministic non-assay) records so the two can
+    be treated identically by consumers; it distinguishes a benign absence from a genuine
+    failure, which a populated ``error_message`` alone cannot.
+
+    - ``MAPPED`` -- a VRS allele was produced (``pre_mapped``/``post_mapped`` populated).
+    - ``INTRONIC`` -- the variant's coding projection is intronic: no VRS-representable
+      coding form and no protein consequence. Benign (``error_message`` is ``None``).
+    - ``NO_PROTEIN_CONSEQUENCE`` -- the protein layer was reachable but yields no
+      projectable protein change (e.g. UTR). Benign (``error_message`` is ``None``).
+    - ``FAILED`` -- the mapping/projection genuinely failed (mis-selected transcript,
+      projection error, unresolvable reference contig). ``error_message`` carries detail.
+    """
+
+    MAPPED = "mapped"
+    INTRONIC = "intronic"
+    NO_PROTEIN_CONSEQUENCE = "no_protein_consequence"
+    FAILED = "failed"
+
+
 class UniProtRef(BaseModel):
     """Store metadata associated with MaveDB UniProt reference"""
 
@@ -250,6 +275,9 @@ class MappedScore(BaseModel):
     pre_mapped: Allele | Haplotype | None = None
     post_mapped: Allele | Haplotype | None = None
     error_message: str | None = None
+    # Typed outcome for this (variant, level) record. None until stamped (legacy /
+    # pre-annotation); ``annotate`` resolves it for every emitted record.
+    outcome: MappingOutcome | None = None
 
 
 class ScoreAnnotation(BaseModel):
@@ -285,6 +313,10 @@ class ScoreAnnotation(BaseModel):
     score: float | None = None
     error_message: str | None = None
     alignment_level: AnnotationLayer | None = None
+    # Typed outcome for this (variant, level) record -- see MappingOutcome. Always
+    # populated on emitted annotations; distinguishes a benign absence (intronic, no
+    # protein consequence) from a genuine failure that error_message alone cannot.
+    outcome: MappingOutcome | None = None
     # Per-variant alignment-locus flags. None means "not evaluated" (e.g. no
     # genomic alignment available, or non-genomic annotation layer); True/False
     # mean the flag was computed against this run's alignment.

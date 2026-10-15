@@ -50,6 +50,10 @@ REFERENCE_GENOME_ASSEMBLY = "GRCh38"
 # BLAT invocation parameters
 BLAT_MIN_SCORE = 20
 BLAT_OUT_FORMAT = "pslx"
+# A protein query against the translated genome (-q=prot -t=dnax) is the slowest search, and slower
+# still when several mapping jobs share the host. MaveDB's mapping budget for the whole call must stay
+# above two of these, since a failed parse retries BLAT once.
+BLAT_TIMEOUT_SECONDS = int(os.environ.get("BLAT_TIMEOUT_SECONDS", "1200"))
 
 
 @functools.lru_cache
@@ -177,7 +181,12 @@ def _run_blat(
         cmd.extend(shlex.split(target_args))
 
     cmd.extend(
-        [f"-minScore={min_score}", f"-out={out_format}", str(query_file), out_file]
+        [
+            f"-minScore={min_score}",
+            f"-out={out_format}",
+            str(query_file),
+            out_file,
+        ]
     )
     _logger.debug("Running BLAT command: %s", " ".join(cmd))
 
@@ -186,10 +195,10 @@ def _run_blat(
             cmd,
             shell=False,
             capture_output=True,
-            timeout=600,
+            timeout=BLAT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as e:
-        msg = f"BLAT timed out after 600 s: {target_args} {query_file} {out_file}"
+        msg = f"BLAT timed out after {BLAT_TIMEOUT_SECONDS} s: {target_args} {query_file} {out_file}"
         raise AlignmentError(msg) from e
     except FileNotFoundError as e:
         raise BlatNotFoundError from e
@@ -833,10 +842,71 @@ def _get_best_hit(
     return [a for a in alignments if str(a.target.id) == best_chrom]
 
 
+def _hit_bounds(aln: "BioAlign.Alignment") -> tuple[int, int]:
+    """Return a hit's lower and upper genomic bounds, whichever strand it is on."""
+    first, last = int(aln.coordinates[0][0]), int(aln.coordinates[0][-1])
+    return min(first, last), max(first, last)
+
+
+def _aligned_query_length(aln: "BioAlign.Alignment") -> int:
+    """Count query positions aligned to the target, excluding gaps on either side."""
+    coords = aln.coordinates
+    total = 0
+    for i in range(coords.shape[1] - 1):
+        target_step = int(coords[0][i + 1]) - int(coords[0][i])
+        query_step = int(coords[1][i + 1]) - int(coords[1][i])
+        if target_step and query_step:
+            total += abs(query_step)
+    return total
+
+
+def _warn_if_better_covered_hit(
+    best: "BioAlign.Alignment",
+    alignments: "list[BioAlign.Alignment]",
+    gene_location: GeneLocation,
+    label: str | None,
+) -> None:
+    """Log when a hit overlapping the gene aligns more of the query than the proximity pick.
+
+    Proximity to the gene start can choose a fragment over a hit covering the whole target.
+    Selecting by aligned query length instead is the intended rule; until then, each
+    disagreement is logged so the score sets it would change can be found.
+    """
+
+    def overlaps_gene(aln: "BioAlign.Alignment") -> bool:
+        lower, upper = _hit_bounds(aln)
+        gene_end = (
+            gene_location.end if gene_location.end is not None else gene_location.start
+        )
+        return lower <= gene_end and upper >= gene_location.start
+
+    chosen_length = _aligned_query_length(best)
+    better = [
+        a
+        for a in alignments
+        if overlaps_gene(a) and _aligned_query_length(a) > chosen_length
+    ]
+    if not better:
+        return
+
+    widest = max(better, key=_aligned_query_length)
+    _logger.warning(
+        "HSP chosen by proximity for %s aligns %d query positions at %d-%d; %d other hit(s) overlapping "
+        "the gene align more, up to %d at %d-%d.",
+        label or "target",
+        chosen_length,
+        *_hit_bounds(best),
+        len(better),
+        _aligned_query_length(widest),
+        *_hit_bounds(widest),
+    )
+
+
 def _get_best_hsp(
     alignments: "list[BioAlign.Alignment]",
     gene_location: GeneLocation | None = None,
     scores: dict[int, int] | None = None,
+    label: str | None = None,
 ) -> "BioAlign.Alignment":
     """Retrieve the preferred alignment from a list filtered to one chromosome.
 
@@ -848,6 +918,7 @@ def _get_best_hsp(
     :param gene_location: location data acquired by normalising scoreset metadata
     :param scores: optional pre-computed ``{id(aln): score}`` cache; when
         provided avoids redundant ``aln.counts()`` walks.
+    :param label: target gene name, for log messages
     :return: preferred alignment
     :raise AlignmentError: if the list is empty
     """
@@ -855,18 +926,20 @@ def _get_best_hsp(
         msg = f"Empty alignment list passed to _get_best_hsp for gene location {gene_location or 'N/A'}."
         raise AlignmentError(msg)
 
+    # A minus-strand hit's target coordinates run high to low, so its first coordinate is its
+    # 3' genomic end. The gene start is the lower genomic bound, so compare against the hit's.
     if gene_location and gene_location.start is not None:
         best = min(
-            alignments,
-            key=lambda a: abs(int(a.coordinates[0][0]) - gene_location.start),
+            alignments, key=lambda a: abs(_hit_bounds(a)[0] - gene_location.start)
         )
 
         _logger.info(
             "Selected HSP by gene-location proximity (gene start: %d, hit start: %d, %d candidate(s)).",
             gene_location.start,
-            int(best.coordinates[0][0]),
+            _hit_bounds(best)[0],
             len(alignments),
         )
+        _warn_if_better_covered_hit(best, alignments, gene_location, label)
         return best
 
     best = max(
@@ -904,7 +977,9 @@ def _get_best_match(
     # when the same alignments are ranked by multiple selection helpers.
     _scores: dict[int, int] = {id(a): _blat_score(a) for a in alignments}
     chrom_alns = _get_best_hit(alignments, chromosome, _scores)
-    best_aln = _get_best_hsp(chrom_alns, location, _scores)
+    best_aln = _get_best_hsp(
+        chrom_alns, location, _scores, label=target_gene.target_gene_name
+    )
 
     best_counts = best_aln.counts()
     others = [_scores[id(a)] for a in alignments if a is not best_aln]
@@ -914,7 +989,22 @@ def _get_best_match(
     tcoords = coords[0]
     qcoords = coords[1]
 
-    strand = Strand.POSITIVE if int(qcoords[0]) <= int(qcoords[-1]) else Strand.NEGATIVE
+    protein_vs_dna = "-q=prot" in blat_params.get("target_args", "")
+
+    # For cDNA queries the strand is read from qcoords direction: cDNA on the
+    # negative strand is reverse-complemented, so its qcoords decrease.
+    # For protein queries qcoords always increase (protein reads N→C regardless
+    # of genome strand), so qcoords direction is uninformative — use tcoords
+    # instead (they decrease when the gene is on the minus strand).
+    if protein_vs_dna:
+        strand = (
+            Strand.POSITIVE if int(tcoords[0]) <= int(tcoords[-1]) else Strand.NEGATIVE
+        )
+    else:
+        strand = (
+            Strand.POSITIVE if int(qcoords[0]) <= int(qcoords[-1]) else Strand.NEGATIVE
+        )
+
     q_start = int(qcoords.min())
     q_end = int(qcoords.max())
 
@@ -938,10 +1028,9 @@ def _get_best_match(
         if ts == te or qs == qe:
             continue
 
-        hit_subranges.append(SequenceRange(start=ts, end=te))
+        hit_subranges.append(SequenceRange(start=min(ts, te), end=max(ts, te)))
         query_subranges.append(SequenceRange(start=min(qs, qe), end=max(qs, qe)))
 
-    protein_vs_dna = "-q=prot" in blat_params.get("target_args", "")
     alignment_qc = _build_alignment_qc(best_aln, protein_vs_dna=protein_vs_dna)
 
     return AlignmentResult(
@@ -953,7 +1042,10 @@ def _get_best_match(
         coverage=coverage,
         query_range=SequenceRange(start=q_start, end=q_end),
         query_subranges=query_subranges,
-        hit_range=SequenceRange(start=int(tcoords[0]), end=int(tcoords[-1])),
+        hit_range=SequenceRange(
+            start=min(int(tcoords[0]), int(tcoords[-1])),
+            end=max(int(tcoords[0]), int(tcoords[-1])),
+        ),
         hit_subranges=hit_subranges,
         score=float(_scores[id(best_aln)]),
         next_best_score=next_best,
@@ -1155,7 +1247,7 @@ def build_alignment_result(
     if score_set_type == "sequence":
         try:
             alignment_result = align(metadata, silent)
-        except AlignmentError as e:
+        except AlignmentError:
             failed_at_nucleotide_level = any(
                 target_gene.target_sequence_type == TargetSequenceType.DNA
                 for target_gene in metadata.target_genes.values()
@@ -1165,7 +1257,7 @@ def build_alignment_result(
                 msg = f"BLAT alignment failed for {metadata.urn} at the nucleotide level. This alignment will be retried at the protein level."
                 _logger.warning(msg)
             else:
-                raise AlignmentError from e
+                raise
 
             # So long as force=True, the content of the records dict is irrelevant.
             try:
@@ -1178,10 +1270,10 @@ def build_alignment_result(
                     metadata.urn,
                 )
 
-            except AlignmentError as e2:
+            except AlignmentError as e:
                 msg = f"BLAT alignment failed for {metadata.urn} at the protein level after failing at the nucleotide level."
                 _logger.error(msg)
-                raise AlignmentError(msg) from e2
+                raise AlignmentError(msg) from e
 
     else:
         alignment_result = fetch_alignment(metadata, silent)
@@ -1246,7 +1338,7 @@ def align_target_to_protein(
         qs, qe = int(qcoords[i]), int(qcoords[i + 1])
         if ts == te or qs == qe:
             continue
-        hit_subranges.append(SequenceRange(start=ts, end=te))
+        hit_subranges.append(SequenceRange(start=min(ts, te), end=max(ts, te)))
         query_subranges.append(SequenceRange(start=min(qs, qe), end=max(qs, qe)))
 
     # Attach full sequences so _build_alignment_qc can do per-base mismatch
@@ -1260,7 +1352,10 @@ def align_target_to_protein(
     result = AlignmentResult(
         query_range=SequenceRange(start=int(qcoords.min()), end=int(qcoords.max())),
         query_subranges=query_subranges,
-        hit_range=SequenceRange(start=int(tcoords[0]), end=int(tcoords[-1])),
+        hit_range=SequenceRange(
+            start=min(int(tcoords[0]), int(tcoords[-1])),
+            end=max(int(tcoords[0]), int(tcoords[-1])),
+        ),
         hit_subranges=hit_subranges,
         percent_identity=_blat_style_identity(
             best_counts.identities,

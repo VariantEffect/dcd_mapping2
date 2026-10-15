@@ -16,8 +16,13 @@ This library implements a novel method for mapping [MaveDB scoreset data](https:
 
 * Universal Transcript Archive (UTA): see [README](https://github.com/biocommons/uta?tab=readme-ov-file#installing-uta-locally) for setup instructions. Users with access to Docker on their local devices can use the available Docker image; otherwise, start a relatively recent (version 14+) PostgreSQL instance and add data from the available database dump.
 * SeqRepo: see [README](https://github.com/biocommons/biocommons.seqrepo?tab=readme-ov-file#requirements) for setup instructions. The SeqRepo data directory must be writeable; see specific instructions [here](https://github.com/biocommons/biocommons.seqrepo/blob/main/docs/store.rst) for more.
+  * Accession targets are resolved from SeqRepo. RefSeq accessions (`NM_`, `NP_`, `NC_`) are never written by a mapping run; if SeqRepo lacks one, mapping fails with `ReferenceSequenceNotFoundError`, so load the NCBI record into SeqRepo first. Storing a sequence from another source (such as cdot's genome-assembled transcript) changes the refget and with it every allele digest, so the mapper and MaveDB's reverse translation would no longer agree.
+  * Ensembl transcripts (`ENST`) are the exception: a missing one is assembled from the genome (an Ensembl transcript is defined that way), refused unless every genome build that carries it assembles the same sequence, and stored in SeqRepo without reassigning any existing alias. Ensembl proteins (`ENSP`) are not provisioned automatically.
+  * Every mapper write to SeqRepo commits immediately, and the SQLite busy timeout is raised to 60 seconds, so parallel jobs queue for a brief lock instead of one process holding it for its whole run.
+  * Submitted target sequences are stored in SeqRepo so the refget endpoint can resolve the refgets in the VRS objects MaveDB publishes.
+  * Set `HGVS_SEQREPO_DIR` to the same SeqRepo instance as `SEQREPO_ROOT_DIR` so hgvs sequence fetching reads it too.
 * Gene Normalizer: see [documentation](https://gene-normalizer.readthedocs.io/0.3.0-dev1/install.html) for data setup instructions.
-* blat: Must be available on the local PATH and executable by the user. Otherwise, its location can be set manually with the `BLAT_BIN_PATH` env var. See the [UCSC Genome Browser FAQ](https://genome.ucsc.edu/FAQ/FAQblat.html#blat3) for download instructions.
+* blat: Must be available on the local PATH and executable by the user. Otherwise, its location can be set manually with the `BLAT_BIN_PATH` env var. A BLAT run is stopped after `BLAT_TIMEOUT_SECONDS` (default 1200). See the [UCSC Genome Browser FAQ](https://genome.ucsc.edu/FAQ/FAQblat.html#blat3) for download instructions.
 
 
 ## Installation
@@ -60,7 +65,7 @@ The verbatim MaveDB API scoreset response. Stored unchanged so downstream consum
 A `dict[target_gene_name, TargetAnnotation]` describing the reference sequences each target was mapped against, organized by annotation layer. Each `TargetAnnotation` carries:
 
 * `gene_info` — `hgnc_symbol` plus the `selection_method` that picked it (transcript-derived, alignment-overlap-derived, variant-overlap-derived, or metadata fallback).
-* `layers` — a `dict[AnnotationLayer, {computed_reference_sequence, mapped_reference_sequence}]` populated only for layers that actually produced mappings. `computed_reference_sequence` is the in-pipeline sequence (e.g. translated protein); `mapped_reference_sequence` lists the canonical accession(s) the variants were ultimately grounded in. Layers with no usable reference are pruned, not emitted as `null`.
+* `layers` — a `dict[AnnotationLayer, {computed_reference_sequence, mapped_reference_sequence}]` populated for layers that actually produced mappings. Protein-coding targets mapped at the genomic layer also get a `cdna` entry whose `mapped_reference_sequence` carries only `sequence_accessions` — the selected coding transcript, or the declared `NM_`/`ENST` accession. `computed_reference_sequence` is the in-pipeline sequence (e.g. translated protein); `mapped_reference_sequence` lists the canonical accession(s) the variants were ultimately grounded in. Layers with no usable reference are pruned, not emitted as `null`.
 
 This block is the human-readable "what was used as reference" view; programmatic auditing should use `target_mappings` instead.
 
