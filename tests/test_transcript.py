@@ -1,11 +1,4 @@
-"""Test ``transcripts`` module.
-
-Todo:
-----
-* Get a test case where there are no common transcripts and you have to use the UniProt ref.
-
-
-"""
+"""Test ``transcripts`` module."""
 
 import re
 from collections.abc import Coroutine
@@ -25,6 +18,7 @@ from dcd_mapping.schemas import (
     TargetSequenceType,
     TargetType,
     TxSelectResult,
+    UniProtRef,
 )
 from dcd_mapping.transcripts import (
     TranscriptDescription,
@@ -394,3 +388,42 @@ async def test_tx_tp53(
     actual = await select_transcript(metadata, records, alignment_result)
     assert actual
     check_transcript_results_equality(actual, expected)
+
+
+@pytest.mark.asyncio(scope="module")
+async def test_uniprot_fallback_without_compatible_transcripts(monkeypatch):
+    """With no compatible transcripts, the target is located within its UniProt reference."""
+
+    async def fake_get_compatible(_align_result):
+        return set()
+
+    monkeypatch.setattr(
+        "dcd_mapping.transcripts._get_compatible_transcripts", fake_get_compatible
+    )
+    monkeypatch.setattr(
+        "dcd_mapping.transcripts.get_uniprot_sequence", lambda _id: "MAMKTFFVQQ"
+    )
+
+    target_gene = TargetGene(
+        target_gene_name="Dummy",
+        target_gene_category=TargetType.PROTEIN_CODING,
+        target_sequence="MKTFFV",
+        target_sequence_type=TargetSequenceType.PROTEIN,
+        target_uniprot_ref=UniProtRef(id="uniprot:P00000", offset=0),
+    )
+    align_result = AlignmentResult(
+        chrom="chr1",
+        strand=1,
+        coverage=None,
+        percent_identity=None,
+        query_range=SequenceRange(start=1, end=6),
+        query_subranges=[SequenceRange(start=1, end=6)],
+        hit_range=SequenceRange(start=1, end=6),
+        hit_subranges=[SequenceRange(start=1, end=6)],
+    )
+
+    tx = await _select_protein_reference(target_gene, align_result)
+    assert tx.np == "uniprot:P00000"
+    assert tx.nm is None
+    assert tx.start == 2
+    assert tx.is_full_match

@@ -228,14 +228,15 @@ async def _select_protein_reference(
         if best_tx:
             per_gene_best.append(best_tx)
 
+    # Both the transcript and UniProt paths locate the target's protein within a reference.
+    if not target_gene.target_sequence:
+        msg = f"Unable to find target sequence for target gene {target_gene.target_gene_name}"
+        raise TxSelectError(msg)
+    protein_sequence = _get_protein_sequence(target_gene.target_sequence)
+
     # If we found any per-gene best candidates, Step 2: choose the most similar among them and
     # select it.
     if per_gene_best:
-        if not target_gene.target_sequence:
-            msg = f"Unable to find target sequence for target gene {target_gene.target_gene_name}"
-            raise TxSelectError(msg)
-
-        protein_sequence = _get_protein_sequence(target_gene.target_sequence)
         best_tx = _choose_most_similar_transcript(protein_sequence, per_gene_best)
 
         # As a fallback, pick the first candidate
