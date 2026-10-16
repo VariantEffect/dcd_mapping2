@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Tests: bin/t [test path or node id] [pytest args]. Only tests/test_mavedb_data.py runs in CI;
+# most other modules need BLAT, SeqRepo or UTA. MAVEDB_BASE_URL matches CI; requests are mocked.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+PY="${PYTHON:-$([ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)}"
+
+export MAVEDB_BASE_URL="${MAVEDB_BASE_URL:-https://api.mavedb.org}"
+exec "$PY" -m pytest "$@"

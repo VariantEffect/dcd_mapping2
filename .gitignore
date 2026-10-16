@@ -173,5 +173,6 @@ urn:*.json
 tmp:*.json
 *_mapping_*.json
 
-# Agent settings
-.claude/
+# Agent settings: personal files stay local; the shared permission rules are committed
+.claude/*
+!.claude/settings.json
