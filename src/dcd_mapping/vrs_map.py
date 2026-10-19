@@ -61,7 +61,7 @@ from dcd_mapping.schemas import (
     VrsMapResult,
 )
 from dcd_mapping.transcripts import TxSelectError
-from dcd_mapping.vrs_utils import identify_allele, normalize_and_identify
+from dcd_mapping.vrs_utils import identify_allele
 
 __all__ = ["vrs_map"]
 
@@ -1545,7 +1545,10 @@ def _construct_vrs_allele(
             else:
                 allele = translate_ref_identical_to_vrs(hgvs_string)
 
-            alleles.append(normalize_and_identify(allele))
+            # Not normalized: VRS normalization trims an unchanged sequence to an empty
+            # alternate and writes ``length=0``, which describes deleting the whole sequence.
+            allele.id = identify_allele(allele)
+            alleles.append(allele)
             continue
 
         allele = translate_hgvs_to_vrs(hgvs_string)

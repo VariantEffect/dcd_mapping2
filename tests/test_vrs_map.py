@@ -12,7 +12,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from cdot.hgvs.dataproviders import ChainedSeqFetcher
 from cool_seq_tool.schemas import AnnotationLayer
-from ga4gh.vrs._internal.models import Allele, Haplotype
+from ga4gh.vrs._internal.models import (
+    Allele,
+    Haplotype,
+    ReferenceLengthExpression,
+    SequenceLocation,
+    SequenceReference,
+)
 
 from dcd_mapping.annotate import _allele_to_v1_allele
 from dcd_mapping.mavedb_data import _load_scoreset_records
@@ -25,7 +31,7 @@ from dcd_mapping.schemas import (
     TxSelectResult,
 )
 from dcd_mapping.transcripts import TxSelectError
-from dcd_mapping.vrs_map import _map_protein_layer, vrs_map
+from dcd_mapping.vrs_map import _construct_vrs_allele, _map_protein_layer, vrs_map
 
 
 def _assert_correct_vrs_map(
@@ -459,3 +465,45 @@ class TestMapProteinLayerReason:
         )
         assert mapping is None
         assert "could not be aligned" in reason
+
+
+def _whole_sequence_allele(length: int = 648) -> Allele:
+    return Allele(
+        location=SequenceLocation(
+            sequenceReference=SequenceReference(
+                refgetAccession="SQ._YJMuvFaxcDIHC_IXWkSjTtNDx4CIWLU"
+            ),
+            start=0,
+            end=length,
+        ),
+        state=ReferenceLengthExpression(length=length, repeatSubunitLength=length),
+    )
+
+
+@pytest.mark.parametrize("pre_map", [True, False])
+def test_reference_identical_allele_keeps_the_whole_sequence(pre_map):
+    """A ``p.=`` allele must not go through VRS normalization, which rewrites an
+    unchanged sequence as ``length=0``: a deletion of the whole sequence.
+    """
+    with (
+        patch(
+            "dcd_mapping.vrs_map.build_ref_identical_allele",
+            return_value=_whole_sequence_allele(),
+        ),
+        patch(
+            "dcd_mapping.vrs_map.translate_ref_identical_to_vrs",
+            return_value=_whole_sequence_allele(),
+        ),
+        patch("dcd_mapping.vrs_map.normalize") as normalize,
+    ):
+        allele = _construct_vrs_allele(
+            ["NP_002871.1:p.="],
+            AnnotationLayer.PROTEIN,
+            "SQ._YJMuvFaxcDIHC_IXWkSjTtNDx4CIWLU",
+            pre_map=pre_map,
+        )
+
+    normalize.assert_not_called()
+    assert allele.state.length == allele.location.end - allele.location.start == 648
+    # The digest MaveDB's backfilled whole-sequence allele for NP_002871.1:p.= carries.
+    assert allele.id == "ga4gh:VA.JRYlMMc2SCGXI6dQ1yGyONWLkL1wMa4d"
