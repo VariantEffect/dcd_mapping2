@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Fast static checks: lint, format and the schema.json contract. Tests run through bin/t.
+# Runs every check before exiting so one invocation reports all failures.
+# Uses .venv when present (local development), otherwise the python3 on PATH (CI).
+set -uo pipefail
+cd "$(dirname "$0")/.."
+PY="${PYTHON:-$([ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)}"
+
+status=0
+"$PY" -m ruff check . || status=1
+"$PY" -m ruff format --check . || status=1
+"$PY" scripts/generate_schema.py --check || status=1
+exit $status

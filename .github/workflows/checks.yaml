@@ -27,7 +27,7 @@ jobs:
         # only run tests known to work in CI
         run: |
           mkdir -p coverage
-          python3 -m pytest tests/test_mavedb_data.py --cov-report=lcov:coverage/lcov.info
+          bin/t tests/test_mavedb_data.py --cov-report=lcov:coverage/lcov.info
 
       - name: Upload coverage to Coveralls
         uses: coverallsapp/github-action@v2
@@ -46,10 +46,5 @@ jobs:
       - name: Install dependencies
         run: python3 -m pip install ".[dev]"
 
-      - name: Check style
-        run: python3 -m ruff check . && ruff format --check .
-
-      - name: Verify schema.json is up to date
-        run: |
-          python scripts/generate_schema.py
-          git diff --exit-code schema.json
+      - name: Lint, format and schema.json checks
+        run: bin/check
