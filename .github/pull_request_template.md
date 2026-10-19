@@ -5,7 +5,7 @@
 Closes #
 
 <!--
-"Closes #123" links the issue, which moves it to In review now and to Pending release when this merges into `mavedb-dev`.
+"Closes #123" moves the issue to In review now and to Pending release when this merges into `mavedb-dev`.
 It closes when `mavedb-dev` merges into `mavedb-main`. Most issues live in mavedb-api or mavedb-ui, so write them as
 VariantEffect/mavedb-api#123. Delete the line if there's no issue.
 -->
