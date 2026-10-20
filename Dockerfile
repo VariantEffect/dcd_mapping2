@@ -46,6 +46,22 @@ RUN wget -O - https://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_mammalian/H
 RUN samtools faidx GCF_000001405.25_GRCh37.p13_genomic.fna.gz
 RUN samtools faidx GCF_000001405.39_GRCh38.p13_genomic.fna.gz
 
+# Bake in the liftover chain files agct would otherwise download on first use.
+# That download goes through certifi, which can drop roots UCSC's TLS chain
+# relies on (VariantEffect/dcd_mapping2#117); curl uses the system trust store.
+# The paths are what agct's wags-tails lookup expects for unversioned files.
+# Checksums from each directory's md5sum.txt.
+ENV WAGS_TAILS_DIR=/home/.local/share/wags_tails
+RUN mkdir -p $WAGS_TAILS_DIR/ucsc-chainfile && cd $WAGS_TAILS_DIR/ucsc-chainfile && \
+    curl -fLO https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz && \
+    curl -fLO https://hgdownload.soe.ucsc.edu/goldenPath/hg38/liftOver/hg38ToHg19.over.chain.gz && \
+    printf '%s\n' \
+        "35887f73fe5e2231656504d1f6430900  hg19ToHg38.over.chain.gz" \
+        "ff3031d93792f4cbb86af44055efd903  hg38ToHg19.over.chain.gz" | md5sum -c - && \
+    gunzip -c hg19ToHg38.over.chain.gz > chainfile_hg19_to_hg38_.chain && \
+    gunzip -c hg38ToHg19.over.chain.gz > chainfile_hg38_to_hg19_.chain && \
+    rm hg19ToHg38.over.chain.gz hg38ToHg19.over.chain.gz
+
 RUN mkdir /usr/src/app
 WORKDIR /usr/src/app
 COPY . .
@@ -53,6 +69,7 @@ COPY . .
 RUN pip install -e '.[dev,tests]'
 # use polars-lts-cpu to avoid issues with x86 emulation on arm machine
 RUN pip install -U polars-lts-cpu
+RUN python -m pytest -p no:cacheprovider --no-cov tests/test_liftover_chainfiles.py
 # install gene normalizer with pg dependencies. TODO: can the pg dependencies be specified in pyproject.toml?
 #RUN pip install 'gene-normalizer[pg]'
 
