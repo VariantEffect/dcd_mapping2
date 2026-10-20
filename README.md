@@ -165,8 +165,11 @@ Add pre-commit hooks
 pre-commit install
 ```
 
-Run tests with `pytest`
+Run the lint, format and `schema.json` checks with `bin/check`, and tests with `bin/t`, which wraps `pytest`:
 
 ```
-pytest
+bin/check
+bin/t tests/test_mavedb_data.py
 ```
+
+Only `tests/test_mavedb_data.py` runs in CI; most other test modules need BLAT, SeqRepo or UTA. Conventions for contributors and coding agents are in [AGENTS.md](AGENTS.md).

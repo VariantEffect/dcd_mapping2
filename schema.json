@@ -752,7 +752,7 @@
           "title": "Tool Parameters"
         },
         "tool_version": {
-          "default": "2026.3.1",
+          "default": "2026.3.2",
           "title": "Tool Version",
           "type": "string"
         },
