@@ -706,7 +706,7 @@ def _get_blat_output(
         elif target_sequence_type == TargetSequenceType.DNA:
             target_args = ""
         else:
-            # TODO consider implementing support for mixed types
+            # TODO(#125): consider implementing support for mixed types
             msg = "Mapping for score sets with a mix of nucleotide and protein target sequences is not currently supported."
             raise NotImplementedError(msg)
 

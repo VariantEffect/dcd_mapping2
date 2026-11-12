@@ -596,11 +596,7 @@ def _map_genomic(
                 error_message=f"Namespace could not be inferred from sequence: {sequence_id}",
             )
 
-    if (
-        row.hgvs_nt in {"_wt", "_sy", "="}
-        or "fs"
-        in row.hgvs_nt  # TODO I think this line can be taken out, I don't think fs nomenclature can be used for nt anyway
-    ):
+    if row.hgvs_nt in {"_wt", "_sy", "="} or "fs" in row.hgvs_nt:
         _logger.warning(
             "Can't process variant syntax %s for %s", row.hgvs_nt, row.accession
         )
@@ -1379,7 +1375,7 @@ def _map_accession(
             "NP",
             "ENSP",
         )
-    ):  # TODO full list of protein accession id prefixes
+    ):  # TODO(#126): full list of protein accession id prefixes
         for row in records:
             hgvs_pro_mappings = _map_protein_coding_pro(
                 row,
@@ -1401,7 +1397,7 @@ def _map_accession(
             "ENST",
             "NC",
         )
-    ):  # TODO full list of transcript and contig accession id prefixes
+    ):  # TODO(#126): full list of transcript and contig accession id prefixes
         is_genomic_source = metadata.target_accession_id.startswith("NC")
         project_nm = transcript.nm if isinstance(transcript, TxSelectResult) else None
 

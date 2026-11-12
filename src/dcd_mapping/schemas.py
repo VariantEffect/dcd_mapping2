@@ -287,9 +287,7 @@ class ScoreAnnotation(BaseModel):
     """
 
     mavedb_id: StrictStr
-    relation: Literal["SO:is_homologous_to"] = (
-        "SO:is_homologous_to"  # TODO this should probably be None if pre_mapped is false?
-    )
+    relation: Literal["SO:is_homologous_to"] = "SO:is_homologous_to"
     # Identifies which target gene this score belongs to. Required for the API
     # to join mapped_scores → target_mappings unambiguously when a score set has
     # more than one target gene (joining on alignment_level alone is ambiguous in
@@ -370,7 +368,7 @@ class TargetAnnotation(BaseModel):
 class ScoresetMapping(BaseModel):
     """Provide all mapped scores for a scoreset."""
 
-    metadata: Any  # TODO get exact MaveDB metadata structure?
+    metadata: Any
     mapped_date: datetime.datetime | None = None
     reference_sequences: dict[str, TargetAnnotation] | None = None
     mapped_scores: list[ScoreAnnotation] | None = None

@@ -133,8 +133,6 @@ def _choose_best_mane_transcript(
     originally a little longer but I think all we have to worry about is grabbing based
     on MANE status.
 
-    TODO: this shouldn't be necessary anymore, we already sort them
-
     :param mane_transcripts: list of MANE transcript descriptions
     :return: best transcript
     """
@@ -644,7 +642,7 @@ async def select_transcripts(
             ].target_accession_id
             target = scoreset_metadata.target_genes[target_gene]
 
-            # TODO create full list of possible protein accession prefixes
+            # TODO(#126): create full list of possible protein accession prefixes
             if accession_id.startswith(("NP_", "ENSP")):
                 refseq_preferred_tx = None
                 # Non-RefSeq (e.g. Ensembl) protein accession: prefer its RefSeq
@@ -654,7 +652,6 @@ async def select_transcripts(
                         accession_id
                     )
 
-                # TODO make sequence field optional instead of leaving blank here?
                 selected_transcripts[target_gene] = (
                     refseq_preferred_tx
                     or TxSelectResult(

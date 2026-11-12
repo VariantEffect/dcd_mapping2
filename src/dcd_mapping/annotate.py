@@ -231,9 +231,7 @@ async def compute_target_gene_info(
     3. Overlap-based inference from variant spans
     4. Fallback to normalized target metadata symbol
     """
-    # If a target is not coding, we can't select it's gene.
-    # TODO#66: Handle regulatory/non-coding targets more intelligently. Our current method of querying
-    #          Ensembl for overlap isn't robust for these cases.
+    # Regulatory and other non-coding targets have no HGNC symbol, so there's no gene to select.
     if (
         metadata.target_genes[target_key].target_gene_category
         != TargetType.PROTEIN_CODING
@@ -963,8 +961,6 @@ def annotate(
         indicated in the variant
     2. ``hgvs``: An HGVS string describing the variant (only included for post-mapped
         variants)
-    3. ``transcript_accession``: A description of the MANE annotation of the transcript,
-        if any  # < -- TODO I think we took this out
 
     ...and provide VRS 1.3-converted equivalents, too.
 

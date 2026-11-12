@@ -70,9 +70,6 @@ RUN pip install -e '.[dev,tests]'
 # use polars-lts-cpu to avoid issues with x86 emulation on arm machine
 RUN pip install -U polars-lts-cpu
 RUN python -m pytest -p no:cacheprovider --no-cov tests/test_liftover_chainfiles.py
-# install gene normalizer with pg dependencies. TODO: can the pg dependencies be specified in pyproject.toml?
-#RUN pip install 'gene-normalizer[pg]'
-
 # not working, needs to happen after db volume is mounted
 # ENV GENE_NORM_DB_URL=postgres://postgres:postgres@db:5432/gene_normalizer
 # RUN echo "y" | gene_norm_update_remote
