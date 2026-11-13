@@ -22,7 +22,6 @@ from cdot.hgvs.dataproviders import (
     ChainedSeqFetcher,
     FastaSeqFetcher,
     RESTDataProvider,
-    SeqFetcher,
 )
 from cool_seq_tool.app import (
     LRG_REFSEQGENE_PATH,
@@ -56,6 +55,7 @@ from ga4gh.vrs.utils.hgvs_tools import HgvsTools
 from gene.database import create_db
 from gene.query import QueryHandler
 from gene.schemas import MatchType, SourceName
+from hgvs.dataproviders.seqfetcher import SeqFetcher
 from hgvs.exceptions import HGVSDataNotAvailableError
 
 from dcd_mapping.exceptions import (
