@@ -82,6 +82,7 @@ def _make_align(chrom: str = "chr1") -> AlignmentResult:
         hit_range=SequenceRange(start=1000, end=1100),
         hit_subranges=[SequenceRange(start=1000, end=1100)],
         aligner_parameters={"aligner": "blat", "min_score": 20, "out_format": "pslx"},
+        query_sequence_type=TargetSequenceType.DNA,
     )
 
 
@@ -1107,6 +1108,7 @@ def _make_align_result_with_qc(
         hit_range=SequenceRange(start=0, end=1000),
         hit_subranges=[SequenceRange(start=0, end=1000)],
         alignment_qc=qc,
+        query_sequence_type=TargetSequenceType.DNA,
     )
 
 
@@ -1224,6 +1226,7 @@ class TestCdotDataVersionPropagation:
                 "aligner": "cdot_transcript_placement",
                 "cdot_data_version": "0.2.26",
             },
+            query_sequence_type=TargetSequenceType.DNA,
         )
 
         with (

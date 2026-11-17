@@ -302,6 +302,7 @@ async def test_end_to_end_per_gene_then_similarity(monkeypatch):
         query_subranges=[SequenceRange(start=1, end=6)],
         hit_range=SequenceRange(start=1, end=6),
         hit_subranges=[SequenceRange(start=1, end=6)],
+        query_sequence_type=TargetSequenceType.PROTEIN,
     )
 
     tx = await _select_protein_reference(target_gene, align_result)
@@ -420,6 +421,7 @@ async def test_uniprot_fallback_without_compatible_transcripts(monkeypatch):
         query_subranges=[SequenceRange(start=1, end=6)],
         hit_range=SequenceRange(start=1, end=6),
         hit_subranges=[SequenceRange(start=1, end=6)],
+        query_sequence_type=TargetSequenceType.PROTEIN,
     )
 
     tx = await _select_protein_reference(target_gene, align_result)
