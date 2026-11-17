@@ -56,8 +56,8 @@ BLAT_MIN_SCORE = 20
 BLAT_OUT_FORMAT = "pslx"
 # A protein query against the translated genome (-q=prot -t=dnax) is the slowest search, and slower
 # still when several mapping jobs share the host. MaveDB's mapping budget for the whole call must stay
-# above four of these: a mixed score set runs the DNA and protein groups one after the other, a failed
-# DNA parse retries as -q=dnax, and DNA targets that still fail are retried as protein.
+# above three of these: a failed DNA parse retries as -q=dnax, and DNA targets that still fail are
+# retried as protein. A score set mixing DNA and protein targets can need a fourth.
 BLAT_TIMEOUT_SECONDS = int(os.environ.get("BLAT_TIMEOUT_SECONDS", "1200"))
 PROTEIN_BLAT_ARGS = "-q=prot -t=dnax"
 """BLAT mode for a protein query against the translated genome."""
