@@ -359,31 +359,6 @@ def convert_target_to_protein(urn: str, target_label: str, target: TargetGene) -
     target.target_sequence_type = TargetSequenceType.PROTEIN
 
 
-def patch_target_sequence_type(
-    metadata: ScoresetMetadata, records: dict[str, list[ScoreRow]]
-) -> ScoresetMetadata:
-    """Align DNA targets whose variants are all protein-level as protein targets.
-
-    Avoids BLAT failures on targets codon-optimized for a non-human organism. Targets
-    with no variants are left alone: they have nothing to gain from the switch.
-
-    :param metadata: score set metadata, whose converting targets are updated in place
-    :param records: score rows keyed by target label
-    :return: the same metadata
-    """
-    for target_label, target in metadata.target_genes.items():
-        target_records = records.get(target_label, [])
-        if not target_records or any(
-            not is_missing_value(record.hgvs_nt)
-            and record.hgvs_nt not in {"_wt", "_sy", "="}
-            for record in target_records
-        ):
-            continue
-        convert_target_to_protein(metadata.urn, target_label, target)
-
-    return metadata
-
-
 def with_mavedb_score_set(fn: Callable) -> Callable:
     @wraps(fn)
     async def wrapper(*args, **kwargs) -> ScoresetMapping:  # noqa: ANN002
