@@ -1100,11 +1100,15 @@ def _align_targets(
     return results, failures
 
 
+def _failure_reasons(failures: dict[str, AlignmentError]) -> str:
+    """Join the distinct failure messages; one BLAT error is often shared by many targets."""
+    return "; ".join(dict.fromkeys(str(e) for e in failures.values()))
+
+
 def _raise_for_failures(failures: dict[str, AlignmentError], context: str = "") -> None:
     if not failures:
         return
-    messages = "; ".join(dict.fromkeys(str(e) for e in failures.values()))
-    msg = f"{context}{messages}"
+    msg = f"{context}{_failure_reasons(failures)}"
     raise AlignmentError(msg) from next(iter(failures.values()))
 
 
@@ -1144,9 +1148,10 @@ def _align_with_protein_fallback(
     _raise_for_failures(unconvertible)
 
     _logger.warning(
-        "BLAT alignment failed for %s target(s) %s at the nucleotide level. They will be retried at the protein level.",
+        "BLAT alignment failed for %s target(s) %s at the nucleotide level (%s). They will be retried at the protein level.",
         metadata.urn,
         list(failures),
+        _failure_reasons(failures),
     )
     for label in failures:
         convert_target_to_protein(metadata.urn, label, metadata.target_genes[label])

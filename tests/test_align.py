@@ -657,6 +657,21 @@ def test_nucleotide_failure_realigns_only_the_failed_target_as_protein():
     assert lmna.target_sequence == "ATGGAGACC"
 
 
+def test_nucleotide_failure_logs_why_before_retrying(caplog):
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000639-0-1",
+        target_genes={
+            "ABLIM2": _seq_target("ABLIM2", _ABLIM2_DNA, TargetSequenceType.DNA),
+        },
+    )
+    blat = _FakeBlat(unaligned={"ABLIM2": {""}})
+
+    with caplog.at_level(logging.WARNING, logger="dcd_mapping.align"):
+        _run_alignment(metadata, blat)
+
+    assert "BLAT produced no alignments for urn:mavedb:00000639-0-1" in caplog.text
+
+
 def test_protein_retry_failure_raises():
     metadata = ScoresetMetadata(
         urn="urn:mavedb:00000639-0-1",
