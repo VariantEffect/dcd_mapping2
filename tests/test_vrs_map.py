@@ -543,6 +543,7 @@ class TestProteinOnlyAlignment:
             SequenceRange(start=7966992, end=7967103),
         ],
         aligner_parameters={"aligner": "blat", "target_args": "-q=prot -t=dnax"},
+        query_sequence_type=TargetSequenceType.PROTEIN,
     )
     transcript = TxSelectResult(
         nm="NM_032432.6",

@@ -24,6 +24,7 @@ from dcd_mapping.align import (
     _build_alignment_qc,
     _compact_alignment_string,
     _get_best_hsp,
+    _get_blat_output,
     _run_blat,
     align,
     build_alignment_result,
@@ -416,48 +417,36 @@ def test_align_tp53(scoreset_metadata_fixture, align_result_fixture):
     check_alignment_result_equality(align_result, expected)
 
 
-def test_align_raises_on_ambiguous_blat_id():
-    """align() must raise AlignmentError when a BLAT result ID matches more than one
-    target gene name after stripping whitespace and punctuation.
-
-    Regression guard for the silent-pass bug where ``matches > 1`` constructed
-    an error message but never raised it.
+def test_get_blat_output_keys_alignments_by_target_label(tmp_path):
+    """BLAT cuts query names at whitespace, so targets are sent under plain IDs and
+    their alignments come back under the original labels.
     """
-    # Two gene names that both normalise to the same BLAT identifier "GENE".
-    # "GENE (isoform1)" -> split()[0].replace("(","").replace(")","") -> "GENE"
-    # "GENE (isoform2)" -> same result -> ambiguous.
     metadata = ScoresetMetadata(
         urn="urn:mavedb:00000001-a-1",
         target_genes={
-            "GENE (isoform1)": TargetGene(
-                target_gene_name="GENE (isoform1)",
-                target_gene_category=TargetType.PROTEIN_CODING,
-                target_sequence="ACGT",
-                target_sequence_type="dna",
-                target_accession_id=None,
-            ),
-            "GENE (isoform2)": TargetGene(
-                target_gene_name="GENE (isoform2)",
-                target_gene_category=TargetType.PROTEIN_CODING,
-                target_sequence="ACGT",
-                target_sequence_type="dna",
-                target_accession_id=None,
-            ),
+            "GENE (isoform1)": _seq_target("GENE (isoform1)", "ACGT", "dna"),
+            "GENE (isoform2)": _seq_target("GENE (isoform2)", "TGCA", "dna"),
         },
     )
-    # _get_blat_output returns a grouped dict keyed by the shortened BLAT id.
-    # We fake a single hit for the shared prefix so the disambiguation loop runs.
-    fake_grouped = {"GENE": []}
-    fake_params = {"aligner": "blat"}
+    written: list[str] = []
 
     with (
         patch(
-            "dcd_mapping.align._get_blat_output",
-            return_value=(fake_grouped, fake_params),
+            "dcd_mapping.align._write_query_file",
+            side_effect=lambda _, lines: written.extend(lines),
         ),
-        pytest.raises(AlignmentError, match="matches multiple target gene names"),
+        patch("dcd_mapping.align.get_ref_genome_file", return_value=tmp_path),
+        patch("dcd_mapping.align._run_blat", return_value=(None, {"aligner": "blat"})),
+        patch("dcd_mapping.align._write_blat_output_tempfile"),
+        patch(
+            "dcd_mapping.align._group_alignments_by_query",
+            return_value={"target1": ["hit1"], "target0": ["hit0"]},
+        ),
     ):
-        align(metadata)
+        grouped, _ = _get_blat_output(metadata, "", silent=True)
+
+    assert written == [">target0", "ACGT", ">target1", "TGCA"]
+    assert grouped == {"GENE (isoform2)": ["hit1"], "GENE (isoform1)": ["hit0"]}
 
 
 def test_run_blat_stops_after_the_configured_timeout(tmp_path):
@@ -575,6 +564,7 @@ def _fake_best_match(alignments, target_gene, seq_len, blat_params):
         hit_range=SequenceRange(start=100, end=100 + seq_len),
         hit_subranges=[SequenceRange(start=100, end=100 + seq_len)],
         aligner_parameters=blat_params,
+        query_sequence_type=target_gene.target_sequence_type,
     )
 
 

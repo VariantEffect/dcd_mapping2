@@ -25,7 +25,7 @@ from ga4gh.vrs.normalize import normalize
 from mavehgvs.util import parse_variant_strings
 from mavehgvs.variant import Variant
 
-from dcd_mapping.align import align_target_to_protein, is_protein_query_alignment
+from dcd_mapping.align import align_target_to_protein
 from dcd_mapping.exceptions import (
     MissingSequenceIdError,
     ReferenceSequenceNotFoundError,
@@ -86,6 +86,9 @@ class ProjectionOutcome(StrEnum):
 
 _PROJECTION_FAILURE_WARN_FRACTION = 0.25
 """Projection-failure fraction above which the per-target summary logs at WARNING, not INFO."""
+
+PROTEIN_ONLY_ALIGNMENT_ERROR = "Nucleotide variant can't be mapped because its target aligned to the genome at the protein level only"
+"""Failure for a nucleotide-only row on a target that aligned to the genome as protein."""
 
 
 def _hgvs_variant_is_valid(hgvs_string: str) -> bool:
@@ -881,7 +884,11 @@ def _hgvs_pro_is_valid(hgvs_pro: str) -> bool:
     )
 
 
-PROTEIN_ONLY_ALIGNMENT_ERROR = "Nucleotide variant can't be mapped because its target aligned to the genome at the protein level only"
+def _aligned_as_protein(align_result: AlignmentResult | None) -> bool:
+    return (
+        align_result is not None
+        and align_result.query_sequence_type == TargetSequenceType.PROTEIN
+    )
 
 
 def _failed_score(row: ScoreRow, error_message: str) -> MappedScore:
@@ -980,7 +987,7 @@ def _map_protein_coding(
 
     # Query blocks of a protein-level alignment count amino acids, so nucleotide
     # positions can't be placed on the genome through it.
-    protein_only = is_protein_query_alignment(align_result)
+    protein_only = _aligned_as_protein(align_result)
 
     variations: list[MappedScore] = []
     for row in records:
@@ -1049,7 +1056,7 @@ def _map_regulatory_noncoding(
     :param align_result: An AlignmentResult object for a score set
     :return: A list of VRS mappings
     """
-    if is_protein_query_alignment(align_result):
+    if _aligned_as_protein(align_result):
         return [_failed_score(row, PROTEIN_ONLY_ALIGNMENT_ERROR) for row in records]
 
     variations: list[MappedScore] = []

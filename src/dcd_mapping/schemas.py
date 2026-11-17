@@ -220,6 +220,8 @@ class AlignmentResult(BaseModel):
     # Human reference genome assembly used for this alignment (e.g. "GRCh38").
     # None for alignments that have no genomic coordinate frame (protein-vs-protein).
     reference_assembly: StrictStr | None = None
+    # Whether query coordinates count nucleotides (DNA) or amino acids (PROTEIN).
+    query_sequence_type: TargetSequenceType | None = None
 
 
 class TranscriptDescription(BaseModel):
