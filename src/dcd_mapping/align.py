@@ -1140,6 +1140,8 @@ def _align_with_protein_fallback(
 ) -> dict[str, AlignmentResult]:
     """Align each target, re-aligning DNA targets that fail as protein.
 
+    DNA targets are aligned as DNA first even when all their variants are protein-level,
+    since a nucleotide alignment is more precise; protein is only the fallback.
     Only the failed targets are converted, in place; the rest keep their alignments.
 
     :raise AlignmentError: if a failed target can't be converted, or fails again as protein
