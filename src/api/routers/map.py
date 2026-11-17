@@ -58,7 +58,7 @@ async def map_scoreset(urn: str, store_path: Path | None = None) -> JSONResponse
         raw_metadata = get_raw_scoreset_metadata(urn, store_path)
         metadata = get_scoreset_metadata(urn, store_path)
         records = get_scoreset_records(metadata, True, store_path)
-        metadata = patch_target_sequence_type(metadata, records, force=False)
+        metadata = patch_target_sequence_type(metadata, records)
     except ScoresetNotSupportedError as e:
         _logger.error("Scoreset not supported for %s: %s", urn, e)
         return JSONResponse(

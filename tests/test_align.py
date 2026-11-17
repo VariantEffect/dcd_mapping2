@@ -19,20 +19,24 @@ from Bio.SeqRecord import SeqRecord
 
 from dcd_mapping.align import (
     BLAT_TIMEOUT_SECONDS,
+    PROTEIN_BLAT_ARGS,
     _blat_score,
     _build_alignment_qc,
     _compact_alignment_string,
     _get_best_hsp,
     _run_blat,
     align,
+    build_alignment_result,
 )
-from dcd_mapping.exceptions import AlignmentError
+from dcd_mapping.exceptions import AlignmentError, BlatNotFoundError
 from dcd_mapping.schemas import (
     AlignmentQc,
     AlignmentResult,
     GeneLocation,
     ScoresetMetadata,
+    SequenceRange,
     TargetGene,
+    TargetSequenceType,
     TargetType,
 )
 
@@ -521,3 +525,185 @@ def test_get_best_hsp_does_not_warn_when_the_proximity_pick_aligns_most(caplog):
         )
 
     assert "HSP chosen by proximity" not in caplog.text
+
+
+# ABLIM2 (R14S;R16S), the codon-optimized target of urn:mavedb:00000639-0-1. It has no
+# nucleotide-level BLAT hit.
+_ABLIM2_DNA = (
+    "TACAAAATCTACCCGTACGACTCTCTGATCGTTACCAACTCTATCTCTGTGAAACTGCCGAAAGACGTTGACCGTACC"
+    "CGTCTGGAACGTCACCTGTCTCCGGAAGAATTCCAGGAAGTTTTCGGTATGTCTATTGAGGAATTCGACCGCCTGGCG"
+    "CTCTGGAAGCGTAACGACCTGAAGAAAAAGGCGCTCCTGTTC"
+)
+
+
+def _seq_target(name: str, sequence: str, sequence_type: str) -> TargetGene:
+    return TargetGene(
+        target_gene_name=name,
+        target_gene_category=TargetType.PROTEIN_CODING,
+        target_sequence=sequence,
+        target_sequence_type=sequence_type,
+    )
+
+
+class _FakeBlat:
+    """Stands in for ``_get_blat_output``: one hit per target, except ``unaligned``
+    targets in the modes listed for them.
+    """
+
+    def __init__(self, unaligned: dict[str, set[str]] | None = None):
+        self.unaligned = unaligned or {}
+        self.calls: list[tuple[str, dict[str, TargetGene]]] = []
+
+    def __call__(self, metadata, target_args, silent):
+        self.calls.append((target_args, dict(metadata.target_genes)))
+        grouped = {
+            label: [label]
+            for label in metadata.target_genes
+            if target_args not in self.unaligned.get(label, set())
+        }
+        if not grouped:
+            msg = f"BLAT produced no alignments for {metadata.urn}"
+            raise AlignmentError(msg)
+        return grouped, {"aligner": "blat", "target_args": target_args}
+
+
+def _fake_best_match(alignments, target_gene, seq_len, blat_params):
+    return AlignmentResult(
+        chrom="chr4",
+        query_range=SequenceRange(start=0, end=seq_len),
+        query_subranges=[SequenceRange(start=0, end=seq_len)],
+        hit_range=SequenceRange(start=100, end=100 + seq_len),
+        hit_subranges=[SequenceRange(start=100, end=100 + seq_len)],
+        aligner_parameters=blat_params,
+    )
+
+
+def _run_alignment(metadata: ScoresetMetadata, blat: _FakeBlat):
+    with (
+        patch("dcd_mapping.align._get_blat_output", side_effect=blat),
+        patch("dcd_mapping.align._get_best_match", side_effect=_fake_best_match),
+    ):
+        return build_alignment_result(metadata, silent=True)
+
+
+def _modes(results: dict[str, AlignmentResult]) -> dict[str, str]:
+    return {
+        label: result.aligner_parameters["target_args"]
+        for label, result in results.items()
+    }
+
+
+def test_align_runs_each_sequence_type_in_its_own_mode():
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000001-a-1",
+        target_genes={
+            "DNA1": _seq_target("DNA1", "ATGGCCAAA", TargetSequenceType.DNA),
+            "PROT1": _seq_target("PROT1", "MAKLV", TargetSequenceType.PROTEIN),
+            "DNA2": _seq_target("DNA2", "ATGAAAGCC", TargetSequenceType.DNA),
+        },
+    )
+    blat = _FakeBlat()
+
+    results = _run_alignment(metadata, blat)
+
+    assert _modes(results) == {
+        "DNA1": "",
+        "PROT1": PROTEIN_BLAT_ARGS,
+        "DNA2": "",
+    }
+    assert sorted((args, sorted(targets)) for args, targets in blat.calls) == [
+        ("", ["DNA1", "DNA2"]),
+        (PROTEIN_BLAT_ARGS, ["PROT1"]),
+    ]
+
+
+def test_align_keeps_every_target_of_a_multi_target_dna_score_set_as_dna():
+    # Modeled on urn:mavedb:00001237-a-1: 28 human ORFs, all aligning as DNA.
+    names = ["PTPN11", "KRAS", "NF2", "MSH2", "LMNA", "CCM2"]
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00001237-a-1",
+        target_genes={
+            name: _seq_target(name, "ATGGAGACC", TargetSequenceType.DNA)
+            for name in names
+        },
+    )
+    blat = _FakeBlat()
+
+    results = _run_alignment(metadata, blat)
+
+    assert _modes(results) == dict.fromkeys(names, "")
+    assert len(blat.calls) == 1
+    assert {t.target_sequence_type for t in metadata.target_genes.values()} == {
+        TargetSequenceType.DNA
+    }
+
+
+def test_nucleotide_failure_realigns_only_the_failed_target_as_protein():
+    # Modeled on urn:mavedb:00000639-0-1, with a second target that aligns as DNA.
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000639-0-1",
+        target_genes={
+            "ABLIM2 (R14S;R16S)": _seq_target(
+                "ABLIM2 (R14S;R16S)", _ABLIM2_DNA, TargetSequenceType.DNA
+            ),
+            "LMNA": _seq_target("LMNA", "ATGGAGACC", TargetSequenceType.DNA),
+        },
+    )
+    blat = _FakeBlat(unaligned={"ABLIM2 (R14S;R16S)": {""}})
+
+    results = _run_alignment(metadata, blat)
+
+    assert _modes(results) == {"ABLIM2 (R14S;R16S)": PROTEIN_BLAT_ARGS, "LMNA": ""}
+    assert [(args, sorted(targets)) for args, targets in blat.calls] == [
+        ("", ["ABLIM2 (R14S;R16S)", "LMNA"]),
+        (PROTEIN_BLAT_ARGS, ["ABLIM2 (R14S;R16S)"]),
+    ]
+    ablim2 = metadata.target_genes["ABLIM2 (R14S;R16S)"]
+    assert ablim2.target_sequence_type == TargetSequenceType.PROTEIN
+    assert ablim2.target_sequence.startswith("YKIYPYDSLIVTNSISVKLPKDVDRTRLERHLSPEEFQ")
+    lmna = metadata.target_genes["LMNA"]
+    assert lmna.target_sequence_type == TargetSequenceType.DNA
+    assert lmna.target_sequence == "ATGGAGACC"
+
+
+def test_protein_retry_failure_raises():
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000639-0-1",
+        target_genes={
+            "ABLIM2": _seq_target("ABLIM2", _ABLIM2_DNA, TargetSequenceType.DNA),
+        },
+    )
+    blat = _FakeBlat(unaligned={"ABLIM2": {"", PROTEIN_BLAT_ARGS}})
+
+    with pytest.raises(AlignmentError, match="at the protein level after failing"):
+        _run_alignment(metadata, blat)
+
+
+def test_failed_protein_target_is_not_retried():
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000001-a-1",
+        target_genes={
+            "PROT1": _seq_target("PROT1", "MAKLV", TargetSequenceType.PROTEIN),
+        },
+    )
+    blat = _FakeBlat(unaligned={"PROT1": {PROTEIN_BLAT_ARGS}})
+
+    with pytest.raises(AlignmentError, match="BLAT produced no alignments"):
+        _run_alignment(metadata, blat)
+    assert len(blat.calls) == 1
+
+
+def test_missing_blat_is_not_treated_as_an_alignment_failure():
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000001-a-1",
+        target_genes={
+            "DNA1": _seq_target("DNA1", "ATGGCCAAA", TargetSequenceType.DNA),
+        },
+    )
+
+    with (
+        patch("dcd_mapping.align._get_blat_output", side_effect=BlatNotFoundError),
+        pytest.raises(BlatNotFoundError),
+    ):
+        build_alignment_result(metadata, silent=True)
+    assert metadata.target_genes["DNA1"].target_sequence_type == TargetSequenceType.DNA

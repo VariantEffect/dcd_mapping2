@@ -1187,7 +1187,9 @@ def _pick_preferred_layer(
     reachable by alignment: genomic -- the universal anchor -- when the genome alignment
     succeeded (the common case, hence the reachability check against ``mappings``), else
     protein (e.g. a construct that does not place on the genome but aligns to a reference
-    protein). This is why ``mappings`` is consulted only here, never for accessions.
+    protein). This is why ``mappings`` is consulted only here, never for accessions. A
+    protein-sequence target is aligned at the protein level only, so it never has a
+    genomic frame.
     """
     accession = target_meta.target_accession_id
     if accession is not None:
@@ -1197,6 +1199,9 @@ def _pick_preferred_layer(
             return AnnotationLayer.CDNA
         if accession.startswith("NC"):
             return AnnotationLayer.GENOMIC
+
+    if target_meta.target_sequence_type == TargetSequenceType.PROTEIN:
+        return AnnotationLayer.PROTEIN
 
     # Sequence-based: prefer the genomic anchor when it was reachable, else protein.
     for mapping in mappings:

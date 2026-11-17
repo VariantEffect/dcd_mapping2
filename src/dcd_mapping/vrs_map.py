@@ -25,7 +25,7 @@ from ga4gh.vrs.normalize import normalize
 from mavehgvs.util import parse_variant_strings
 from mavehgvs.variant import Variant
 
-from dcd_mapping.align import align_target_to_protein
+from dcd_mapping.align import align_target_to_protein, is_protein_query_alignment
 from dcd_mapping.exceptions import (
     MissingSequenceIdError,
     ReferenceSequenceNotFoundError,
@@ -881,6 +881,9 @@ def _hgvs_pro_is_valid(hgvs_pro: str) -> bool:
     )
 
 
+PROTEIN_ONLY_ALIGNMENT_ERROR = "Nucleotide variant can't be mapped because its target aligned to the genome at the protein level only"
+
+
 def _failed_score(row: ScoreRow, error_message: str) -> MappedScore:
     """Build a bare failed mapping for a row -- no layer, no allele, just the error."""
     return MappedScore(
@@ -975,12 +978,16 @@ def _map_protein_coding(
     project_nm = transcript.nm if isinstance(transcript, TxSelectResult) else None
     projection_outcomes: list[ProjectionOutcome] = []
 
+    # Query blocks of a protein-level alignment count amino acids, so nucleotide
+    # positions can't be placed on the genome through it.
+    protein_only = is_protein_query_alignment(align_result)
+
     variations: list[MappedScore] = []
     for row in records:
         # Nucleotide (genomic) layer, plus its deterministic projected layers.
         nt_mapping = None
         projected: list[MappedScore] = []
-        if _hgvs_nt_is_valid(row.hgvs_nt):
+        if _hgvs_nt_is_valid(row.hgvs_nt) and not protein_only:
             nt_mapping = _map_genomic(row, gsequence_id, align_result)
             if project_nm and align_result is not None:
                 projected, outcome = _construct_projected_layers(
@@ -1004,6 +1011,12 @@ def _map_protein_coding(
         # layer. Projections don't count toward "the row mapped" -- they're derived from
         # the measured nt variant, so they're added only alongside a real mapping.
         row_records = [m for m in (pro_mapping, nt_mapping) if m]
+        if (
+            protein_only
+            and _hgvs_nt_is_valid(row.hgvs_nt)
+            and not _hgvs_pro_is_valid(row.hgvs_pro)
+        ):
+            unmappable_reason = PROTEIN_ONLY_ALIGNMENT_ERROR
         if not row_records:
             row_records = [
                 _failed_score(
@@ -1036,6 +1049,9 @@ def _map_regulatory_noncoding(
     :param align_result: An AlignmentResult object for a score set
     :return: A list of VRS mappings
     """
+    if is_protein_query_alignment(align_result):
+        return [_failed_score(row, PROTEIN_ONLY_ALIGNMENT_ERROR) for row in records]
+
     variations: list[MappedScore] = []
     sequence_id = store_sequence(metadata.target_sequence)
 

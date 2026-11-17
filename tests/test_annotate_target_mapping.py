@@ -342,6 +342,16 @@ class TestPickPreferredLayer:
         ]
         assert _pick_preferred_layer(target, mappings) == AnnotationLayer.GENOMIC
 
+    def test_protein_sequence_target_is_protein(self):
+        target = _make_seq_target()
+        target.target_sequence = "MHA"
+        target.target_sequence_type = TargetSequenceType.PROTEIN
+        mappings = [
+            _make_annotation(AnnotationLayer.GENOMIC),
+            _make_annotation(AnnotationLayer.PROTEIN),
+        ]
+        assert _pick_preferred_layer(target, mappings) == AnnotationLayer.PROTEIN
+
     def test_sequence_based_protein_when_no_genomic_mapping(self):
         target = _make_seq_target()
         mappings = [_make_annotation(AnnotationLayer.PROTEIN)]

@@ -9,7 +9,18 @@ import httpx
 import pytest
 import respx
 
-from dcd_mapping.mavedb_data import get_scoreset_metadata, get_scoreset_records
+from dcd_mapping.mavedb_data import (
+    get_scoreset_metadata,
+    get_scoreset_records,
+    patch_target_sequence_type,
+)
+from dcd_mapping.schemas import (
+    ScoreRow,
+    ScoresetMetadata,
+    TargetGene,
+    TargetSequenceType,
+    TargetType,
+)
 
 
 @pytest.fixture
@@ -110,3 +121,99 @@ def test_get_scoreset_records(
         assert (
             len(scoreset_records["BRCA1 translation start through RING domain"]) == 853
         )
+
+
+def _dna_target(name: str, sequence: str = "ATGGCCAAATAA") -> TargetGene:
+    return TargetGene(
+        target_gene_name=name,
+        target_gene_category=TargetType.PROTEIN_CODING,
+        target_sequence=sequence,
+        target_sequence_type=TargetSequenceType.DNA,
+    )
+
+
+def _row(hgvs_nt: str = "NA", hgvs_pro: str = "NA") -> ScoreRow:
+    return ScoreRow(
+        hgvs_nt=hgvs_nt, hgvs_pro=hgvs_pro, score="1.0", accession="urn:x#1"
+    )
+
+
+# The targets of urn:mavedb:00001237-a-1, in order. Every variant is an n. variant;
+# PTPN11, KRAS, NF2 and MSH2 have none.
+_ORF_TARGETS = [
+    "PTPN11",
+    "KRAS",
+    "NF2",
+    "BCL10",
+    "MSH2",
+    "RHO",
+    "BRAF",
+    "FH",
+    "CTCF",
+    "RPS19",
+    "SOS2",
+    "LMNA",
+    "RET",
+    "F9",
+    "RAD51D",
+    "SHOC2",
+    "SDHD",
+    "ZC4H2",
+    "CCM2",
+    "FLCN",
+    "FANCC",
+    "BRIP1",
+    "G6PD",
+    "BAP1",
+    "BRCA1",
+    "ABCD1",
+    "RAF1",
+    "FARS2",
+]
+_TARGETS_WITHOUT_VARIANTS = {"PTPN11", "KRAS", "NF2", "MSH2"}
+
+
+def test_patch_target_sequence_type_ignores_targets_without_variants():
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00001237-a-1",
+        target_genes={name: _dna_target(name) for name in _ORF_TARGETS},
+    )
+    records = {
+        name: [_row(hgvs_nt=f"{name}:n.4G>A")]
+        for name in _ORF_TARGETS
+        if name not in _TARGETS_WITHOUT_VARIANTS
+    }
+
+    patch_target_sequence_type(metadata, records)
+
+    assert {t.target_sequence_type for t in metadata.target_genes.values()} == {
+        TargetSequenceType.DNA
+    }
+    assert {t.target_sequence for t in metadata.target_genes.values()} == {
+        "ATGGCCAAATAA"
+    }
+
+
+def test_patch_target_sequence_type_converts_only_targets_without_nucleotide_variants():
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000001-a-1",
+        target_genes={
+            "PRO": _dna_target("PRO"),
+            "NT": _dna_target("NT"),
+            "EMPTY": _dna_target("EMPTY"),
+        },
+    )
+    records = {
+        "PRO": [_row(hgvs_pro="PRO:p.Ala2Val"), _row(hgvs_pro="PRO:p.Lys3Arg")],
+        "NT": [_row(hgvs_nt="NT:c.4G>A", hgvs_pro="NT:p.Ala2Thr")],
+    }
+
+    patch_target_sequence_type(metadata, records)
+
+    converted = metadata.target_genes["PRO"]
+    assert converted.target_sequence_type == TargetSequenceType.PROTEIN
+    assert converted.target_sequence == "MAK"
+    for label in ("NT", "EMPTY"):
+        target = metadata.target_genes[label]
+        assert target.target_sequence_type == TargetSequenceType.DNA
+        assert target.target_sequence == "ATGGCCAAATAA"
