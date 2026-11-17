@@ -73,6 +73,7 @@ def make_align(hit_intervals):
         query_subranges=[SequenceRange(start=1, end=10)],
         hit_range=SequenceRange(start=1, end=10),
         hit_subranges=[SequenceRange(start=s, end=e) for s, e in hit_intervals],
+        query_sequence_type=TargetSequenceType.DNA,
     )
 
 
@@ -340,6 +341,7 @@ def _make_align_result_with_qc(**qc_kwargs) -> "AlignmentResult":
         hit_range=SequenceRange(start=0, end=100),
         hit_subranges=[SequenceRange(start=0, end=100)],
         alignment_qc=qc,
+        query_sequence_type=TargetSequenceType.DNA,
     )
 
 
@@ -454,6 +456,7 @@ def _make_genomic_align(chrom: str = "NC_000017.11") -> AlignmentResult:
         query_subranges=[SequenceRange(start=1, end=10)],
         hit_range=SequenceRange(start=1, end=10),
         hit_subranges=[SequenceRange(start=1, end=10)],
+        query_sequence_type=TargetSequenceType.DNA,
     )
 
 

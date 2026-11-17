@@ -9,7 +9,16 @@ import httpx
 import pytest
 import respx
 
-from dcd_mapping.mavedb_data import get_scoreset_metadata, get_scoreset_records
+from dcd_mapping.mavedb_data import (
+    convert_target_to_protein,
+    get_scoreset_metadata,
+    get_scoreset_records,
+)
+from dcd_mapping.schemas import (
+    TargetGene,
+    TargetSequenceType,
+    TargetType,
+)
 
 
 @pytest.fixture
@@ -110,3 +119,32 @@ def test_get_scoreset_records(
         assert (
             len(scoreset_records["BRCA1 translation start through RING domain"]) == 853
         )
+
+
+def _dna_target(
+    name: str, category: TargetType = TargetType.PROTEIN_CODING
+) -> TargetGene:
+    return TargetGene(
+        target_gene_name=name,
+        target_gene_category=category,
+        target_sequence="ATGGCCAAATAA",
+        target_sequence_type=TargetSequenceType.DNA,
+    )
+
+
+def test_convert_target_to_protein_translates_a_coding_dna_target():
+    target = _dna_target("ABLIM2")
+
+    convert_target_to_protein("urn:mavedb:00000639-0-1", "ABLIM2", target)
+
+    assert target.target_sequence_type == TargetSequenceType.PROTEIN
+    assert target.target_sequence == "MAK"
+
+
+def test_convert_target_to_protein_leaves_a_noncoding_target_alone():
+    target = _dna_target("HBB promoter", TargetType.REGULATORY)
+
+    convert_target_to_protein("urn:mavedb:00000018-a-1", "HBB promoter", target)
+
+    assert target.target_sequence_type == TargetSequenceType.DNA
+    assert target.target_sequence == "ATGGCCAAATAA"

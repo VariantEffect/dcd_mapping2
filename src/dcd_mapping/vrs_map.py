@@ -87,6 +87,12 @@ class ProjectionOutcome(StrEnum):
 _PROJECTION_FAILURE_WARN_FRACTION = 0.25
 """Projection-failure fraction above which the per-target summary logs at WARNING, not INFO."""
 
+PROTEIN_ONLY_ALIGNMENT_ERROR = "Nucleotide variant can't be mapped because its target aligned to the genome at the protein level only"
+"""Failure for a nucleotide-only row on a target that aligned to the genome as protein."""
+
+NO_TRANSCRIPT_PROTEIN_ERROR = "Protein variant can't be mapped because its target has no selected protein-coding transcript"
+"""Failure for a protein row on a protein-aligned target that reached the noncoding path."""
+
 
 def _hgvs_variant_is_valid(hgvs_string: str) -> bool:
     return not hgvs_string.endswith((".=", ")", "X"))
@@ -881,6 +887,13 @@ def _hgvs_pro_is_valid(hgvs_pro: str) -> bool:
     )
 
 
+def _aligned_as_protein(align_result: AlignmentResult | None) -> bool:
+    return (
+        align_result is not None
+        and align_result.query_sequence_type == TargetSequenceType.PROTEIN
+    )
+
+
 def _failed_score(row: ScoreRow, error_message: str) -> MappedScore:
     """Build a bare failed mapping for a row -- no layer, no allele, just the error."""
     return MappedScore(
@@ -975,12 +988,16 @@ def _map_protein_coding(
     project_nm = transcript.nm if isinstance(transcript, TxSelectResult) else None
     projection_outcomes: list[ProjectionOutcome] = []
 
+    # Query blocks of a protein-level alignment count amino acids, so nucleotide
+    # positions can't be placed on the genome through it.
+    protein_only = _aligned_as_protein(align_result)
+
     variations: list[MappedScore] = []
     for row in records:
         # Nucleotide (genomic) layer, plus its deterministic projected layers.
         nt_mapping = None
         projected: list[MappedScore] = []
-        if _hgvs_nt_is_valid(row.hgvs_nt):
+        if _hgvs_nt_is_valid(row.hgvs_nt) and not protein_only:
             nt_mapping = _map_genomic(row, gsequence_id, align_result)
             if project_nm and align_result is not None:
                 projected, outcome = _construct_projected_layers(
@@ -1004,6 +1021,12 @@ def _map_protein_coding(
         # layer. Projections don't count toward "the row mapped" -- they're derived from
         # the measured nt variant, so they're added only alongside a real mapping.
         row_records = [m for m in (pro_mapping, nt_mapping) if m]
+        if (
+            protein_only
+            and _hgvs_nt_is_valid(row.hgvs_nt)
+            and not _hgvs_pro_is_valid(row.hgvs_pro)
+        ):
+            unmappable_reason = PROTEIN_ONLY_ALIGNMENT_ERROR
         if not row_records:
             row_records = [
                 _failed_score(
@@ -1036,6 +1059,17 @@ def _map_regulatory_noncoding(
     :param align_result: An AlignmentResult object for a score set
     :return: A list of VRS mappings
     """
+    if _aligned_as_protein(align_result):
+        return [
+            _failed_score(
+                row,
+                PROTEIN_ONLY_ALIGNMENT_ERROR
+                if _hgvs_nt_is_valid(row.hgvs_nt)
+                else NO_TRANSCRIPT_PROTEIN_ERROR,
+            )
+            for row in records
+        ]
+
     variations: list[MappedScore] = []
     sequence_id = store_sequence(metadata.target_sequence)
 

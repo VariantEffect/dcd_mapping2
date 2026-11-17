@@ -326,43 +326,37 @@ def get_scoreset_records(
     return _load_scoreset_records(scores_csv, metadata)
 
 
-def patch_target_sequence_type(
-    metadata: ScoresetMetadata, records: dict, force: bool = False
-) -> ScoresetMetadata:
-    """If target sequence type is DNA but no nucleotide variants are defined, treat the target as if
-    it were a protein level target.
-    This avoids BLAT errors in cases where the target sequence was codon-optimized
-    for a non-human organism
-    """
-    patch_sequence_type = force or any(
+def can_convert_target_to_protein(target: TargetGene) -> bool:
+    """Whether a target is a protein-coding DNA sequence that can be aligned as protein."""
+    return (
         target.target_sequence_type == TargetSequenceType.DNA
-        and not any(record.hgvs_nt for record in records.get(target_label, []))
-        for target_label, target in metadata.target_genes.items()
+        and bool(target.target_sequence)
+        and target.target_gene_category == "protein_coding"
     )
 
-    if not patch_sequence_type:
-        msg = f"Not patching target sequence type for {metadata.urn}. Either force=True (was {force}), or at least one target has nucleotide-level variants."
-        _logger.debug(msg)
-        return metadata
 
-    for target_label, target in metadata.target_genes.items():
-        if not target.target_sequence:
-            msg = f"Cannot patch target sequence type for {metadata.urn} target {target_label} because no target sequence is available."
-            _logger.debug(msg)
-            continue
+def convert_target_to_protein(urn: str, target_label: str, target: TargetGene) -> None:
+    """Translate a DNA target's sequence in place so it is aligned at the protein level.
 
-        if target.target_gene_category != "protein_coding":
-            msg = f"Cannot patch target sequence type for {metadata.urn} target {target_label} because target gene category is {target.target_gene_category}, not protein_coding."
-            _logger.debug(msg)
-            continue
+    :param urn: score set URN, for logging
+    :param target_label: the target's key in the score set metadata
+    :param target: the target to convert
+    """
+    if not can_convert_target_to_protein(target):
+        _logger.debug(
+            "Not converting %s target %s to protein: it is not a protein-coding DNA sequence.",
+            urn,
+            target_label,
+        )
+        return
 
-        msg = f"Changing target sequence type for {metadata.urn} target {target_label} from DNA to protein. (force was {force})."
-        _logger.info(msg)
-
-        target.target_sequence = _get_protein_sequence(target.target_sequence)
-        target.target_sequence_type = TargetSequenceType.PROTEIN
-
-    return metadata
+    _logger.info(
+        "Changing target sequence type for %s target %s from DNA to protein.",
+        urn,
+        target_label,
+    )
+    target.target_sequence = _get_protein_sequence(target.target_sequence)
+    target.target_sequence_type = TargetSequenceType.PROTEIN
 
 
 def with_mavedb_score_set(fn: Callable) -> Callable:

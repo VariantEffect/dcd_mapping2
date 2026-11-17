@@ -28,10 +28,19 @@ from dcd_mapping.schemas import (
     ScoreRow,
     ScoresetMetadata,
     SequenceRange,
+    TargetGene,
+    TargetSequenceType,
+    TargetType,
     TxSelectResult,
 )
 from dcd_mapping.transcripts import TxSelectError
-from dcd_mapping.vrs_map import _construct_vrs_allele, _map_protein_layer, vrs_map
+from dcd_mapping.vrs_map import (
+    NO_TRANSCRIPT_PROTEIN_ERROR,
+    PROTEIN_ONLY_ALIGNMENT_ERROR,
+    _construct_vrs_allele,
+    _map_protein_layer,
+    vrs_map,
+)
 
 
 def _assert_correct_vrs_map(
@@ -442,6 +451,7 @@ class TestMapProteinLayerReason:
             hit_range=SequenceRange(start=1000, end=1009),
             hit_subranges=[SequenceRange(start=1000, end=1009)],
             aligner_parameters={"aligner": "blat"},
+            query_sequence_type=TargetSequenceType.DNA,
         )
 
     def test_transcript_error_surfaces_its_message(self):
@@ -507,3 +517,112 @@ def test_reference_identical_allele_keeps_the_whole_sequence(pre_map):
     assert allele.state.length == allele.location.end - allele.location.start == 648
     # The digest MaveDB's backfilled whole-sequence allele for NP_002871.1:p.= carries.
     assert allele.id == "ga4gh:VA.JRYlMMc2SCGXI6dQ1yGyONWLkL1wMa4d"
+
+
+class TestProteinOnlyAlignment:
+    """Modeled on urn:mavedb:00000639-0-1: a codon-optimized DNA target that aligned to
+    the genome only as protein. Nucleotide positions can't be placed through an alignment
+    whose query blocks count amino acids, so no row gets a genomic record.
+    """
+
+    target = TargetGene(
+        target_gene_name="ABLIM2 (R14S;R16S)",
+        target_gene_category=TargetType.PROTEIN_CODING,
+        target_sequence="YKIYPYDSLIVTNSISVKLPKDVDRTRLERHLSPEEFQEVFGMSIEEFDRLALWKRNDLKKKALLF",
+        target_sequence_type=TargetSequenceType.PROTEIN,
+    )
+    # Blocks from the stored production alignment, CIGAR 2S81M16160D111M.
+    align_result = AlignmentResult(
+        chrom="chr4",
+        query_range=SequenceRange(start=2, end=66),
+        query_subranges=[
+            SequenceRange(start=2, end=29),
+            SequenceRange(start=29, end=66),
+        ],
+        hit_range=SequenceRange(start=7966992, end=7983344),
+        hit_subranges=[
+            SequenceRange(start=7983263, end=7983344),
+            SequenceRange(start=7966992, end=7967103),
+        ],
+        aligner_parameters={"aligner": "blat", "target_args": "-q=prot -t=dnax"},
+        query_sequence_type=TargetSequenceType.PROTEIN,
+    )
+    transcript = TxSelectResult(
+        nm="NM_032432.6",
+        np="NP_115808.1",
+        start=0,
+        is_full_match=False,
+        sequence="MSAVSQPQAAPSPLEKSPSTAILCNTCGNVCKGEVLRVQDKYFHIKCFVCKACGCDLAEGGFFVRQGEYICTLDYQRLYGTRCFSCDQFIEGEVVSALGKTYHPDCFVCAVCRLPFPPGDRVTFNGKECMCQKCSLPVSVGSSAHLSQGLRSCGGCGTEIKNGQALVALDKHWHLGCFKCKSCGKLLNAEYISKDGLPYCEADYHAKFGIRCDSCEKYITGRVLEAGEKHYHPSCALCVRCGQMFAEGEEMYLQGSSIWHPACRQAARTEDRNKETRTSSESIISVPASSTSGSPSRVIYAKLGGEILDYRDLAALPKSKAIYDIDRPDMISYSPYISHSAGDRQSYGEGDQDDRSYKQCRTSSPSSTGSVSLGRYTPTSRSPQHYSRPGSESGRSTPSLSVLSDSKPPPSTYQQAPRHFHVPDTGVKDNIYRKPPIYRQHAARRSDGEDGSLDQDNRKKSSWLMLKGDADTRTNSPDLDTQSLSHSSGTDRDPLQRMAGDSFHSRFPYSKSDPLPGHGKNGLDQRNANLAPCGADPDASWGMREYKIYPYDSLIVTNRIRVKLPKDVDRTRLERHLSPEEFQEVFGMSIEEFDRLALWKRNDLKKKALLF",
+        hgnc_symbol="ABLIM2",
+    )
+
+    def _map(self, rows: list[ScoreRow]):
+        with (
+            patch("dcd_mapping.vrs_map.store_sequence", return_value="SQ.x"),
+            patch("dcd_mapping.vrs_map.align_target_to_protein") as align_protein,
+            patch(
+                "dcd_mapping.vrs_map._map_protein_coding_pro",
+                side_effect=lambda row, *_: MappedScore(
+                    accession_id=row.accession,
+                    score=row.score,
+                    alignment_level=AnnotationLayer.PROTEIN,
+                ),
+            ),
+            patch("dcd_mapping.vrs_map._map_genomic") as map_genomic,
+            patch("dcd_mapping.vrs_map._construct_projected_layers") as project,
+        ):
+            align_protein.return_value = self.align_result
+            result = vrs_map(self.target, self.align_result, rows, self.transcript)
+        map_genomic.assert_not_called()
+        project.assert_not_called()
+        return result.mappings
+
+    def test_rows_with_a_protein_variant_map_only_at_the_protein_layer(self):
+        rows = [
+            ScoreRow(hgvs_nt="c.=", hgvs_pro="p.=", score="0.1", accession="urn:x#1"),
+            ScoreRow(
+                hgvs_nt="c.[1T>C;3C>G;81T>C]",
+                hgvs_pro="p.Tyr1Gln",
+                score="0.2",
+                accession="urn:x#2",
+            ),
+        ]
+
+        mappings = self._map(rows)
+
+        assert [(m.accession_id, m.alignment_level) for m in mappings] == [
+            ("urn:x#1", AnnotationLayer.PROTEIN),
+            ("urn:x#2", AnnotationLayer.PROTEIN),
+        ]
+
+    def test_nucleotide_only_row_fails_once_naming_the_protein_alignment(self):
+        rows = [
+            ScoreRow(
+                hgvs_nt="c.150C>T", hgvs_pro="NA", score="0.3", accession="urn:x#3"
+            )
+        ]
+
+        mappings = self._map(rows)
+
+        assert len(mappings) == 1
+        assert mappings[0].alignment_level is None
+        assert mappings[0].error_message == PROTEIN_ONLY_ALIGNMENT_ERROR
+
+    def test_rows_without_a_transcript_fail_naming_their_own_layer(self):
+        rows = [
+            ScoreRow(
+                hgvs_nt="NA", hgvs_pro="p.Tyr1Gln", score="0.1", accession="urn:x#1"
+            ),
+            ScoreRow(
+                hgvs_nt="c.150C>T", hgvs_pro="NA", score="0.3", accession="urn:x#2"
+            ),
+        ]
+
+        with patch("dcd_mapping.vrs_map._map_genomic") as map_genomic:
+            mappings = vrs_map(self.target, self.align_result, rows, None).mappings
+        map_genomic.assert_not_called()
+
+        assert [m.error_message for m in mappings] == [
+            NO_TRANSCRIPT_PROTEIN_ERROR,
+            PROTEIN_ONLY_ALIGNMENT_ERROR,
+        ]

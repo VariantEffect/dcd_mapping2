@@ -32,7 +32,8 @@
           "start": 102162450,
           "end": 102162492
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   },
   "urn:mavedb:00000099-a-1": {
@@ -92,7 +93,8 @@
           "start": 129533607,
           "end": 129533718
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   },
   "urn:mavedb:00000103-c-1": {
@@ -176,7 +178,8 @@
           "start": 21769206,
           "end": 21769320
         }
-      ]
+      ],
+      "query_sequence_type": "protein"
     }
   },
   "urn:mavedb:00000041-a-1": {
@@ -244,7 +247,8 @@
           "start": 37403170,
           "end": 37403325
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   },
   "urn:mavedb:00000018-a-1": {
@@ -272,7 +276,8 @@
           "start": 5227021,
           "end": 5227208
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   },
   "urn:mavedb:00000001-a-4": {
@@ -340,7 +345,8 @@
           "start": 1324729,
           "end": 1324793
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   },
   "urn:mavedb:00000098-a-1": {
@@ -368,7 +374,8 @@
           "start": 38551475,
           "end": 38551511
         }
-      ]
+      ],
+      "query_sequence_type": "protein"
     }
   },
   "urn:mavedb:00000061-h-1": {
@@ -404,7 +411,8 @@
           "start": 12618514,
           "end": 12618568
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   },
   "urn:mavedb:00000068-a-1": {
@@ -504,7 +512,8 @@
           "start": 7676520,
           "end": 7676594
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   },
   "urn:mavedb:00000093-a-1": {
@@ -556,7 +565,8 @@
           "start": 43124016,
           "end": 43124096
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   },
   "urn:mavedb:00000001-b-2": {
@@ -608,7 +618,8 @@
           "start": 202220031,
           "end": 202220109
         }
-      ]
+      ],
+      "query_sequence_type": "dna"
     }
   }
 }

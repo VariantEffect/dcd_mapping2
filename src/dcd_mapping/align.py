@@ -22,7 +22,11 @@ from dcd_mapping.exceptions import (
     ScoresetNotSupportedError,
 )
 from dcd_mapping.lookup import get_chromosome_identifier, get_gene_location
-from dcd_mapping.mavedb_data import LOCAL_STORE_PATH, patch_target_sequence_type
+from dcd_mapping.mavedb_data import (
+    LOCAL_STORE_PATH,
+    can_convert_target_to_protein,
+    convert_target_to_protein,
+)
 from dcd_mapping.resource_utils import CDOT_URL, http_download
 from dcd_mapping.schemas import (
     AlignmentQc,
@@ -52,8 +56,11 @@ BLAT_MIN_SCORE = 20
 BLAT_OUT_FORMAT = "pslx"
 # A protein query against the translated genome (-q=prot -t=dnax) is the slowest search, and slower
 # still when several mapping jobs share the host. MaveDB's mapping budget for the whole call must stay
-# above two of these, since a failed parse retries BLAT once.
+# above three of these: a failed DNA parse retries as -q=dnax, and DNA targets that still fail are
+# retried as protein. A score set mixing DNA and protein targets can need a fourth.
 BLAT_TIMEOUT_SECONDS = int(os.environ.get("BLAT_TIMEOUT_SECONDS", "1200"))
+PROTEIN_BLAT_ARGS = "-q=prot -t=dnax"
+"""BLAT mode for a protein query against the translated genome."""
 
 
 @functools.lru_cache
@@ -94,21 +101,28 @@ def _write_query_file(file: Path, lines: list[str]) -> None:
             f.write(f"{line}\n")
 
 
-def _build_query_file(scoreset_metadata: ScoresetMetadata, query_file: Path) -> Path:
+def _build_query_file(
+    scoreset_metadata: ScoresetMetadata, query_file: Path
+) -> dict[str, str]:
     """Construct BLAT query file.
+
+    Each target gets a plain query ID, since BLAT truncates names at whitespace.
 
     :param scoreset_metadata: MaveDB scoreset metadata object
     :param query_file: path for query file
-    :return: Yielded Path to constructed file. Deletes file once complete.
+    :return: target label for each query ID
     """
     _logger.debug("Writing BLAT query to %s", query_file)
+    labels = {
+        f"target{i}": label for i, label in enumerate(scoreset_metadata.target_genes)
+    }
     lines = []
-    for target_gene in scoreset_metadata.target_genes:
-        lines.append(f">{target_gene}")
-        lines.append(scoreset_metadata.target_genes[target_gene].target_sequence)
+    for query_id, label in labels.items():
+        lines.append(f">{query_id}")
+        lines.append(scoreset_metadata.target_genes[label].target_sequence)
 
     _write_query_file(query_file, lines)
-    return query_file
+    return labels
 
 
 def get_ref_genome_file(
@@ -643,28 +657,6 @@ def _build_alignment_qc(
     )
 
 
-def _get_target_sequence_type(metadata: ScoresetMetadata) -> TargetSequenceType | str:
-    """Get overall target sequence type for a score set's target genes.
-    Protein if all target sequences are protein sequences, nucleotide if all target
-    sequences are nucleotide sequences, and mixed if there is a mix within the score set.
-    :param metadata: object containing score set attributes
-    :return: TargetSequenceType enum (protein or nucleotide) or string "mixed"
-    """
-    target_sequence_types = set()
-    for target_gene in metadata.target_genes:
-        target_sequence_types.add(
-            metadata.target_genes[target_gene].target_sequence_type
-        )
-
-    if len(target_sequence_types) > 1:
-        return "mixed"
-    elif len(target_sequence_types) == 1:  # noqa: RET505
-        return target_sequence_types.pop()
-    else:
-        msg = f"Target sequence types not available for score set {metadata.urn}"
-        raise ValueError(msg)
-
-
 def _group_alignments_by_query(
     pslx_path: str,
 ) -> dict[str, list["BioAlign.Alignment"]]:
@@ -681,39 +673,36 @@ def _group_alignments_by_query(
     return grouped
 
 
+def _describe_blat_mode(target_args: str) -> str:
+    return target_args or "default (nucleotide DNA)"
+
+
 def _get_blat_output(
-    metadata: ScoresetMetadata, silent: bool
+    metadata: ScoresetMetadata, target_args: str, silent: bool
 ) -> tuple[dict[str, list["BioAlign.Alignment"]], dict]:
     """Run a BLAT query and return a per-gene grouping of Bio.Align Alignments.
 
-    If unable to produce a valid query the first time, retries with
+    If unable to produce a valid query the first time, retries a nucleotide query with
     ``-q=dnax -t=dnax`` flags.
 
-    :param metadata: object containing scoreset attributes
+    :param metadata: scoreset attributes, holding only targets of one sequence type
+    :param target_args: BLAT mode flags for that sequence type
     :param silent: suppress BLAT command output
-    :return: ``(grouped, blat_params)`` — ``grouped`` maps each query gene
+    :return: ``(grouped, blat_params)`` — ``grouped`` maps each target
         label to its alignments; ``blat_params`` is the parameters dict
         returned directly by ``_run_blat`` from the successful invocation.
     :raise AlignmentError: if BLAT subprocess returns error code or both
         parse attempts fail.
     """
     with tempfile.NamedTemporaryFile() as tmp_file:
-        query_file = _build_query_file(metadata, Path(tmp_file.name))
-        target_sequence_type = _get_target_sequence_type(metadata)
-
-        if target_sequence_type == TargetSequenceType.PROTEIN:
-            target_args = "-q=prot -t=dnax"
-        elif target_sequence_type == TargetSequenceType.DNA:
-            target_args = ""
-        else:
-            # TODO(#125): consider implementing support for mixed types
-            msg = "Mapping for score sets with a mix of nucleotide and protein target sequences is not currently supported."
-            raise NotImplementedError(msg)
+        query_file = Path(tmp_file.name)
+        labels = _build_query_file(metadata, query_file)
 
         _logger.info(
-            "Running BLAT for %s with mode: %s",
+            "Running BLAT for %s targets %s with mode: %s",
             metadata.urn,
-            target_args if target_args else "default (nucleotide DNA)",
+            list(metadata.target_genes),
+            _describe_blat_mode(target_args),
         )
 
         reference_genome_file = get_ref_genome_file(silent=silent)
@@ -729,10 +718,15 @@ def _get_blat_output(
         try:
             grouped = _group_alignments_by_query(pslx_path)
             if not grouped:
-                msg = f"BLAT produced no alignments for {metadata.urn} with mode: {target_args if target_args else 'default (nucleotide DNA)'}"
+                msg = f"BLAT produced no alignments for {metadata.urn} with mode: {_describe_blat_mode(target_args)}"
                 raise ValueError(msg)
 
-        except ValueError:
+        except ValueError as e:
+            # A translated-DNA query would read amino acids as nucleotides.
+            if target_args == PROTEIN_BLAT_ARGS:
+                msg = f"Unable to run successful BLAT on {metadata.urn}: {e}"
+                raise AlignmentError(msg) from e
+
             _logger.debug(
                 "Initial BLAT parse failed for %s, retrying with -q=dnax -t=dnax",
                 metadata.urn,
@@ -765,13 +759,19 @@ def _get_blat_output(
                 len(grouped),
             )
 
-    return grouped, blat_params
+    unknown = set(grouped) - set(labels)
+    if unknown:
+        msg = f"BLAT results {sorted(unknown)} don't match any query sent for {metadata.urn}"
+        raise AlignmentError(msg)
+    return {labels[query_id]: alns for query_id, alns in grouped.items()}, blat_params
 
 
 def _get_best_hit(
     alignments: "list[BioAlign.Alignment]",
     chromosome: str | None,
     scores: dict[int, int] | None = None,
+    *,
+    label: str,
 ) -> "list[BioAlign.Alignment]":
     """Return the subset of alignments on the best-matching chromosome.
 
@@ -783,6 +783,7 @@ def _get_best_hit(
     :param chromosome: RefSeq chromosome accession, e.g. ``"NC_000001.11"``
     :param scores: optional pre-computed ``{id(aln): score}`` cache; when
         provided avoids redundant ``aln.counts()`` walks inside the fallback.
+    :param label: target name for logging
     :return: alignments filtered to the selected chromosome
     :raise AlignmentError: if the alignment list is empty
     """
@@ -806,12 +807,11 @@ def _get_best_hit(
 
         # No hit matched the expected chromosome; log and fall through.
         hit_chrs = list({str(a.target.id) for a in alignments})
-        query_id = str(alignments[0].query.id)
 
         _logger.warning(
             "Failed to match hit chromosomes during alignment for target %s. "
             "Expected chromosome: %s, hit chromosomes: %s",
-            query_id,
+            label,
             chromosome,
             hit_chrs,
         )
@@ -825,17 +825,15 @@ def _get_best_hit(
             chrom_best[chrom] = s
 
     if not chrom_best:
-        query_id = str(alignments[0].query.id) if alignments else "unknown"
-        msg = f"Couldn't determine best chromosome for target {query_id} — no valid alignments found."
+        msg = f"Couldn't determine best chromosome for target {label} — no valid alignments found."
         raise AlignmentError(msg)
 
     best_chrom = max(chrom_best, key=chrom_best.__getitem__)
-    query_id = str(alignments[0].query.id)
 
     _logger.info(
         "Chromosome fallback selected %s for target %s (best identity score: %.1f, %d candidates).",
         best_chrom,
-        query_id,
+        label,
         chrom_best[best_chrom],
         len(chrom_best),
     )
@@ -976,7 +974,9 @@ def _get_best_match(
     # the alignment coordinates, so caching avoids O(n * alignment_length) work
     # when the same alignments are ranked by multiple selection helpers.
     _scores: dict[int, int] = {id(a): _blat_score(a) for a in alignments}
-    chrom_alns = _get_best_hit(alignments, chromosome, _scores)
+    chrom_alns = _get_best_hit(
+        alignments, chromosome, _scores, label=target_gene.target_gene_name
+    )
     best_aln = _get_best_hsp(
         chrom_alns, location, _scores, label=target_gene.target_gene_name
     )
@@ -989,7 +989,7 @@ def _get_best_match(
     tcoords = coords[0]
     qcoords = coords[1]
 
-    protein_vs_dna = "-q=prot" in blat_params.get("target_args", "")
+    protein_vs_dna = target_gene.target_sequence_type == TargetSequenceType.PROTEIN
 
     # For cDNA queries the strand is read from qcoords direction: cDNA on the
     # negative strand is reverse-complemented, so its qcoords decrease.
@@ -1050,7 +1050,74 @@ def _get_best_match(
         score=float(_scores[id(best_aln)]),
         next_best_score=next_best,
         alignment_qc=alignment_qc,
+        query_sequence_type=target_gene.target_sequence_type,
     )
+
+
+def _align_targets(
+    metadata: ScoresetMetadata, silent: bool
+) -> tuple[dict[str, AlignmentResult], dict[str, AlignmentError]]:
+    """Align each target in the BLAT mode for its own sequence type.
+
+    BLAT runs once per sequence type present, so DNA and protein targets can share a
+    score set. Failures are returned per target rather than raised, so a caller can
+    retry just those targets.
+
+    :param metadata: score set metadata with sequence-based targets
+    :param silent: suppress BLAT process output if true
+    :return: ``(results, failures)``, both keyed by target label
+    """
+    groups: dict[str, dict[str, TargetGene]] = {}
+    failures: dict[str, AlignmentError] = {}
+    for label, target in metadata.target_genes.items():
+        if target.target_sequence_type == TargetSequenceType.PROTEIN:
+            groups.setdefault(PROTEIN_BLAT_ARGS, {})[label] = target
+        elif target.target_sequence_type == TargetSequenceType.DNA:
+            groups.setdefault("", {})[label] = target
+        else:
+            msg = f"Target gene {label} in scoreset {metadata.urn} has no sequence type to align by."
+            failures[label] = AlignmentError(msg)
+
+    results: dict[str, AlignmentResult] = {}
+    for target_args, targets in groups.items():
+        group = ScoresetMetadata(urn=metadata.urn, target_genes=targets)
+        try:
+            grouped, blat_params = _get_blat_output(group, target_args, silent)
+        except BlatNotFoundError:
+            raise
+        except AlignmentError as e:
+            failures.update(dict.fromkeys(targets, e))
+            continue
+
+        for label, aln_list in grouped.items():
+            target = targets[label]
+            try:
+                results[label] = _get_best_match(
+                    aln_list, target, len(target.target_sequence or ""), blat_params
+                )
+            except AlignmentError as e:
+                failures[label] = e
+                continue
+            _log_alignment_summary(label, results[label])
+
+        for label in targets:
+            if label not in results and label not in failures:
+                msg = f"No BLAT result found for target gene {label} in scoreset {metadata.urn}"
+                failures[label] = AlignmentError(msg)
+
+    return results, failures
+
+
+def _failure_reasons(failures: dict[str, AlignmentError]) -> str:
+    """Join the distinct failure messages; one BLAT error is often shared by many targets."""
+    return "; ".join(dict.fromkeys(str(e) for e in failures.values()))
+
+
+def _raise_for_failures(failures: dict[str, AlignmentError], context: str = "") -> None:
+    if not failures:
+        return
+    msg = f"{context}{_failure_reasons(failures)}"
+    raise AlignmentError(msg) from next(iter(failures.values()))
 
 
 def align(
@@ -1061,56 +1128,59 @@ def align(
     :param scoreset_metadata: object containing scoreset metadata
     :param silent: suppress BLAT process output if true
     :return: dictionary where keys are target gene identifiers and values are alignment result objects
+    :raise AlignmentError: if any target fails to align
     """
-    grouped, blat_params = _get_blat_output(scoreset_metadata, silent)
-    alignment_results = {}
-    for blat_id, aln_list in grouped.items():
-        target_label = blat_id
+    results, failures = _align_targets(scoreset_metadata, silent)
+    _raise_for_failures(failures)
+    return results
 
-        # BLAT names the result "query" when there is only one query sequence;
-        # replace with the actual target gene name for single-target score sets.
-        if target_label == "query" and len(scoreset_metadata.target_genes) == 1:
-            target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
 
-        # BLAT automatically reformats query names; resolve back to metadata key.
-        if target_label not in scoreset_metadata.target_genes:
-            if len(scoreset_metadata.target_genes) == 1:
-                target_label = list(scoreset_metadata.target_genes.keys())[0]  # noqa: RUF015
-            else:
-                matches = 0
-                for target_gene_name in scoreset_metadata.target_genes:
-                    blat_target_gene_name = (
-                        target_gene_name.split(" ")[0]
-                        .replace("(", "")
-                        .replace(")", "")
-                        .replace(",", "")
-                    )
+def _align_with_protein_fallback(
+    metadata: ScoresetMetadata, silent: bool
+) -> dict[str, AlignmentResult]:
+    """Align each target, re-aligning DNA targets that fail as protein.
 
-                    if blat_target_gene_name == blat_id:
-                        target_label = target_gene_name
-                        matches += 1
+    DNA targets are aligned as DNA first even when all their variants are protein-level,
+    since a nucleotide alignment is more precise; protein is only the fallback.
+    Only the failed targets are converted, in place; the rest keep their alignments.
 
-                if matches == 0:
-                    msg = f"BLAT result {blat_id} does not match any target gene names in scoreset {scoreset_metadata.urn}."
-                    raise AlignmentError(msg)
-                if matches > 1:
-                    msg = f"BLAT result {blat_id} matches multiple target gene names in scoreset {scoreset_metadata.urn}"
-                    raise AlignmentError(msg)
+    :raise AlignmentError: if a failed target can't be converted, or fails again as protein
+    """
+    results, failures = _align_targets(metadata, silent)
+    if not failures:
+        return results
 
-        target_gene = scoreset_metadata.target_genes[target_label]
-        seq_len = len(target_gene.target_sequence or "")
-        alignment_results[target_label] = _get_best_match(
-            aln_list, target_gene, seq_len, blat_params
-        )
-        _log_alignment_summary(target_label, alignment_results[target_label])
+    unconvertible = {
+        label: error
+        for label, error in failures.items()
+        if not can_convert_target_to_protein(metadata.target_genes[label])
+    }
+    _raise_for_failures(unconvertible)
 
-    # confirm that there is an alignment result for each target gene
-    for tgt_gene in scoreset_metadata.target_genes:
-        if tgt_gene not in alignment_results:
-            msg = f"No BLAT result found for target gene {tgt_gene} in scoreset {scoreset_metadata.urn}"
-            raise AlignmentError(msg)
+    _logger.warning(
+        "BLAT alignment failed for %s target(s) %s at the nucleotide level (%s). They will be retried at the protein level.",
+        metadata.urn,
+        list(failures),
+        _failure_reasons(failures),
+    )
+    for label in failures:
+        convert_target_to_protein(metadata.urn, label, metadata.target_genes[label])
 
-    return alignment_results
+    retry = ScoresetMetadata(
+        urn=metadata.urn,
+        target_genes={label: metadata.target_genes[label] for label in failures},
+    )
+    retry_results, retry_failures = _align_targets(retry, silent)
+    _raise_for_failures(
+        retry_failures,
+        f"BLAT alignment failed for {metadata.urn} at the protein level after failing at the nucleotide level: ",
+    )
+    _logger.info(
+        "Protein-level BLAT retry succeeded for %s target(s) %s.",
+        metadata.urn,
+        list(retry_results),
+    )
+    return {**results, **retry_results}
 
 
 def fetch_alignment(
@@ -1212,6 +1282,7 @@ def parse_cdot_mapping(cdot_mapping: dict, silent: bool) -> AlignmentResult:
         hit_subranges=hit_subranges,
         aligner_parameters=aligner_parameters,
         reference_assembly=reference_assembly,
+        query_sequence_type=TargetSequenceType.DNA,
     )
 
 
@@ -1245,35 +1316,7 @@ def build_alignment_result(
     )
 
     if score_set_type == "sequence":
-        try:
-            alignment_result = align(metadata, silent)
-        except AlignmentError:
-            failed_at_nucleotide_level = any(
-                target_gene.target_sequence_type == TargetSequenceType.DNA
-                for target_gene in metadata.target_genes.values()
-            )
-
-            if failed_at_nucleotide_level:
-                msg = f"BLAT alignment failed for {metadata.urn} at the nucleotide level. This alignment will be retried at the protein level."
-                _logger.warning(msg)
-            else:
-                raise
-
-            # So long as force=True, the content of the records dict is irrelevant.
-            try:
-                alignment_result = align(
-                    patch_target_sequence_type(metadata, {}, force=True), silent
-                )
-                _logger.info(
-                    "Protein-level BLAT retry succeeded for %s. "
-                    "The nucleotide-level alignment result has been discarded and replaced with the protein-level result.",
-                    metadata.urn,
-                )
-
-            except AlignmentError as e:
-                msg = f"BLAT alignment failed for {metadata.urn} at the protein level after failing at the nucleotide level."
-                _logger.error(msg)
-                raise AlignmentError(msg) from e
+        alignment_result = _align_with_protein_fallback(metadata, silent)
 
     else:
         alignment_result = fetch_alignment(metadata, silent)
@@ -1366,6 +1409,7 @@ def align_target_to_protein(
         next_best_score=next_best,
         alignment_qc=alignment_qc,
         aligner_parameters=blat_params,
+        query_sequence_type=TargetSequenceType.PROTEIN,
     )
 
     _log_alignment_summary("protein->protein", result)
