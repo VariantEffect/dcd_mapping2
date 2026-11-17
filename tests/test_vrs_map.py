@@ -450,6 +450,7 @@ class TestMapProteinLayerReason:
             hit_range=SequenceRange(start=1000, end=1009),
             hit_subranges=[SequenceRange(start=1000, end=1009)],
             aligner_parameters={"aligner": "blat"},
+            query_sequence_type=TargetSequenceType.DNA,
         )
 
     def test_transcript_error_surfaces_its_message(self):

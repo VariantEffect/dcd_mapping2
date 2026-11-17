@@ -340,6 +340,7 @@ class TestBlatScore:
 
 def check_alignment_result_equality(actual: AlignmentResult, expected: AlignmentResult):
     assert actual.chrom == expected.chrom
+    assert actual.query_sequence_type == expected.query_sequence_type
     assert actual.strand == expected.strand
     assert actual.coverage == pytest.approx(expected.coverage)
     assert actual.percent_identity == pytest.approx(expected.percent_identity)

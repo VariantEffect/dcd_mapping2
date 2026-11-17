@@ -221,7 +221,8 @@ class AlignmentResult(BaseModel):
     # None for alignments that have no genomic coordinate frame (protein-vs-protein).
     reference_assembly: StrictStr | None = None
     # Whether query coordinates count nucleotides (DNA) or amino acids (PROTEIN).
-    query_sequence_type: TargetSequenceType | None = None
+    # Required so no builder can leave a protein-query alignment looking like DNA.
+    query_sequence_type: TargetSequenceType
 
 
 class TranscriptDescription(BaseModel):
