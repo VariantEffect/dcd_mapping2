@@ -56,7 +56,8 @@ BLAT_MIN_SCORE = 20
 BLAT_OUT_FORMAT = "pslx"
 # A protein query against the translated genome (-q=prot -t=dnax) is the slowest search, and slower
 # still when several mapping jobs share the host. MaveDB's mapping budget for the whole call must stay
-# above two of these, since a failed parse retries BLAT once.
+# above four of these: a mixed score set runs the DNA and protein groups one after the other, a failed
+# DNA parse retries as -q=dnax, and DNA targets that still fail are retried as protein.
 BLAT_TIMEOUT_SECONDS = int(os.environ.get("BLAT_TIMEOUT_SECONDS", "1200"))
 PROTEIN_BLAT_ARGS = "-q=prot -t=dnax"
 """BLAT mode for a protein query against the translated genome."""
@@ -681,7 +682,7 @@ def _get_blat_output(
 ) -> tuple[dict[str, list["BioAlign.Alignment"]], dict]:
     """Run a BLAT query and return a per-gene grouping of Bio.Align Alignments.
 
-    If unable to produce a valid query the first time, retries with
+    If unable to produce a valid query the first time, retries a nucleotide query with
     ``-q=dnax -t=dnax`` flags.
 
     :param metadata: scoreset attributes, holding only targets of one sequence type
@@ -720,7 +721,12 @@ def _get_blat_output(
                 msg = f"BLAT produced no alignments for {metadata.urn} with mode: {_describe_blat_mode(target_args)}"
                 raise ValueError(msg)
 
-        except ValueError:
+        except ValueError as e:
+            # A translated-DNA query would read amino acids as nucleotides.
+            if target_args == PROTEIN_BLAT_ARGS:
+                msg = f"Unable to run successful BLAT on {metadata.urn}: {e}"
+                raise AlignmentError(msg) from e
+
             _logger.debug(
                 "Initial BLAT parse failed for %s, retrying with -q=dnax -t=dnax",
                 metadata.urn,
@@ -753,6 +759,10 @@ def _get_blat_output(
                 len(grouped),
             )
 
+    unknown = set(grouped) - set(labels)
+    if unknown:
+        msg = f"BLAT results {sorted(unknown)} don't match any query sent for {metadata.urn}"
+        raise AlignmentError(msg)
     return {labels[query_id]: alns for query_id, alns in grouped.items()}, blat_params
 
 
@@ -760,7 +770,8 @@ def _get_best_hit(
     alignments: "list[BioAlign.Alignment]",
     chromosome: str | None,
     scores: dict[int, int] | None = None,
-    label: str | None = None,
+    *,
+    label: str,
 ) -> "list[BioAlign.Alignment]":
     """Return the subset of alignments on the best-matching chromosome.
 
@@ -796,12 +807,11 @@ def _get_best_hit(
 
         # No hit matched the expected chromosome; log and fall through.
         hit_chrs = list({str(a.target.id) for a in alignments})
-        query_id = label or str(alignments[0].query.id)
 
         _logger.warning(
             "Failed to match hit chromosomes during alignment for target %s. "
             "Expected chromosome: %s, hit chromosomes: %s",
-            query_id,
+            label,
             chromosome,
             hit_chrs,
         )
@@ -815,17 +825,15 @@ def _get_best_hit(
             chrom_best[chrom] = s
 
     if not chrom_best:
-        query_id = label or str(alignments[0].query.id)
-        msg = f"Couldn't determine best chromosome for target {query_id} — no valid alignments found."
+        msg = f"Couldn't determine best chromosome for target {label} — no valid alignments found."
         raise AlignmentError(msg)
 
     best_chrom = max(chrom_best, key=chrom_best.__getitem__)
-    query_id = label or str(alignments[0].query.id)
 
     _logger.info(
         "Chromosome fallback selected %s for target %s (best identity score: %.1f, %d candidates).",
         best_chrom,
-        query_id,
+        label,
         chrom_best[best_chrom],
         len(chrom_best),
     )

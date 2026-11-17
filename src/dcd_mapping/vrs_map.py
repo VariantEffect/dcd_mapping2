@@ -90,6 +90,9 @@ _PROJECTION_FAILURE_WARN_FRACTION = 0.25
 PROTEIN_ONLY_ALIGNMENT_ERROR = "Nucleotide variant can't be mapped because its target aligned to the genome at the protein level only"
 """Failure for a nucleotide-only row on a target that aligned to the genome as protein."""
 
+NO_TRANSCRIPT_PROTEIN_ERROR = "Protein variant can't be mapped because its target has no selected protein-coding transcript"
+"""Failure for a protein row on a protein-aligned target that reached the noncoding path."""
+
 
 def _hgvs_variant_is_valid(hgvs_string: str) -> bool:
     return not hgvs_string.endswith((".=", ")", "X"))
@@ -1057,7 +1060,15 @@ def _map_regulatory_noncoding(
     :return: A list of VRS mappings
     """
     if _aligned_as_protein(align_result):
-        return [_failed_score(row, PROTEIN_ONLY_ALIGNMENT_ERROR) for row in records]
+        return [
+            _failed_score(
+                row,
+                PROTEIN_ONLY_ALIGNMENT_ERROR
+                if _hgvs_nt_is_valid(row.hgvs_nt)
+                else NO_TRANSCRIPT_PROTEIN_ERROR,
+            )
+            for row in records
+        ]
 
     variations: list[MappedScore] = []
     sequence_id = store_sequence(metadata.target_sequence)

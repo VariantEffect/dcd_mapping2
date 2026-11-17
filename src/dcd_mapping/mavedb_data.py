@@ -335,13 +335,12 @@ def can_convert_target_to_protein(target: TargetGene) -> bool:
     )
 
 
-def convert_target_to_protein(urn: str, target_label: str, target: TargetGene) -> bool:
+def convert_target_to_protein(urn: str, target_label: str, target: TargetGene) -> None:
     """Translate a DNA target's sequence in place so it is aligned at the protein level.
 
     :param urn: score set URN, for logging
     :param target_label: the target's key in the score set metadata
     :param target: the target to convert
-    :return: whether the target was converted
     """
     if not can_convert_target_to_protein(target):
         _logger.debug(
@@ -349,7 +348,7 @@ def convert_target_to_protein(urn: str, target_label: str, target: TargetGene) -
             urn,
             target_label,
         )
-        return False
+        return
 
     _logger.info(
         "Changing target sequence type for %s target %s from DNA to protein.",
@@ -358,7 +357,6 @@ def convert_target_to_protein(urn: str, target_label: str, target: TargetGene) -
     )
     target.target_sequence = _get_protein_sequence(target.target_sequence)
     target.target_sequence_type = TargetSequenceType.PROTEIN
-    return True
 
 
 def patch_target_sequence_type(
@@ -376,7 +374,9 @@ def patch_target_sequence_type(
     for target_label, target in metadata.target_genes.items():
         target_records = records.get(target_label, [])
         if not target_records or any(
-            not is_missing_value(record.hgvs_nt) for record in target_records
+            not is_missing_value(record.hgvs_nt)
+            and record.hgvs_nt not in {"_wt", "_sy", "="}
+            for record in target_records
         ):
             continue
         convert_target_to_protein(metadata.urn, target_label, target)

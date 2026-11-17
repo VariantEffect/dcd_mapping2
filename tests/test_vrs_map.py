@@ -35,6 +35,7 @@ from dcd_mapping.schemas import (
 )
 from dcd_mapping.transcripts import TxSelectError
 from dcd_mapping.vrs_map import (
+    NO_TRANSCRIPT_PROTEIN_ERROR,
     PROTEIN_ONLY_ALIGNMENT_ERROR,
     _construct_vrs_allele,
     _map_protein_layer,
@@ -606,3 +607,22 @@ class TestProteinOnlyAlignment:
         assert len(mappings) == 1
         assert mappings[0].alignment_level is None
         assert mappings[0].error_message == PROTEIN_ONLY_ALIGNMENT_ERROR
+
+    def test_rows_without_a_transcript_fail_naming_their_own_layer(self):
+        rows = [
+            ScoreRow(
+                hgvs_nt="NA", hgvs_pro="p.Tyr1Gln", score="0.1", accession="urn:x#1"
+            ),
+            ScoreRow(
+                hgvs_nt="c.150C>T", hgvs_pro="NA", score="0.3", accession="urn:x#2"
+            ),
+        ]
+
+        with patch("dcd_mapping.vrs_map._map_genomic") as map_genomic:
+            mappings = vrs_map(self.target, self.align_result, rows, None).mappings
+        map_genomic.assert_not_called()
+
+        assert [m.error_message for m in mappings] == [
+            NO_TRANSCRIPT_PROTEIN_ERROR,
+            PROTEIN_ONLY_ALIGNMENT_ERROR,
+        ]

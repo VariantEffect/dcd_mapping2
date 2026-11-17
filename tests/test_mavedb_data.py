@@ -204,7 +204,12 @@ def test_patch_target_sequence_type_converts_only_targets_without_nucleotide_var
         },
     )
     records = {
-        "PRO": [_row(hgvs_pro="PRO:p.Ala2Val"), _row(hgvs_pro="PRO:p.Lys3Arg")],
+        "PRO": [
+            _row(hgvs_pro="PRO:p.Ala2Val"),
+            _row(hgvs_pro="PRO:p.Lys3Arg"),
+            _row(hgvs_nt="_wt", hgvs_pro="_wt"),
+            _row(hgvs_nt="_sy", hgvs_pro="_sy"),
+        ],
         "NT": [_row(hgvs_nt="NT:c.4G>A", hgvs_pro="NT:p.Ala2Thr")],
     }
 

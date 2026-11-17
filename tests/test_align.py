@@ -16,6 +16,7 @@ import pytest
 from Bio import Align as BioAlign
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
+from cool_seq_tool.schemas import Strand
 
 from dcd_mapping.align import (
     BLAT_TIMEOUT_SECONDS,
@@ -24,6 +25,7 @@ from dcd_mapping.align import (
     _build_alignment_qc,
     _compact_alignment_string,
     _get_best_hsp,
+    _get_best_match,
     _get_blat_output,
     _run_blat,
     align,
@@ -450,6 +452,47 @@ def test_get_blat_output_keys_alignments_by_target_label(tmp_path):
     assert grouped == {"GENE (isoform2)": ["hit1"], "GENE (isoform1)": ["hit0"]}
 
 
+def test_get_blat_output_rejects_an_unknown_query_id(tmp_path):
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000001-a-1",
+        target_genes={"GENE": _seq_target("GENE", "ACGT", "dna")},
+    )
+
+    with (
+        patch("dcd_mapping.align._write_query_file"),
+        patch("dcd_mapping.align.get_ref_genome_file", return_value=tmp_path),
+        patch("dcd_mapping.align._run_blat", return_value=(None, {"aligner": "blat"})),
+        patch("dcd_mapping.align._write_blat_output_tempfile"),
+        patch(
+            "dcd_mapping.align._group_alignments_by_query",
+            return_value={"query": ["hit"]},
+        ),
+        pytest.raises(AlignmentError, match="don't match any query"),
+    ):
+        _get_blat_output(metadata, "", silent=True)
+
+
+def test_get_blat_output_does_not_retry_protein_queries_as_translated_dna(tmp_path):
+    metadata = ScoresetMetadata(
+        urn="urn:mavedb:00000001-a-1",
+        target_genes={"GENE": _seq_target("GENE", "MKV", "protein")},
+    )
+
+    with (
+        patch("dcd_mapping.align._write_query_file"),
+        patch("dcd_mapping.align.get_ref_genome_file", return_value=tmp_path),
+        patch(
+            "dcd_mapping.align._run_blat", return_value=(None, {"aligner": "blat"})
+        ) as run_blat,
+        patch("dcd_mapping.align._write_blat_output_tempfile"),
+        patch("dcd_mapping.align._group_alignments_by_query", return_value={}),
+        pytest.raises(AlignmentError, match="BLAT produced no alignments"),
+    ):
+        _get_blat_output(metadata, PROTEIN_BLAT_ARGS, silent=True)
+
+    assert run_blat.call_count == 1
+
+
 def test_run_blat_stops_after_the_configured_timeout(tmp_path):
     with (
         patch(
@@ -524,6 +567,32 @@ _ABLIM2_DNA = (
     "CGTCTGGAACGTCACCTGTCTCCGGAAGAATTCCAGGAAGTTTTCGGTATGTCTATTGAGGAATTCGACCGCCTGGCG"
     "CTCTGGAAGCGTAACGACCTGAAGAAAAAGGCGCTCCTGTTC"
 )
+
+
+@pytest.mark.parametrize(
+    ("sequence_type", "strand"),
+    [
+        (TargetSequenceType.DNA, Strand.POSITIVE),
+        (TargetSequenceType.PROTEIN, Strand.NEGATIVE),
+    ],
+)
+def test_get_best_match_reads_query_units_from_the_target(sequence_type, strand):
+    """The target's own sequence type, not the BLAT mode, says whether query
+    coordinates count amino acids. Protein queries read strand from the genome side.
+    """
+    target = SeqRecord(Seq("N" * 40), id="chr1")
+    query = SeqRecord(Seq("MKVLA"), id="target0")
+    aln = BioAlign.Alignment(
+        sequences=[target, query], coordinates=np.array([[30, 15], [0, 5]])
+    )
+
+    with patch("dcd_mapping.align.get_gene_location", return_value=None):
+        result = _get_best_match(
+            [aln], _seq_target("GENE", "MKVLA", sequence_type), 5, {"target_args": ""}
+        )
+
+    assert result.query_sequence_type == sequence_type
+    assert result.strand == strand
 
 
 def _seq_target(name: str, sequence: str, sequence_type: str) -> TargetGene:
